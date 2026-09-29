@@ -1,6 +1,9 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: the find/replace strings below contain literal ${...} SQL fragments to match in source, not template placeholders
 // Mutation check for the test suite: re-introduce each guarded bug in a scratch copy of the sources and require the
 // test that guards it to fail. A guard that stays green on its own bug is decoration. Zero quota.
 //   node mutate.ts
+
+import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -10,7 +13,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { spawnSync } from "node:child_process";
 
 interface Mutation {
   name: string;
@@ -28,8 +30,8 @@ interface Report {
 const here = new URL(".", import.meta.url).pathname;
 // A scratch directory per invocation, inside the package so the copies resolve its node_modules. Runs used to share
 // one fixed path, and two concurrent runs deleted each other's copies and reported each other's counts.
-mkdirSync(here + ".mut", { recursive: true });
-const scratch = mkdtempSync(here + ".mut/run-") + "/";
+mkdirSync(`${here}.mut`, { recursive: true });
+const scratch = `${mkdtempSync(`${here}.mut/run-`)}/`;
 const files = [
   "src/provider.ts",
   "src/memory-graph.ts",
@@ -40,7 +42,7 @@ const files = [
   "src/memory-graph.integration.test.ts",
   "src/provider.integration.test.ts",
 ];
-const vitest = here + "node_modules/vitest/vitest.mjs";
+const vitest = `${here}node_modules/vitest/vitest.mjs`;
 
 const mutations: Mutation[] = [
   {
@@ -579,7 +581,7 @@ function anchor(find: string | RegExp): RegExp {
 function runSuite(dir: string): Map<string, boolean> | null {
   const titles = new Map<string, boolean>();
   for (const config of ["vitest.unit.config.ts", "vitest.integration.config.ts"]) {
-    const out = dir + config + ".json";
+    const out = `${dir + config}.json`;
     spawnSync(
       process.execPath,
       [vitest, "run", "--config", config, "--reporter=json", "--outputFile", out],
@@ -597,7 +599,7 @@ function runSuite(dir: string): Map<string, boolean> | null {
 
 function scratchCopy(): string {
   rmSync(scratch, { recursive: true, force: true });
-  mkdirSync(scratch + "src", { recursive: true });
+  mkdirSync(`${scratch}src`, { recursive: true });
   for (const f of files) cpSync(here + f, scratch + f);
   return scratch;
 }

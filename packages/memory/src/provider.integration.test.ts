@@ -44,7 +44,7 @@ const turnStart = async (provider: Harness, memory: Input, text?: string) =>
 const injectedText = async (provider: Harness, memory: Input, text?: string) =>
   (await turnStart(provider, memory, text))?.messages?.[0]?.content ?? "";
 const toolContext = (callId: string) => ({
-  session: { id: "sess-1", turn: { id: "turn-" + callId, sequence: 1 } },
+  session: { id: "sess-1", turn: { id: `turn-${callId}`, sequence: 1 } },
   callId,
 });
 const clientRule = {

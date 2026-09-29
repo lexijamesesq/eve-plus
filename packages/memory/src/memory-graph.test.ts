@@ -128,9 +128,9 @@ describe("recall and relate", () => {
     const mg = await house();
     for (let i = 0; i < 10; i++)
       await mg.remember({
-        id: "r" + i,
+        id: `r${i}`,
         type: "Room",
-        label: "Room number " + i,
+        label: `Room number ${i}`,
         attributes: { floor: i },
         relations: [{ relation: "part_of", to: "house" }],
       });

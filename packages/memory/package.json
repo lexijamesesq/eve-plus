@@ -36,8 +36,6 @@
     "build": "tsc -p tsconfig.build.json",
     "prepare": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.check.json && tsc -p tsconfig.build.json && tsc -p tsconfig.bench.json",
-    "fmt": "oxfmt",
-    "lint": "oxlint --fix",
     "test": "pnpm run test:unit && pnpm run test:integration",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
@@ -53,8 +51,6 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.0.0",
     "ai": "7.0.118",
-    "oxfmt": "0.66.0",
-    "oxlint": "1.81.0",
     "typescript": "^5.0.0",
     "vitest": "4.1.10"
   },

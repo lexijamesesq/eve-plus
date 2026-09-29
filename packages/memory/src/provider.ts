@@ -2,8 +2,7 @@
 // Mirrors eve's own `fileMemory` conventions: recall returns a bounded { messages:[{content,id}] } and MUST NOT
 // throw; tools are defineTool()s keyed so they surface as `${slot}__recall` etc. The agent sees plain-language
 // tools; RDF/SHACL/SQL stays inside.
-import { z } from "zod";
-import { defineTool, type ToolContext } from "eve/tools";
+
 import type { ModelMessage } from "ai";
 import {
   defineMemoryProvider,
@@ -13,6 +12,8 @@ import {
   type MemoryToolsContext,
   type MemoryTurnStartedContext,
 } from "eve/memory";
+import { defineTool, type ToolContext } from "eve/tools";
+import { z } from "zod";
 import { MemoryGraph, type RememberInput } from "./memory-graph.js";
 
 export interface ShaclMemoryOptions {
@@ -77,7 +78,7 @@ function attrSummary(
   const shown = entries.slice(0, opts.max);
   const parts = shown.map(
     ([k, v]) =>
-      `${k}=${v.length > opts.valueLen ? v.slice(0, opts.valueLen) + "…" : v}${mark(k, marks, false)}`,
+      `${k}=${v.length > opts.valueLen ? `${v.slice(0, opts.valueLen)}…` : v}${mark(k, marks, false)}`,
   );
   if (entries.length > shown.length) parts.push(`+${entries.length - shown.length} more`);
   return parts.join(", ");
@@ -87,7 +88,7 @@ function attrLines(attributes: Attrs, valueLen = 300, marks: Marks = {}): string
   return Object.entries(attributes ?? {})
     .map(
       ([k, v]) =>
-        `    ${k}: ${v.length > valueLen ? v.slice(0, valueLen) + "…" : v}${mark(k, marks, true)}`,
+        `    ${k}: ${v.length > valueLen ? `${v.slice(0, valueLen)}…` : v}${mark(k, marks, true)}`,
     )
     .join("\n");
 }
@@ -150,7 +151,7 @@ function formatRecall(
     );
   }
   let body = sections.join("\n");
-  if (body.length > maxCharacters) body = body.slice(0, maxCharacters - 1) + "…";
+  if (body.length > maxCharacters) body = `${body.slice(0, maxCharacters - 1)}…`;
   return body;
 }
 

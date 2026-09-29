@@ -18,7 +18,7 @@ In a later session — no chat history, a fresh conversation — the user asks t
 
 ## `recall` and `relate`
 
-```
+```text
 recall("Jordan Lee")
 → { id: "...", label: "Jordan Lee", type: "ClientContact",
     attributes: { phone: "555-0142", company: "Acme Robotics" } }
@@ -33,7 +33,7 @@ Both tools return an entity's attributes as well as its identity — a memory th
 
 A miss is reported honestly:
 
-```
+```text
 recall("inactive clients")
 → "No stored records matched that search. Search matches stored words and
    can't list by kind — try a name, company, or phone number instead."
@@ -47,7 +47,7 @@ The agent doesn't need a pre-built schema for every domain. Given a rule stated 
 
 — a well-instructed agent authors the shape itself:
 
-```
+```text
 extend_schema({
   type: "ClientContact",
   requires: ["phone", "company"],
@@ -56,7 +56,7 @@ extend_schema({
 
 From then on, any `remember` typed `ClientContact` that's missing either field is rejected with a **teachable failure**:
 
-```
+```text
 remember({ type: "ClientContact", label: "Dana Ruiz", attributes: { company: "Globex" } })
 → REJECTED: "A ClientContact requires a 'phone'. Ask for it before saving,
    or save as a different type if you don't have it yet."
@@ -68,7 +68,7 @@ The agent gets a structured reason, not a bare validation error — it can act o
 
 ## `forget` and `check_memory` — the audit loop
 
-```
+```text
 check_memory()
 → "1 record incomplete: Sam Old (ClientContact) is missing 'phone'."
 
@@ -80,7 +80,7 @@ check_memory()
 
 `forget` removes a fact or a whole record without ever deleting history:
 
-```
+```text
 forget({ id: "...", details: ["phone"] })
 → "Removed Dana Ruiz's phone number. This record no longer meets the
    ClientContact requirement (needs a phone) — ask for a replacement,
@@ -97,13 +97,13 @@ When a user hands the agent content to file rather than stating facts directly �
 
 — the agent must declare `source: "content"` on anything it saves from it:
 
-```
+```text
 remember({ ..., source: "content", from: "the pasted email" })
 ```
 
 Filed-from-content values are marked wherever they're read back:
 
-```
+```text
 recall("Jordan Lee")
 → attributes: { phone: "555-0199 ⟨unconfirmed — from the pasted email,
     not stated by you⟩" }

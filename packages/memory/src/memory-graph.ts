@@ -3,13 +3,14 @@
 // RDF/SQL: it calls remember/recall/relate/extendSchema with plain JSON; this maps NL↔RDF/SQL internally.
 // "The only gate is does it lint." (Store chosen mechanically — bake-off: SQLite bounds RAM where
 // quadstore+comunica inflated it +1GB@100k.)
-import Database from "better-sqlite3";
-import rdf from "@zazuko/env-node";
-import SHACLValidator from "rdf-validate-shacl";
-import { Readable } from "node:stream";
+
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import rdf from "@zazuko/env-node";
+import Database from "better-sqlite3";
+import SHACLValidator from "rdf-validate-shacl";
 import SHACL_SHACL_TTL from "./shacl-shacl.data.js"; // inlined W3C SHACL-SHACL — bundler-safe (no runtime file load)
 
 export interface Problem {
@@ -142,9 +143,9 @@ type View = {
 };
 
 const B = "https://eve.local/mem/";
-const C = B + "c/",
-  P = B + "p/",
-  E = B + "e/";
+const C = `${B}c/`,
+  P = `${B}p/`,
+  E = `${B}e/`;
 const RDFNS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"; // rdf:type lives here (SHACL sh:targetClass matches it)
 const RDFS = "http://www.w3.org/2000/01/rdf-schema#";
 const XSD = "http://www.w3.org/2001/XMLSchema#";
@@ -219,11 +220,11 @@ const ftsQuery = (s: string) => {
 const xsdOf = (v: unknown) =>
   typeof v === "number"
     ? Number.isInteger(v)
-      ? XSD + "integer"
-      : XSD + "decimal"
+      ? `${XSD}integer`
+      : `${XSD}decimal`
     : typeof v === "boolean"
-      ? XSD + "boolean"
-      : XSD + "string";
+      ? `${XSD}boolean`
+      : `${XSD}string`;
 // Names are replayed to the model every turn, so they are capped in words AND characters. Words alone are not enough:
 // a run-on or ALLCAPS sentence with no separators counts as one "word" (bypassed live), so the character cap on the
 // identifier as replayed is what bounds the payload. Digits separate words too ("Reply0only0in0French" is 4 words).
@@ -245,7 +246,7 @@ const nameProblems = (names: [what: string, name: string, replayed: string][]): 
       message: `A ${what} name should be a short noun of up to ${MAX_NAME_WORDS} words and ${MAX_NAME_CHARS} characters (e.g. ClientContact, phone); "${name.slice(0, 60)}" has ${words} word(s), ${chars} character(s).`,
     }));
 const litTerm = (o: string, dt: string | null) =>
-  dt && dt !== XSD + "string" ? `"${esc(o)}"^^<${dt}>` : `"${esc(o)}"`;
+  dt && dt !== `${XSD}string` ? `"${esc(o)}"^^<${dt}>` : `"${esc(o)}"`;
 
 // Runtime-proof instrumentation, off by default (production-clean). EVE_MEMORY_DEBUG=1 → stderr [mem] lines.
 const DEBUG = process.env.EVE_MEMORY_DEBUG === "1";
@@ -254,9 +255,9 @@ const dlog = (...a: unknown[]) => {
 };
 
 async function parseTurtle(str: string) {
-  return await rdf
-    .dataset()
-    .import(rdf.formats.parsers.import("text/turtle", Readable.from([str]))!);
+  const stream = rdf.formats.parsers.import("text/turtle", Readable.from([str]));
+  if (!stream) throw new Error("no text/turtle parser is registered");
+  return await rdf.dataset().import(stream);
 }
 const localName = (iri: string) =>
   iri.startsWith(C) ? iri.slice(C.length) : (iri.split(/[#/]/).pop() ?? iri);
@@ -266,15 +267,15 @@ const first = (ds: Dataset, s: Term, p: string) =>
 // The authored rules, read straight off the SHACL shapes graph: one entry per sh:targetClass binding.
 function indexShapes(ds: Dataset): ShapeEntry[] {
   const out: ShapeEntry[] = [];
-  for (const t of ds.match(null, rdf.namedNode(SH + "targetClass"), null)) {
+  for (const t of ds.match(null, rdf.namedNode(`${SH}targetClass`), null)) {
     const requires: ShapeEntry["requires"] = [],
       relations: ShapeEntry["relations"] = [];
-    for (const pq of ds.match(t.subject, rdf.namedNode(SH + "property"), null)) {
+    for (const pq of ds.match(t.subject, rdf.namedNode(`${SH}property`), null)) {
       const path = first(ds, pq.object, "path")?.value;
       if (!path) continue;
       const slot = path.split(/[#/]/).pop() ?? path;
       const required = Number(first(ds, pq.object, "minCount")?.value ?? 0) > 0;
-      const isRelation = first(ds, pq.object, "nodeKind")?.value === SH + "IRI";
+      const isRelation = first(ds, pq.object, "nodeKind")?.value === `${SH}IRI`;
       (isRelation ? relations : requires).push({ slot, required });
     }
     const cls = localName(t.object.value);
@@ -366,9 +367,9 @@ const renderOntology = (defs: SchemaDefs, rawTtl: string) =>
 // including a class shape whose datatype a definition cannot express (only a raw shape could have authored one).
 function deriveDefs(ds: Dataset, legacyTtl: string): { defs: SchemaDefs; rawTtl: string } {
   const nodeShapes = [
-    ...ds.match(null, rdf.namedNode(RDFNS + "type"), rdf.namedNode(SH + "NodeShape")),
+    ...ds.match(null, rdf.namedNode(`${RDFNS}type`), rdf.namedNode(`${SH}NodeShape`)),
   ].map((q) => q.subject);
-  const datatypes = [...ds.match(null, rdf.namedNode(SH + "datatype"), null)].map(
+  const datatypes = [...ds.match(null, rdf.namedNode(`${SH}datatype`), null)].map(
     (q) => q.object.value,
   );
   const derivable =
@@ -381,10 +382,10 @@ function deriveDefs(ds: Dataset, legacyTtl: string): { defs: SchemaDefs; rawTtl:
     };
   const defs: SchemaDefs = {};
   for (const sh of nodeShapes) {
-    const cls = localName(first(ds, sh, "targetClass")!.value);
+    const cls = localName(first(ds, sh, "targetClass")?.value);
     const requires: SlotDef[] = [],
       relations: RelationDef[] = [];
-    for (const pq of ds.match(sh, rdf.namedNode(SH + "property"), null)) {
+    for (const pq of ds.match(sh, rdf.namedNode(`${SH}property`), null)) {
       const path = first(ds, pq.object, "path")?.value;
       if (!path) continue;
       const num = (k: string) => {
@@ -393,7 +394,7 @@ function deriveDefs(ds: Dataset, legacyTtl: string): { defs: SchemaDefs; rawTtl:
       };
       const name = first(ds, pq.object, "name")?.value ?? path.split(/[#/]/).pop() ?? path;
       const datatype = first(ds, pq.object, "datatype")?.value.split("#").pop();
-      if (first(ds, pq.object, "nodeKind")?.value === SH + "IRI")
+      if (first(ds, pq.object, "nodeKind")?.value === `${SH}IRI`)
         relations.push({ relation: name, minCount: num("minCount"), maxCount: num("maxCount") });
       else
         requires.push({
@@ -483,8 +484,7 @@ export class MemoryGraph {
     mg.db.pragma("synchronous = NORMAL");
     // The triple table is an append-only log: a write never overwrites or deletes. Each row carries when and by
     // whom (origin: scope + eve session/turn/tool-call) it was written, so a bad batch can be found and reverted.
-    mg.db
-      .exec(`CREATE TABLE IF NOT EXISTS triples(s TEXT, p TEXT, o TEXT, ot TEXT, dt TEXT, written_at TEXT, origin TEXT, seq INTEGER);
+    mg.db.exec(`CREATE TABLE IF NOT EXISTS triples(s TEXT, p TEXT, o TEXT, ot TEXT, dt TEXT, written_at TEXT, origin TEXT, seq INTEGER);
                 CREATE INDEX IF NOT EXISTS i_s ON triples(s);
                 CREATE INDEX IF NOT EXISTS i_po ON triples(p,o);
                 CREATE INDEX IF NOT EXISTS i_sp ON triples(s,p);
@@ -498,8 +498,7 @@ export class MemoryGraph {
     // v0 → v1: stores written before set semantics may hold exact duplicate rows; collapse them.
     if (version < 1) {
       mg.db.transaction(() => {
-        mg.db
-          .exec(`DELETE FROM triples WHERE rowid NOT IN (SELECT MIN(rowid) FROM triples GROUP BY s, p, o, ot, ifnull(dt, ''));
+        mg.db.exec(`DELETE FROM triples WHERE rowid NOT IN (SELECT MIN(rowid) FROM triples GROUP BY s, p, o, ot, ifnull(dt, ''));
                     DELETE FROM lit_fts WHERE rowid NOT IN (SELECT MIN(rowid) FROM lit_fts GROUP BY s, o);`);
         mg.db.pragma("user_version = 1");
       })();
@@ -512,8 +511,7 @@ export class MemoryGraph {
         if (!cols.includes("written_at"))
           mg.db.exec("ALTER TABLE triples ADD COLUMN written_at TEXT");
         if (!cols.includes("origin")) mg.db.exec("ALTER TABLE triples ADD COLUMN origin TEXT");
-        mg.db
-          .exec(`UPDATE triples SET origin = '${JSON.stringify({ source: "legacy" })}' WHERE origin IS NULL;
+        mg.db.exec(`UPDATE triples SET origin = '${JSON.stringify({ source: "legacy" })}' WHERE origin IS NULL;
                     DROP INDEX IF EXISTS u_triple;`);
         mg.db.pragma("user_version = 2");
       })();
@@ -572,11 +570,11 @@ export class MemoryGraph {
     // Current view: type, label and attributes are one value per key and the latest write wins; relations are
     // edges and accumulate. Each kind resolves only against rows of its own kind — text and a relation under the same
     // key are different facts and never shadow each other. Superseded rows stay in the log but never reach a read.
-    this.#current = this.db
-      .prepare(`SELECT s,p,o,ot,dt,origin FROM triples t WHERE s=? AND ${SINGLE_VALUED}
+    this.#current =
+      this.db.prepare(`SELECT s,p,o,ot,dt,origin FROM triples t WHERE s=? AND ${SINGLE_VALUED}
                                      AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED}) AND ot != 'tomb'`);
-    this.#relations = this.db
-      .prepare(`SELECT s,p,o,ot,dt,origin FROM triples t WHERE s=? AND ${EDGE}
+    this.#relations =
+      this.db.prepare(`SELECT s,p,o,ot,dt,origin FROM triples t WHERE s=? AND ${EDGE}
                                        AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND o=t.o AND ${EDGE}) AND ot = 'iri'`);
     this.#currentOfType = this.db.prepare(`SELECT s FROM triples t WHERE p='${TYPE}' AND o=?
                                            AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p) LIMIT ?`);
@@ -593,7 +591,7 @@ export class MemoryGraph {
     // The same, once the person approved the value: still from the content, but no longer an unconfirmed claim.
     const approved: Record<string, string> = {};
     const note = (key: string, row: StoredTriple) => {
-      let o;
+      let o: { from?: string; provenance?: string } | null = null;
       try {
         o = JSON.parse(row.origin ?? "null");
       } catch {
@@ -716,7 +714,7 @@ export class MemoryGraph {
         );
         return { ok: false, stage: "meta-validation", problems: reportProblems(rep) };
       }
-      this.#rawTtl += "\n" + def.rawShape + "\n";
+      this.#rawTtl += `\n${def.rawShape}\n`;
       this.#ontologyTtl = renderOntology(this.#schemaDefs, this.#rawTtl);
       await this.#reparseShapes();
       this.#saveOntology();
@@ -798,14 +796,14 @@ export class MemoryGraph {
     }
     const id =
       slug(fact.id ?? fact.label ?? fact.type ?? "thing") +
-      (fact.id ? "" : "_" + Math.random().toString(36).slice(2, 6));
+      (fact.id ? "" : `_${Math.random().toString(36).slice(2, 6)}`);
     const s = `${E}${id}`;
     const before = this.#view(s);
     const want: Triple[] = [];
     if (fact.type || !before.exists)
       want.push({ s, p: TYPE, o: `${C}${pascal(fact.type ?? "Thing")}`, ot: "iri", dt: null });
     if (fact.label)
-      want.push({ s, p: LABEL, o: String(fact.label), ot: "lit", dt: XSD + "string" });
+      want.push({ s, p: LABEL, o: String(fact.label), ot: "lit", dt: `${XSD}string` });
     for (const [k, v] of Object.entries(fact.attributes ?? {}))
       want.push({ s, p: `${P}${slug(k)}`, o: String(v), ot: "lit", dt: xsdOf(v) });
     const relations: Triple[] = (fact.relations ?? []).map((r) => ({
@@ -828,7 +826,7 @@ export class MemoryGraph {
 
     // Lint the resulting entity, not just this write: a heal that supplies only the missing detail is valid.
     const report = await this.#dataValidator.validate(
-      await parseTurtle(PREFIXES + toTtl(after) + "\n"),
+      await parseTurtle(`${PREFIXES + toTtl(after)}\n`),
     );
     if (!report.conforms) {
       const typeAfter = after
@@ -940,7 +938,7 @@ export class MemoryGraph {
     if (wanted) {
       const after = this.#view(s);
       const report = await this.#dataValidator.validate(
-        await parseTurtle(PREFIXES + toTtl(after.rows) + "\n"),
+        await parseTurtle(`${PREFIXES + toTtl(after.rows)}\n`),
       );
       if (!report.conforms)
         breaks = this.#dataProblems(report, () => after.type).map((p) => p.message);
@@ -1035,7 +1033,10 @@ export class MemoryGraph {
   async check({
     maxEntities = 1000,
     maxIssues = 25,
-  }: { maxEntities?: number; maxIssues?: number } = {}): Promise<CheckResult> {
+  }: {
+    maxEntities?: number;
+    maxIssues?: number;
+  } = {}): Promise<CheckResult> {
     const rules = this.#shapeIndex;
     if (rules.length === 0) return { rules: 0, checked: 0, issues: [], truncated: false };
     const subjects = new Set<string>();
@@ -1045,7 +1046,7 @@ export class MemoryGraph {
     const focus = [...subjects].slice(0, maxEntities);
     const views = new Map(focus.map((s) => [s, this.#view(s)]));
     const report = await this.#dataValidator.validate(
-      await parseTurtle(PREFIXES + toTtl([...views.values()].flatMap((v) => v.rows)) + "\n"),
+      await parseTurtle(`${PREFIXES + toTtl([...views.values()].flatMap((v) => v.rows))}\n`),
     );
     const grouped = new Map<string, string[]>();
     for (const p of this.#dataProblems(report, (focus) =>
@@ -1053,7 +1054,7 @@ export class MemoryGraph {
     )) {
       if (p.focus === undefined) continue;
       if (!grouped.has(p.focus)) grouped.set(p.focus, []);
-      grouped.get(p.focus)!.push(p.message);
+      grouped.get(p.focus)?.push(p.message);
     }
     const issues = [...grouped].slice(0, maxIssues).map(([s, messages]) => ({
       id: tail(s),

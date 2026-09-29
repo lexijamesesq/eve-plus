@@ -1,7 +1,7 @@
-import Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { MemoryGraph } from "./memory-graph.js";
@@ -120,21 +120,21 @@ describe("set semantics and legacy stores", () => {
        CREATE UNIQUE INDEX u_triple ON triples(s, p, o, ot, ifnull(dt, '')); PRAGMA user_version = 1;`,
       (db) => {
         for (const [p, o, ot] of [
-          [TYPE, C + "Person", "iri"],
+          [TYPE, `${C}Person`, "iri"],
           [LABEL, "Priya Nair", "lit"],
-          [P + "phone_status", "pending", "lit"],
-          [TYPE, C + "ClientContact", "iri"],
-          [P + "phone", "555-0177", "lit"],
-          [P + "phone_status", "confirmed", "lit"],
+          [`${P}phone_status`, "pending", "lit"],
+          [TYPE, `${C}ClientContact`, "iri"],
+          [`${P}phone`, "555-0177", "lit"],
+          [`${P}phone_status`, "confirmed", "lit"],
         ]) {
           db.prepare("INSERT INTO triples VALUES (?,?,?,?,?)").run(
-            E + "priya",
+            `${E}priya`,
             p,
             o,
             ot,
             ot === "lit" ? XSD_STRING : null,
           );
-          if (ot === "lit") db.prepare("INSERT INTO lit_fts VALUES (?,?)").run(E + "priya", o);
+          if (ot === "lit") db.prepare("INSERT INTO lit_fts VALUES (?,?)").run(`${E}priya`, o);
         }
       },
     );
@@ -154,13 +154,13 @@ describe("set semantics and legacy stores", () => {
       "CREATE TABLE triples(s TEXT, p TEXT, o TEXT, ot TEXT, dt TEXT, written_at TEXT, origin TEXT); CREATE VIRTUAL TABLE lit_fts USING fts5(s UNINDEXED, o); PRAGMA user_version = 2;",
       (db) => {
         for (const [p, o, ot, dt] of [
-          [TYPE, C + "Thing", "iri", null],
+          [TYPE, `${C}Thing`, "iri", null],
           [LABEL, "Acme Deal", "lit", XSD_STRING],
-          [P + "company", "Globex Holdings", "lit", XSD_STRING],
-          [P + "company", E + "globex", "iri", null],
+          [`${P}company`, "Globex Holdings", "lit", XSD_STRING],
+          [`${P}company`, `${E}globex`, "iri", null],
         ])
           db.prepare("INSERT INTO triples VALUES (?,?,?,?,?,?,?)").run(
-            E + "deal",
+            `${E}deal`,
             p,
             o,
             ot,
