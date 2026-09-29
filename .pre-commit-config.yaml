@@ -7,7 +7,7 @@ default_stages: [pre-commit]
 
 repos:
   - repo: https://github.com/lexijamesesq/dotty
-    rev: v2026.09.29-4
+    rev: v2026.09.29-5
     hooks:
       - id: gitleaks-staged
       - id: gitleaks-pre-push
