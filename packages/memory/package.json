@@ -1,0 +1,64 @@
+{
+  "name": "@eve-plus/memory",
+  "version": "0.1.0",
+  "description": "A memory provider for Vercel eve: a SHACL ontology over an embedded SQLite graph that the agent shapes and validates itself.",
+  "license": "MIT",
+  "keywords": [
+    "eve",
+    "agent-memory",
+    "memory-provider",
+    "shacl",
+    "sqlite",
+    "knowledge-graph",
+    "rdf"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lexijamesesq/eve-plus.git",
+    "directory": "packages/memory"
+  },
+  "homepage": "https://github.com/lexijamesesq/eve-plus/tree/main/packages/memory#readme",
+  "bugs": {
+    "url": "https://github.com/lexijamesesq/eve-plus/issues"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "bench"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/provider.d.ts",
+      "import": "./dist/provider.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.check.json && tsc -p tsconfig.build.json && tsc -p tsconfig.bench.json",
+    "fmt": "oxfmt",
+    "lint": "oxlint --fix",
+    "test": "pnpm run test:unit && pnpm run test:integration",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "mutate": "node mutate.ts"
+  },
+  "dependencies": {
+    "@zazuko/env-node": "^3.1.0",
+    "better-sqlite3": "^13.0.3",
+    "rdf-validate-shacl": "^0.6.5",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.0.0",
+    "ai": "7.0.118",
+    "oxfmt": "0.66.0",
+    "oxlint": "1.81.0",
+    "typescript": "^5.0.0",
+    "vitest": "4.1.10"
+  },
+  "peerDependencies": {
+    "eve": "^0.67.2"
+  }
+}
