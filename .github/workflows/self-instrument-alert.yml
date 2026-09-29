@@ -1,0 +1,21 @@
+name: Self-instrument merge alert
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/self-instrument-alert.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: lexijamesesq/dotty/.github/workflows/estate-self-instrument-alert.yml@v1
+    with:
+      before: ${{ github.event.before }}
+      after: ${{ github.event.after }}
+      repo: ${{ github.repository }}
