@@ -51,6 +51,7 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.0.0",
     "ai": "7.0.118",
+    "eve": "^0.67.2",
     "typescript": "^5.0.0",
     "vitest": "4.1.10"
   },

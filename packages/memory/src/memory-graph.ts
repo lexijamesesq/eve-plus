@@ -691,7 +691,7 @@ export class MemoryGraph {
     });
   }
 
-  // ---- extend_schema: author a class/shape; the ONLY gate is meta-validation vs SHACL-SHACL ----
+  // ---- extend_schema: author a class/shape; gated first by the naming lint, then meta-validation vs SHACL-SHACL ----
   async extendSchema(def: ExtendInput): Promise<ExtendResult> {
     if (def.rawShape) {
       let ds: Dataset;
@@ -739,7 +739,7 @@ export class MemoryGraph {
     ]);
     if (naming.length) {
       dlog("extend_schema REJECTED (naming):", naming.map((p) => p.message).join(" | "));
-      return { ok: false, stage: "meta-validation", problems: naming };
+      return { ok: false, stage: "naming", problems: naming };
     }
     const merged = mergeDef(this.#schemaDefs[cls], def);
     const shape = shapeTtl(cls, merged);
@@ -796,7 +796,7 @@ export class MemoryGraph {
     }
     const id =
       slug(fact.id ?? fact.label ?? fact.type ?? "thing") +
-      (fact.id ? "" : `_${Math.random().toString(36).slice(2, 6)}`);
+      (fact.id ? "" : `_${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`);
     const s = `${E}${id}`;
     const before = this.#view(s);
     const want: Triple[] = [];
@@ -829,10 +829,8 @@ export class MemoryGraph {
       await parseTurtle(`${PREFIXES + toTtl(after)}\n`),
     );
     if (!report.conforms) {
-      const typeAfter = after
-        .find((r) => r.p === TYPE)
-        ?.o.split("/")
-        .pop();
+      const typeAfterRow = after.find((r) => r.p === TYPE);
+      const typeAfter = typeAfterRow ? tail(typeAfterRow.o) : undefined;
       const problems = this.#dataProblems(report, () => typeAfter);
       dlog("remember REJECTED (lint):", id, problems.map((p) => p.message).join(" | "));
       return { ok: false, stage: "lint", problems };

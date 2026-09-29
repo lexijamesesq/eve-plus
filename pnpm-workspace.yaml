@@ -1,5 +1,7 @@
 packages:
   - packages/*
 
+# better-sqlite3 ships a native binding; its install script must run (prebuilt
+# download or compile) or the store cannot open. Allow it to build.
 allowBuilds:
-  better-sqlite3: false
+  better-sqlite3: true

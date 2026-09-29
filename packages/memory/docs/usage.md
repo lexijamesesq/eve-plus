@@ -49,8 +49,11 @@ The agent doesn't need a pre-built schema for every domain. Given a rule stated 
 
 ```text
 extend_schema({
-  type: "ClientContact",
-  requires: ["phone", "company"],
+  class: "ClientContact",
+  requires: [
+    { slot: "phone", minCount: 1 },
+    { slot: "company", minCount: 1 },
+  ],
 })
 ```
 
