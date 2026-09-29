@@ -36,6 +36,11 @@ jobs:
 
   release-check:
     name: ci / release-check
+    # floor: always-run
+    # The estate caller-merge tool honours the bare marker line above and leaves
+    # this required check ungated, so a PR triaged as mechanical still runs it —
+    # a skipped required check counts as passed, which would let a no-bump change
+    # through.
     # Refuses a package change without a version bump. PR-time, no writes. Runs
     # on every PR with no `paths:` filter: a path-skipped required check stays
     # Pending forever and blocks every other PR. Cheap when nothing changed.
