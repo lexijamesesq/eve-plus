@@ -69,6 +69,42 @@ describe("remember: JSON fact → RDF → lint", () => {
   });
 });
 
+describe("an id-less save converges on the record that already holds it", () => {
+  const jordan = { type: "Person", label: "Jordan Lee", attributes: { phone: "555-0142" } };
+  const jordans = (g: MemoryGraph) =>
+    g.recall("Jordan Lee").filter((f) => f.label === "Jordan Lee");
+
+  it("a repeated identical save leaves one record", async () => {
+    const g = await MemoryGraph.create();
+    const first = await g.remember(jordan);
+    const again = await g.remember(jordan);
+    expect(first.ok && again.ok).toBe(true);
+    if (!first.ok || !again.ok) return;
+    expect(again.id).toBe(first.id);
+    expect(jordans(g)).toHaveLength(1);
+    expect(g.previewSupersession(jordan)).toEqual([]);
+  });
+
+  it("different content under the same name still gets its own record", async () => {
+    const g = await MemoryGraph.create();
+    const first = await g.remember(jordan);
+    const other = await g.remember({ ...jordan, attributes: { phone: "555-0999" } });
+    expect(first.ok && other.ok).toBe(true);
+    if (!first.ok || !other.ok) return;
+    expect(other.id).not.toBe(first.id);
+    expect(jordans(g)).toHaveLength(2);
+  });
+
+  it("a replayed save can't undo a later change", async () => {
+    const g = await MemoryGraph.create();
+    const first = await g.remember(jordan);
+    if (!first.ok) throw new Error("save failed");
+    await g.remember({ id: first.id, attributes: { phone: "555-0999" } });
+    await g.remember(jordan);
+    expect(g.describe(first.id)?.attributes.phone).toBe("555-0999");
+  });
+});
+
 describe("recall and relate", () => {
   async function house() {
     const mg = await withRooms();

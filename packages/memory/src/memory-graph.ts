@@ -794,9 +794,12 @@ export class MemoryGraph {
       dlog("remember REJECTED (naming):", naming.map((p) => p.message).join(" | "));
       return { ok: false, stage: "naming", problems: naming };
     }
-    const id =
-      slug(fact.id ?? fact.label ?? fact.type ?? "thing") +
-      (fact.id ? "" : `_${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`);
+    const held = fact.id ? undefined : this.#holding(fact);
+    const id = fact.id
+      ? slug(fact.id)
+      : held
+        ? tail(held)
+        : this.#freshId(fact.label ?? fact.type ?? "thing");
     const s = `${E}${id}`;
     const before = this.#view(s);
     const want: Triple[] = [];
@@ -953,6 +956,51 @@ export class MemoryGraph {
     return { ok: true, label: before.label ?? id, whole: !wanted, forgotten, breaks, lostCoverage };
   }
 
+  // A new record's id: its name plus a suffix no record holds yet. A clash would silently write into another record.
+  #freshId(name: string): string {
+    for (;;) {
+      const id = `${slug(name)}_${Math.random().toString(36).slice(2, 6).padEnd(4, "0")}`;
+      if (!this.#view(`${E}${id}`).exists) return id;
+    }
+  }
+
+  // Records whose current name is the same name as `label`. Candidates share a full word with it in the current view;
+  // bounded, since this runs on every write.
+  #namesakes(label: string): string[] {
+    const words = nameTokens(label).filter((t) => t.length > 1);
+    if (words.length === 0) return [];
+    const candidates = this.db
+      .prepare("SELECT DISTINCT s FROM lit_fts WHERE o MATCH ? LIMIT 50")
+      .all(words.map((t) => `"${t}"`).join(" OR ")) as { s: string }[];
+    return candidates
+      .map((r) => r.s)
+      .filter((sub) => {
+        const existing = this.#view(sub).label;
+        return existing !== undefined && sameName(existing, label);
+      });
+  }
+
+  // The record that already holds everything this id-less save says, if one does. eve re-runs a step that was
+  // interrupted mid-write, so a save can arrive twice; converging on the record that holds it keeps one copy. Only an
+  // exact match qualifies, so a replay can never undo a later change, and different content gets its own record.
+  #holding(fact: Partial<RememberInput>): string | undefined {
+    if (!fact.label) return undefined;
+    const label = String(fact.label);
+    return this.#namesakes(label).find((sub) => {
+      const v = this.#view(sub);
+      return (
+        v.label === label &&
+        (!fact.type || v.type === pascal(fact.type)) &&
+        Object.entries(fact.attributes ?? {}).every(
+          ([k, val]) => v.attributes[slug(k)] === String(val),
+        ) &&
+        (fact.relations ?? []).every((r) =>
+          v.relations.some((b) => b.p === `${P}${slug(r.relation)}` && b.o === `${E}${slug(r.to)}`),
+        )
+      );
+    });
+  }
+
   /** Keys whose existing current value this remember would replace (label, type, attributes) — for approval policy. */
   previewSupersession(fact: Partial<RememberInput>): Change[] {
     const before = fact?.id ? this.#view(`${E}${slug(fact.id)}`) : undefined;
@@ -962,18 +1010,9 @@ export class MemoryGraph {
       // whether the write gives no id or a fresh one.
       if (!fact?.label) return [];
       const label = String(fact.label);
-      const words = nameTokens(label).filter((t) => t.length > 1);
-      if (words.length === 0) return [];
-      // Candidates share a full word with the name in the current view; bounded, since this runs on every write.
-      const candidates = this.db
-        .prepare("SELECT DISTINCT s FROM lit_fts WHERE o MATCH ? LIMIT 50")
-        .all(words.map((t) => `"${t}"`).join(" OR ")) as { s: string }[];
-      const twin = candidates
-        .map((r) => r.s)
-        .find((sub) => {
-          const existing = this.#view(sub).label;
-          return existing !== undefined && sameName(existing, label);
-        });
+      // Content a record already holds replaces nothing: remember converges to that record.
+      if (!fact.id && this.#holding(fact)) return [];
+      const twin = this.#namesakes(label)[0];
       if (twin) dlog("preview: a second record", JSON.stringify(label), "→ twin of", tail(twin));
       return twin ? [{ key: "record", from: tail(twin), to: `a second "${label}"` }] : [];
     }

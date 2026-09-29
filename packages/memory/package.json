@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@zazuko/env-node": "^3.1.0",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "13.0.3",
     "rdf-validate-shacl": "^0.6.5",
     "zod": "^4.6.5"
   },
