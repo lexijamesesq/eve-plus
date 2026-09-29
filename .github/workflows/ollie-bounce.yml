@@ -1,0 +1,40 @@
+name: Ollie bounce
+# Thin per-repo relay, owned by provision-public-repo.sh --callers; edit it
+# there, not here. An approval (the operator's or Margot's) usually lands AFTER
+# the checks already finished, so no default-branch-context event follows it and
+# ollie-merge.yml would never run. This workflow re-raises the approval as a
+# workflow_dispatch of ollie-merge.yml on the default branch, where the merge
+# key is reachable. It holds NO secret and no environment, so its PR-ref context
+# is harmless; `actions: write` is the only grant. Fork PRs are skipped here only
+# to save a pointless dispatch — the reusable refuses them regardless.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ollie-bounce-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  bounce:
+    if: >-
+      ${{ github.event.review.state == 'approved'
+          && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      REF: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Re-raise the approval as a default-branch dispatch of ollie-merge.yml
+        run: |
+          set -euo pipefail
+          jq -n --arg ref "$REF" --arg pr "$PR" '{ref:$ref,inputs:{pr:$pr}}' \
+          | gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/workflows/ollie-merge.yml/dispatches" --input -
+          echo "dispatched ollie-merge for #${PR} on ${REF}"
