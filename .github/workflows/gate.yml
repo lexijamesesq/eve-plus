@@ -1,0 +1,32 @@
+name: Gate
+# The trusted half of the floor. Resolved from the default branch on
+# pull_request_target, so a pull request cannot rewrite what receives the two
+# secrets: the operator gitleaks overlay (the PR-time scan, once) and Margot's
+# App key (Jev is dispatched first; the review after the scan). Executes
+# nothing from the PR. The untrusted half (hooks, lint, PR body) is ci.yml.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
+jobs:
+  trusted-scan:
+    # Read scopes the trusted lane uses with github.token (Margot's check-runs
+    # lookup, Jev's triage answer). A called workflow gets no more than this;
+    # on a private repo nothing wider is readable without it.
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    uses: lexijamesesq/dotty/.github/workflows/estate-gate.yml@v1
+    with:
+      dotty_ref: v1
+    secrets:
+      OPERATOR_RULES: ${{ secrets.OPERATOR_RULES }}
+      MARGOT_APP_KEY: ${{ secrets.MARGOT_APP_KEY }}

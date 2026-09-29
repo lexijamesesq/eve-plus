@@ -1,0 +1,9 @@
+# Minimal relaxed config for the yamllint pre-commit hook (see
+# .pre-commit-config.yaml). Extends yamllint's own `default` rule set and
+# disables only the one rule that is noisy on long generated/data lines
+# (workflow matrices, long URLs in comments). Every other default rule
+# (indentation, trailing spaces, document markers, etc.) stays on.
+extends: default
+
+rules:
+  line-length: disable

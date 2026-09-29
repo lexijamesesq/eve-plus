@@ -1,0 +1,72 @@
+# default_install_hook_types + default_stages: see dotty's .pre-commit-config.yaml
+# for the full rationale (a bare `pre-commit install` must wire pre-commit, pre-push,
+# AND commit-msg, and default_stages keeps hooks with no explicit `stages` key from
+# being silently promoted to those other stages).
+default_install_hook_types: [pre-commit, pre-push, commit-msg]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/lexijamesesq/dotty
+    rev: v2026.09.28-3
+    hooks:
+      - id: gitleaks-staged
+      - id: gitleaks-pre-push
+      - id: gitleaks-commit-msg
+      - id: house-code
+      - id: house-scaffold-no-tracked-scratch
+      - id: house-scaffold-sample-shape
+      - id: house-scaffold-sample-placeholder
+      - id: vale-self-narration
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.5
+    hooks:
+      - id: ruff
+      - id: ruff-format
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.14.1-1
+    hooks:
+      - id: shfmt
+        stages: [pre-commit]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        stages: [pre-commit]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.49.1
+    hooks:
+      - id: markdownlint
+        stages: [pre-commit]
+
+  - repo: https://github.com/biomejs/pre-commit
+    rev: v2.5.14
+    hooks:
+      - id: biome-check
+        additional_dependencies: ["@biomejs/biome@2.5.14"]
+        exclude: '\.(jsonc?|vue|svelte|astro)$'
+        stages: [pre-commit]
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        types_or: [html]
+        additional_dependencies: ["prettier@3.9.9"]
+        stages: [pre-commit]

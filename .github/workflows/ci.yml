@@ -1,0 +1,34 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel a superseded in-flight run when a PR gets a new push — but NEVER cancel
+# a push-to-main run (cancel is gated to pull_request events; on push-to-main
+# `cancel-in-progress` is false). On `pull_request`, github.ref is already
+# per-PR (refs/pull/<N>/merge), so the group is PR-scoped.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  floor:
+    # The required check is `ci / checks`: this job's name, then the called
+    # job's (estate-ci.yml's check_name). Convention `<lane> / <what it checks>`.
+    name: ci
+    # Read scopes the floor uses with github.token (Jev's triage answer on the
+    # head's check-runs). A called workflow gets no more than this; on a
+    # private repo the triage read 403s without it and the PR runs the full
+    # suite. No write scope, no secret: this is the lane a PR controls.
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    uses: lexijamesesq/dotty/.github/workflows/estate-ci.yml@v1
+    with:
+      dotty_ref: v1
+      check_name: checks

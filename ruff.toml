@@ -1,0 +1,19 @@
+# The estate's Python lint policy — explicit and intentional, not inherited.
+#
+# The shared pre-commit suite runs ruff (the pinned astral-sh/ruff-pre-commit
+# hook in callers, `uvx ruff check` here) with NO ruff config, so ruff's own
+# DEFAULT select applies — and current ruff defaults enable aggressive bandit
+# (S), blind-except (BLE), simplify (SIM) and tryceratops (TRY) families that
+# flag deliberate, documented patterns (a justified `try/except/pass`) and shift
+# between ruff releases (non-reproducible). Because the change-scoped gate lints
+# a touched file whole, that retroactively blocks any edit to a legacy .py on
+# rules the estate never chose.
+#
+# So pin the classic, sensible default: Pyflakes (F — the real-bug checks:
+# unused imports/names, undefined names) plus the E4/E7/E9 pycodestyle
+# correctness subset. Line length (E501) is left to ruff-format, which owns
+# wrapping. Opt into more (isort I, pyupgrade UP, bugbear B, or a considered
+# bandit S with a documented-noqa policy) as a deliberate estate decision with a
+# baseline pass — never by inheriting a default nobody selected.
+[lint]
+select = ["E4", "E7", "E9", "F"]
