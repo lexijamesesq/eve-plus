@@ -8,11 +8,12 @@ permissions:
   contents: read
 
 # Cancel a superseded in-flight run when a PR gets a new push — but NEVER cancel
-# a push-to-main run (cancel is gated to pull_request events; on push-to-main
-# `cancel-in-progress` is false). On `pull_request`, github.ref is already
-# per-PR (refs/pull/<N>/merge), so the group is PR-scoped.
+# or replace a push-to-main run. GitHub holds one pending run per group and
+# replaces it with the newer one, so a shared push group could silently drop a
+# version bump's release run behind a later push. Push runs key on the commit,
+# so each gets its own slot; PR runs key on github.ref (refs/pull/<N>/merge).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -32,3 +33,58 @@ jobs:
     with:
       dotty_ref: v1
       check_name: checks
+
+  release-check:
+    name: ci / release-check
+    # Refuses a package change without a version bump. PR-time, no writes. Runs
+    # on every PR with no `paths:` filter: a path-skipped required check stays
+    # Pending forever and blocks every other PR. Cheap when nothing changed.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Check package version discipline
+        run: |
+          set -uo pipefail
+          FAILED=0
+          bash .github/scripts/check-package-version.sh packages/memory memory || FAILED=1
+          exit "$FAILED"
+
+  release-tag:
+    name: ci / release-tag
+    # Push-time, main only, after the floor passes on the merged commit. Cuts
+    # `<package>--v<version>` and its GitHub Release for any package whose
+    # declared version isn't tagged yet, so nobody hand-tags. Idempotent (see
+    # tag-package-release.sh). contents: write is scoped to this job only.
+    if: github.event_name == 'push'
+    needs: [floor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # An annotated tag needs a committer identity; a fresh runner has none.
+      - name: Configure git identity for the tagger
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Tag and release changed packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          FAILED=0
+          bash .github/scripts/tag-package-release.sh packages/memory memory || FAILED=1
+          exit "$FAILED"
