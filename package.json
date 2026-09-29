@@ -1,0 +1,12 @@
+{
+  "name": "eve-plus",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Eve-plus: a reusable agent kit for the self-hosted eve runtime.",
+  "packageManager": "pnpm@12.4.2",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test"
+  }
+}
