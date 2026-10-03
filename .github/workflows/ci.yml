@@ -65,7 +65,7 @@ jobs:
     # `<package>--v<version>` and its GitHub Release for any package whose
     # declared version isn't tagged yet, so nobody hand-tags. Idempotent (see
     # tag-package-release.sh). contents: write is scoped to this job only.
-    if: github.event_name == 'push'
+    if: ${{ (github.event_name == 'push') && needs.floor.outputs.mechanical != 'true' }}
     needs: [floor]
     runs-on: ubuntu-latest
     timeout-minutes: 10
