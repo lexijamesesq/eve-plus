@@ -36,6 +36,9 @@ jobs:
 
   release-check:
     name: ci / release-check
+    # floor: always-run
+    # release-check refuses a package change without a version bump;
+    # a mechanical PR (a Renovate bump inside a package) can still need one.
     # Refuses a package change without a version bump. PR-time, no writes. Runs
     # on every PR with no `paths:` filter: a path-skipped required check stays
     # Pending forever and blocks every other PR. Cheap when nothing changed.
