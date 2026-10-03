@@ -36,12 +36,16 @@ concurrency:
 
 jobs:
   merge:
-    # A completed, successful check suite that belongs to a PR, or an explicit
-    # dispatch. GitHub's own `check_suite.pull_requests` lists same-repo PRs only.
+    # Any completed check suite that belongs to a PR, whatever its conclusion,
+    # or an explicit dispatch. GitHub's own `check_suite.pull_requests` lists
+    # same-repo PRs only. Not only successful suites: when Margot HOLDS a PR,
+    # her suite completes as action_required, and this run is where Ollie tells
+    # the operator. GitHub refuses the merge itself, as it should, and Ollie's
+    # state step still runs (margot #76 went unsignalled when only green
+    # suites reached it, 2026-09-29).
     if: >-
       ${{ github.event_name == 'workflow_dispatch'
           || (github.event_name == 'check_suite'
-              && github.event.check_suite.conclusion == 'success'
               && github.event.check_suite.pull_requests[0]) }}
     # `@v1`, the floating first-party major tag dotty's release-on-merge moves
     # onto every release, so one release reaches this caller with no pin-bump PR.
