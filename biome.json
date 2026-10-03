@@ -1,6 +1,19 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
   "vcs": { "enabled": false },
+  "files": {
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/build",
+      "!**/coverage",
+      "!**/*.json",
+      "!**/*.jsonc",
+      "!**/*.vue",
+      "!**/*.svelte",
+      "!**/*.astro"
+    ]
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
