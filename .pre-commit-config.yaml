@@ -7,7 +7,7 @@ default_stages: [pre-commit]
 
 repos:
   - repo: https://github.com/lexijamesesq/dotty
-    rev: v2026.09.30-2
+    rev: v2026.10.05
     hooks:
       - id: gitleaks-staged
       - id: gitleaks-pre-push
@@ -32,7 +32,7 @@ repos:
       - id: shellcheck
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.9
+    rev: v0.16.10
     hooks:
       - id: ruff
       - id: ruff-format
@@ -56,10 +56,10 @@ repos:
         stages: [pre-commit]
 
   - repo: https://github.com/biomejs/pre-commit
-    rev: v2.5.14
+    rev: v2.5.15
     hooks:
       - id: biome-check
-        additional_dependencies: ["@biomejs/biome@2.5.14"]
+        additional_dependencies: ["@biomejs/biome@2.5.15"]
         exclude: '\.(jsonc?|vue|svelte|astro)$'
         stages: [pre-commit]
 
