@@ -7,11 +7,11 @@ on:
 permissions:
   contents: read
 
-# Cancel a superseded in-flight run when a PR gets a new push — but NEVER cancel
-# or replace a push-to-main run. GitHub holds one pending run per group and
-# replaces it with the newer one, so a shared push group could silently drop a
-# version bump's release run behind a later push. Push runs key on the commit,
-# so each gets its own slot; PR runs key on github.ref (refs/pull/<N>/merge).
+# A PR's runs group on its ref (refs/pull/<N>/merge), so a new push cancels the
+# superseded run. A push to the default branch groups on its own sha and is
+# never cancelled: GitHub keeps only one pending run per group, so a shared
+# group would silently drop a pending push run -- and with it any job a repo
+# adds that must run on every merge, such as a release job.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -21,18 +21,13 @@ jobs:
     # The required check is `ci / checks`: this job's name, then the called
     # job's (estate-ci.yml's check_name). Convention `<lane> / <what it checks>`.
     name: ci
-    # Read scopes the floor uses with github.token (Jev's triage answer on the
-    # head's check-runs). A called workflow gets no more than this; on a
-    # private repo the triage read 403s without it and the PR runs the full
-    # suite. No write scope, no secret: this is the lane a PR controls.
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: read
+    # Ceiling only: the reusable's own job declares the narrow scopes it
+    # actually needs (contents/pull-requests/checks: read, for Jev's triage
+    # answer on the head's check-runs) and a called workflow can never exceed
+    # what its caller grants. No write scope, no secret: this is the lane a
+    # PR controls.
+    permissions: read-all
     uses: lexijamesesq/dotty/.github/workflows/estate-ci.yml@v1
-    with:
-      dotty_ref: v1
-      check_name: checks
 
   release-check:
     name: ci / release-check

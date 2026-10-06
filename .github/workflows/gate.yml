@@ -8,8 +8,7 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, ready_for_review]
 
-permissions:
-  contents: read
+permissions: read-all
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -17,16 +16,7 @@ concurrency:
 
 jobs:
   trusted-scan:
-    # Read scopes the trusted lane uses with github.token (Margot's check-runs
-    # lookup, Jev's triage answer). A called workflow gets no more than this;
-    # on a private repo nothing wider is readable without it.
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: read
     uses: lexijamesesq/dotty/.github/workflows/estate-gate.yml@v1
-    with:
-      dotty_ref: v1
     secrets:
       OPERATOR_RULES: ${{ secrets.OPERATOR_RULES }}
       MARGOT_APP_KEY: ${{ secrets.MARGOT_APP_KEY }}
