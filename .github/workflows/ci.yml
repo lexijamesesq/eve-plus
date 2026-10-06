@@ -21,18 +21,13 @@ jobs:
     # The required check is `ci / checks`: this job's name, then the called
     # job's (estate-ci.yml's check_name). Convention `<lane> / <what it checks>`.
     name: ci
-    # Read scopes the floor uses with github.token (Jev's triage answer on the
-    # head's check-runs). A called workflow gets no more than this; on a
-    # private repo the triage read 403s without it and the PR runs the full
-    # suite. No write scope, no secret: this is the lane a PR controls.
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: read
+    # Ceiling only: the reusable's own job declares the narrow scopes it
+    # actually needs (contents/pull-requests/checks: read, for Jev's triage
+    # answer on the head's check-runs) and a called workflow can never exceed
+    # what its caller grants. No write scope, no secret: this is the lane a
+    # PR controls.
+    permissions: read-all
     uses: lexijamesesq/dotty/.github/workflows/estate-ci.yml@v1
-    with:
-      dotty_ref: v1
-      check_name: checks
 
   release-check:
     name: ci / release-check
