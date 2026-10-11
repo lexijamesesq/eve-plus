@@ -1,67 +1,35 @@
 name: CI
 on:
-  pull_request:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
 
 permissions:
   contents: read
+  pull-requests: read
+  checks: read
+  actions: read
 
-# A PR's runs group on its ref (refs/pull/<N>/merge), so a new push cancels the
-# superseded run. A push to the default branch groups on its own sha and is
-# never cancelled: GitHub keeps only one pending run per group, so a shared
-# group would silently drop a pending push run -- and with it any job a repo
-# adds that must run on every merge, such as a release job.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+# The reusable uses one PR concurrency group and cancels superseded runs.
 jobs:
-  floor:
-    # The required check is `ci / checks`: this job's name, then the called
-    # job's (estate-ci.yml's check_name). Convention `<lane> / <what it checks>`.
-    name: ci
-    # Ceiling only: the reusable's own job declares the narrow scopes it
-    # actually needs (contents/pull-requests/checks: read, for Jev's triage
-    # answer on the head's check-runs) and a called workflow can never exceed
-    # what its caller grants. No write scope, no secret: this is the lane a
-    # PR controls.
-    permissions: read-all
-    uses: lexijamesesq/dotty/.github/workflows/estate-ci.yml@v1
-
-  release-check:
-    name: ci / release-check
-    # floor: always-run
-    # release-check refuses a package change without a version bump;
-    # a mechanical PR (a Renovate bump inside a package) can still need one.
-    # Refuses a package change without a version bump. PR-time, no writes. Runs
-    # on every PR with no `paths:` filter: a path-skipped required check stays
-    # Pending forever and blocks every other PR. Cheap when nothing changed.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-
-      - name: Check package version discipline
-        run: |
-          set -uo pipefail
-          FAILED=0
-          bash .github/scripts/check-package-version.sh packages/memory memory || FAILED=1
-          exit "$FAILED"
+  checks:
+    name: CI
+    if: github.event_name == 'pull_request_target'
+    uses: lexijamesesq/dotty/.github/workflows/estate-pr-ci.yml@v1
+    secrets:
+      OPERATOR_RULES: ${{ secrets.OPERATOR_RULES }}
+      MARGOT_APP_KEY: ${{ secrets.MARGOT_APP_KEY }}
+      MARGOT_JEV_KEY: ${{ secrets.MARGOT_JEV_KEY }}
+      MARGOT_ANTHROPIC_TOKEN: ${{ secrets.MARGOT_ANTHROPIC_TOKEN }}
 
   release-tag:
     name: ci / release-tag
-    # Push-time, main only, after the floor passes on the merged commit. Cuts
+    # Push-time release job on main. Cuts
     # `<package>--v<version>` and its GitHub Release for any package whose
     # declared version isn't tagged yet, so nobody hand-tags. Idempotent (see
     # tag-package-release.sh). contents: write is scoped to this job only.
-    if: ${{ (github.event_name == 'push') && needs.floor.outputs.mechanical != 'true' }}
-    needs: [floor]
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

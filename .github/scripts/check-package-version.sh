@@ -47,6 +47,12 @@ if git diff --quiet "$LATEST_TAG" HEAD -- "$PACKAGE_DIR" \
 	":(exclude)${PACKAGE_DIR%/}/.github"; then
 	echo "PASS $PACKAGE_NAME: tree identical to $LATEST_TAG"
 	exit 0
+else
+	diff_status=$?
+	if [[ "$diff_status" -ne 1 ]]; then
+		echo 'Cannot compare release content: incomplete or invalid Git objects' >&2
+		exit "$diff_status"
+	fi
 fi
 
 VERSION_BUMPED="$(CURRENT_VERSION="$CURRENT_VERSION" TAG_VERSION="$TAG_VERSION" python3 -c "
