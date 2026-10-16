@@ -1,4 +1,4 @@
-name: Ollie merge
+name: Ollie / Execute Merge
 # Thin per-repo caller: the ollie-the-intern App merges THIS repo's approved,
 # green pull requests. Owned by provision-public-repo.sh --callers; edit it
 # there, not here. Same shape as gate.yml: triggers + concurrency + the secret
@@ -36,6 +36,7 @@ concurrency:
 
 jobs:
   merge:
+    name: Ollie
     # Any completed check suite that belongs to a PR, whatever its conclusion,
     # or an explicit dispatch. GitHub's own `check_suite.pull_requests` lists
     # same-repo PRs only. Not only successful suites: when Margot HOLDS a PR,
