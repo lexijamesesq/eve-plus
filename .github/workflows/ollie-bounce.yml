@@ -1,4 +1,4 @@
-name: Ollie bounce
+name: Ollie / Merge
 # Thin per-repo relay, owned by provision-public-repo.sh --callers; edit it
 # there, not here. An approval (the operator's or Margot's) usually lands AFTER
 # the checks already finished, so no default-branch-context event follows it and
@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   bounce:
+    name: Ollie / Merge
     if: >-
       ${{ github.event.review.state == 'approved'
           && github.event.pull_request.head.repo.full_name == github.repository }}
