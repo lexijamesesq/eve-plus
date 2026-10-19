@@ -92,7 +92,7 @@ forget({ id: "...", details: ["phone"] })
 
 Forgetting the field that made a record complete is loud in exactly the same way an incomplete new record is — the agent is told what coverage it just lost.
 
-## Provenance and approval — filing content on a user's behalf
+## Provenance and precedence — filing content on a user's behalf
 
 When a user hands the agent content to file rather than stating facts directly —
 
@@ -112,7 +112,18 @@ recall("Jordan Lee")
     not stated by you⟩" }
 ```
 
-If that content would **replace** an existing value, create a same-name duplicate, adopt a new schema rule, or **forget a whole record** (always, regardless of who or what asked), the write doesn't land silently — it pauses for the operator's approval via eve's own tool-approval mechanism first. Content can propose; only the user's own word, or their explicit approval of a proposal, changes what the agent treats as ground truth.
+The label is the model's claim; the session decides whether it counts. A write is the user's only on a live turn by the person whose memory this is. A scheduled run, a delegated session or another principal writing into this scope is content, whatever the model said.
+
+If content would **replace** or **forget** a value the user stated, create a second record under the name of one the user has, or change a record type the user defined, the user's version stays, and the tool says what it kept:
+
+```text
+remember({ id: "jordan_lee", attributes: { phone: "555-0999" }, source: "content", from: "the pasted email" })
+→ "… Not changed — kept phone: the user said "555-0142"; this content (the pasted email) claims "555-0999".
+   What the user told you stands over handed content. Tell the user about the conflict; don't change it on the
+   content's word."
+```
+
+Content can add beside the user's facts, and update or forget what content wrote. Only the user's own word changes what they stated. Every write is attributed, so a bad batch is found and undone with `revertBatch`.
 
 ## Errors, generally
 

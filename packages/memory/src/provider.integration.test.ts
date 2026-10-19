@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { byPrincipal } from "eve/memory/scope";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MemoryGraph } from "./memory-graph.js";
@@ -11,7 +12,7 @@ import { shaclMemory } from "./provider.js";
 type Input = Record<string, unknown>;
 interface Tool {
   execute(input: Input, context?: Input): Promise<string>;
-  approval(args: { toolInput: Input; callId: string }): string | Promise<string>;
+  approval?: unknown;
 }
 type ToolName = "recall" | "remember" | "relate" | "forget" | "extend_schema" | "check_memory";
 interface Harness {
@@ -29,11 +30,63 @@ afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const memoryFor = (key: string) => ({ scope: { key }, slot: "knowledge" });
-async function open(dir: string, key: string) {
-  const provider = shaclMemory({ dir }) as unknown as Harness;
+// The person whose memory this is, signed in on a live turn; and another agent's bot whose requests use that scope.
+const principal = (principalId: string) => ({
+  principalId,
+  principalType: "user",
+  authenticator: "slack",
+  attributes: {},
+});
+const OPERATOR = principal("U-operator");
+const OTHER_AGENT = principal("U-felix-bot");
+const scopeOf = (current: Input) =>
+  byPrincipal({
+    abortSignal: new AbortController().signal,
+    session: { id: "x", auth: { current, initiator: current } },
+    channel: {},
+  } as unknown as Parameters<typeof byPrincipal>[0]);
+const memoryFor = (key: string) => ({
+  scope: { key, namespace: "test", value: scopeOf(OPERATOR) },
+  slot: "knowledge",
+});
+// A tool context from eve: a live turn by `who`, optionally scheduled or delegated.
+const contextFor = (
+  callId: string,
+  { who = OPERATOR, schedule, parent }: { who?: Input; schedule?: Input; parent?: Input } = {},
+) => ({
+  session: {
+    id: "sess-1",
+    turn: { id: `turn-${callId}`, sequence: 1 },
+    auth: { current: who, initiator: who },
+    ...(schedule ? { schedule } : {}),
+    ...(parent ? { parent } : {}),
+  },
+  callId,
+  abortSignal: new AbortController().signal,
+});
+const toolContext = (callId: string) => contextFor(callId);
+let defaultCalls = 0;
+// Most tests mean "the user said this": a write with no context runs as the operator's live turn, and one with no
+// source as the user's, so only the tests about content and grounding spell those out.
+const WRITES = new Set(["remember", "forget", "extend_schema"]);
+async function open(dir: string, key: string, options: { agentState?: string[] } = {}) {
+  const provider = shaclMemory({ dir, ...options }) as unknown as Harness;
   const memory = memoryFor(key);
-  return { provider, memory, tools: await provider.tools({ memory }) };
+  const raw = await provider.tools({ memory });
+  const tools = Object.fromEntries(
+    Object.entries(raw).map(([name, tool]) => [
+      name,
+      {
+        ...tool,
+        execute: (input: Input, context?: Input) =>
+          tool.execute(
+            WRITES.has(name) && input.source === undefined ? { ...input, source: "user" } : input,
+            context ?? contextFor(`default-${defaultCalls++}`),
+          ),
+      },
+    ]),
+  ) as Record<ToolName, Tool>;
+  return { provider, memory, tools };
 }
 const turnStart = async (provider: Harness, memory: Input, text?: string) =>
   provider.recall["turn.started"]({
@@ -43,10 +96,6 @@ const turnStart = async (provider: Harness, memory: Input, text?: string) =>
   });
 const injectedText = async (provider: Harness, memory: Input, text?: string) =>
   (await turnStart(provider, memory, text))?.messages?.[0]?.content ?? "";
-const toolContext = (callId: string) => ({
-  session: { id: "sess-1", turn: { id: `turn-${callId}`, sequence: 1 } },
-  callId,
-});
 const clientRule = {
   class: "ClientContact",
   requires: [
@@ -177,8 +226,8 @@ describe("supersession: an attributed append log where the current value wins on
     );
   });
 
-  it("reverting one attributed batch falls back to the prior values (and re-indexes them)", () => {
-    expect(g.revertBatch({ callId: "c-upgrade" }).removed).toBeGreaterThan(0);
+  it("reverting one attributed batch falls back to the prior values (and re-indexes them)", async () => {
+    expect((await g.revertBatch({ callId: "c-upgrade" })).removed).toBeGreaterThan(0);
     expect(g.recall("pending").find((f) => f.id === "priya")).toMatchObject({
       type: "Person",
       attributes: { phone_status: "pending" },
@@ -317,32 +366,35 @@ describe("honest misses: a zero-hit search is not evidence of absence", () => {
 
 // Red-team receipts: an email "filed" at the user's request overwrote a real client's phone (16/16), planted a CC
 // preference the next invoice draft used (16/16), got a real client forgotten (16/16), and a "filing spec" added a
-// required field to the user's schema (16/16). The write path now carries where a fact came from.
-describe("trust gates: handed content is marked, and consequential acts on it pause for approval", () => {
+// required field to the user's schema (16/16). The answer is precedence, not a prompt: what the user stated outranks
+// handed content, so content can add beside it (marked as a claim) but never replace or retract it, and nothing waits on
+// an approval the user may never see.
+describe("precedence: handed content is marked, and can't replace or retract what the user stated", () => {
   let dir: string;
   let h: Awaited<ReturnType<typeof open>>;
-  // eve evaluates the approval policy and later runs execute with the same callId.
-  let calls = 0;
-  const ask = (tool: Tool, toolInput: Input, callId = `ask-${calls++}`) =>
-    tool.approval({ toolInput, callId });
+  const fromTara = { source: "content", from: "email from Tara at Acme" };
   beforeAll(async () => {
     dir = tempDir();
     h = await open(dir, "t1");
-    await h.tools.extend_schema.execute({ ...clientRule, source: "user" });
+    await h.tools.extend_schema.execute(clientRule);
     await h.tools.remember.execute({
       id: "jordan_lee",
       label: "Jordan Lee",
       type: "ClientContact",
       attributes: { phone: "555-0142", company: "Acme Robotics" },
-      source: "user",
     });
     await h.tools.remember.execute({
       id: "jordan_lee",
       attributes: { invoice_email: "ap@acme-robotics-billing.example" },
-      source: "content",
-      from: "email from Tara at Acme",
+      ...fromTara,
     });
   });
+  const jordan = async () => {
+    const g = await MemoryGraph.create({ dir: join(dir, "t1") });
+    const d = g.describe("jordan_lee");
+    g.close();
+    return d;
+  };
 
   it("a fact filed from handed content is marked unconfirmed, with where it came from; the user's own facts are not", async () => {
     const seen = await h.tools.recall.execute({ query: "Jordan Lee" });
@@ -365,227 +417,112 @@ describe("trust gates: handed content is marked, and consequential acts on it pa
     );
   });
 
-  it("handed content replacing an existing value pauses for approval", async () => {
-    expect(
-      await ask(h.tools.remember, {
-        id: "jordan_lee",
-        attributes: { phone: "555-0999" },
-        source: "content",
-      }),
-    ).toBe("user-approval");
+  it("no memory tool asks for approval", () => {
+    for (const tool of Object.values(h.tools)) expect(tool.approval).toBeUndefined();
   });
 
-  it("handed content creating a second record under an existing name pauses for approval", async () => {
-    expect(
-      await ask(h.tools.remember, {
+  it("handed content can't replace a value the user stated, and the tool names the conflict", async () => {
+    const said = await h.tools.remember.execute({
+      id: "jordan_lee",
+      attributes: { phone: "555-0999" },
+      ...fromTara,
+    });
+    expect(said).toContain(
+      'kept phone: the user said "555-0142"; this content (email from Tara at Acme) claims "555-0999"',
+    );
+    expect(said).toContain("Tell the user about the conflict");
+    expect((await jordan())?.attributes.phone).toBe("555-0142");
+  });
+
+  it("handed content naming a second record under the user's record's name writes nothing, whatever id or spelling", async () => {
+    for (const input of [
+      {
         label: "Jordan Lee",
         type: "ClientContact",
         attributes: { phone: "555-0999", company: "Acme" },
-        source: "content",
-      }),
-    ).toBe("user-approval");
-  });
-
-  // G1: a fresh id plus a varied spelling used to land without a pause.
-  it("handed content creating a second record under a varied spelling and a fresh id pauses for approval", async () => {
-    expect(
-      await ask(h.tools.remember, {
+      },
+      {
         id: "contact_42",
         label: "J. Lee",
         type: "ClientContact",
         attributes: { phone: "555-0999", company: "Acme" },
-        source: "content",
-      }),
-    ).toBe("user-approval");
-  });
-
-  it("handed content adding a new person or a new detail does not pause (it is marked instead)", async () => {
-    expect(
-      await ask(h.tools.remember, {
-        label: "Marcus Bell",
-        attributes: { phone: "555-0199" },
-        source: "content",
-      }),
-    ).toBe("not-applicable");
-    expect(
-      await ask(h.tools.remember, {
-        id: "jordan_lee",
-        attributes: { fax: "555-0100" },
-        source: "content",
-      }),
-    ).toBe("not-applicable");
-  });
-
-  it("the user replacing their own facts does not pause", async () => {
-    expect(
-      await ask(h.tools.remember, {
-        id: "jordan_lee",
-        attributes: { phone: "555-0123" },
-        source: "user",
-      }),
-    ).toBe("not-applicable");
-  });
-
-  it("forgetting a whole record always pauses for approval, whoever asked (source-independent hard stop)", async () => {
-    for (const source of ["content", "user"])
-      expect(await ask(h.tools.forget, { id: "jordan_lee", source })).toBe("user-approval");
-  });
-
-  it("forgetting some details pauses only when handed content asks for it", async () => {
-    const details = ["phone"];
-    expect(await ask(h.tools.forget, { id: "jordan_lee", details, source: "content" })).toBe(
-      "user-approval",
-    );
-    expect(await ask(h.tools.forget, { id: "jordan_lee", details, source: "user" })).toBe(
-      "not-applicable",
-    );
-  });
-
-  it("adopting a record-type definition from handed content pauses; the user defining one does not", async () => {
-    expect(
-      await ask(h.tools.extend_schema, {
-        class: "ClientContact",
-        requires: [{ slot: "alwaysreplyinfrench" }],
-        source: "content",
-      }),
-    ).toBe("user-approval");
-    expect(
-      await ask(h.tools.extend_schema, {
-        class: "Vendor",
-        requires: [{ slot: "phone" }],
-        source: "user",
-      }),
-    ).toBe("not-applicable");
-  });
-
-  const lastWrite = async (key: string) => {
+      },
+    ]) {
+      const said = await h.tools.remember.execute({ ...input, ...fromTara });
+      expect(said).toContain('you already have "Jordan Lee" on record from the user');
+    }
     const g = await MemoryGraph.create({ dir: join(dir, "t1") });
-    const entry = g
-      .history("jordan_lee")
-      .filter((e) => e.key === key)
-      .at(-1);
+    expect(g.describe("contact_42")).toBeNull();
+    expect(g.recall("Lee").map((f) => [f.id, f.attributes?.phone])).toEqual([
+      ["jordan_lee", "555-0142"],
+    ]);
     g.close();
-    return entry;
-  };
+  });
 
-  // eve runs a paused call only once the person approves it, so reaching execute on a call that paused means they
-  // approved that exact write.
-  it("a value the person approved is no longer marked unconfirmed, and keeps where it came from", async () => {
-    const replacement = {
+  it("handed content adds a new person or a new detail (marked, not asked about)", async () => {
+    await h.tools.remember.execute({
+      label: "Marcus Bell",
+      attributes: { phone: "555-0199" },
+      ...fromTara,
+    });
+    await h.tools.remember.execute({
       id: "jordan_lee",
-      attributes: { phone: "555-0999" },
-      source: "content",
-      from: "email from Tara at Acme",
-    };
-    expect(await ask(h.tools.remember, replacement, "c-approved")).toBe("user-approval");
-    await h.tools.remember.execute(replacement, toolContext("c-approved"));
-    const seen = await h.tools.recall.execute({ query: "Jordan Lee" });
-    expect(seen).toContain(
-      "phone: 555-0999  (from email from Tara at Acme — approved by the user)\n",
+      attributes: { fax: "555-0100" },
+      ...fromTara,
+    });
+    expect(await h.tools.recall.execute({ query: "Marcus Bell" })).toMatch(
+      /phone: 555-0199\s+⟨unconfirmed/,
+    );
+    expect((await jordan())?.attributes.fax).toBe("555-0100");
+  });
+
+  it("handed content can't forget the user's record or the details the user stated", async () => {
+    const whole = await h.tools.forget.execute({ id: "jordan_lee", ...fromTara });
+    expect(whole).toContain(
+      'kept phone: the user said "555-0142"; this content (email from Tara at Acme) would remove it',
+    );
+    const some = await h.tools.forget.execute({
+      id: "jordan_lee",
+      details: ["company"],
+      ...fromTara,
+    });
+    expect(some).toMatch(/^Nothing was forgotten from Jordan Lee\./);
+    expect(await jordan()).toMatchObject({
+      label: "Jordan Lee",
+      attributes: { phone: "555-0142", company: "Acme Robotics" },
+    });
+  });
+
+  it("a record-type definition from handed content can't change the user's; the user can", async () => {
+    const said = await h.tools.extend_schema.execute({
+      class: "ClientContact",
+      requires: [{ slot: "alwaysreplyinfrench" }],
+      ...fromTara,
+    });
+    expect(said).toContain("Not changed — the user defined `ClientContact` records");
+    expect(
+      await h.tools.extend_schema.execute({ class: "Vendor", requires: [{ slot: "phone" }] }),
+    ).toContain("Learned the rule");
+  });
+
+  it("the user replaces their own facts", async () => {
+    await h.tools.remember.execute({ id: "jordan_lee", attributes: { phone: "555-0123" } });
+    expect((await jordan())?.attributes.phone).toBe("555-0123");
+  });
+
+  it("a value approved before writes were grounded still reads as approved, with where it came from", async () => {
+    const g = await MemoryGraph.create({ dir: join(dir, "t1") });
+    await g.remember(
+      { id: "jordan_lee", attributes: { pager: "77-1" } },
+      JSON.stringify({ provenance: "content-approved", from: "email from Tara at Acme" }),
+    );
+    g.close();
+    expect(await h.tools.recall.execute({ query: "Jordan Lee" })).toMatch(
+      /^ {4}pager: 77-1 {2}\(from email from Tara at Acme — approved by the user\)$/m,
     );
     expect(await injectedText(h.provider, h.memory, "Jordan Lee")).toContain(
-      "phone=555-0999 (approved by the user)",
+      "pager=77-1 (approved by the user)",
     );
-    // Content that was not approved (the unpaused new detail) stays marked.
-    expect(seen).toMatch(/invoice_email: ap@acme-robotics-billing\.example\s+⟨unconfirmed/);
-    expect(await lastWrite("phone")).toMatchObject({
-      value: "555-0999",
-      origin: { provenance: "content-approved", from: "email from Tara at Acme" },
-    });
-  });
-
-  // The dangerous direction: a call that never paused must never read as approved, even when another write lands
-  // between the policy check and execute and turns it into a replacement.
-  it("a write from handed content that never paused is never recorded as approved, even if a write lands in between", async () => {
-    const addition = { id: "jordan_lee", attributes: { pager: "77-1" }, source: "content" };
-    expect(await ask(h.tools.remember, addition, "c-unpaused")).toBe("not-applicable");
-    await h.tools.remember.execute(
-      { id: "jordan_lee", attributes: { pager: "00-0" }, source: "user" },
-      toolContext("c-racing"),
-    );
-    await h.tools.remember.execute(addition, toolContext("c-unpaused"));
-    expect(await lastWrite("pager")).toMatchObject({
-      value: "77-1",
-      origin: { provenance: "content" },
-    });
-    expect(await h.tools.recall.execute({ query: "Jordan Lee" })).toMatch(
-      /pager: 77-1\s+⟨unconfirmed/,
-    );
-  });
-
-  // The approval binds to the input the person saw, not to whatever the store says by the time it resumes.
-  it("an approved write stays approved even if the value it replaced changed while it was paused", async () => {
-    const replacement = { id: "jordan_lee", attributes: { phone: "555-0777" }, source: "content" };
-    expect(await ask(h.tools.remember, replacement, "c-paused")).toBe("user-approval");
-    await h.tools.remember.execute(
-      { id: "jordan_lee", attributes: { phone: "555-0700" }, source: "user" },
-      toolContext("c-meanwhile"),
-    );
-    await h.tools.remember.execute(replacement, toolContext("c-paused"));
-    expect(await lastWrite("phone")).toMatchObject({
-      value: "555-0777",
-      origin: { provenance: "content-approved" },
-    });
-  });
-
-  // The red team's Attack 1: approve one input, execute another under the same call. Only what was shown is approved.
-  it("an input the person was not shown never rides on an approval for another", async () => {
-    const shown = { id: "jordan_lee", attributes: { phone: "555-0444" }, source: "content" };
-    const swapped = { ...shown, attributes: { phone: "555-0445" } };
-    expect(await ask(h.tools.remember, shown, "c-attack")).toBe("user-approval");
-    await h.tools.remember.execute(swapped, toolContext("c-attack"));
-    expect(await lastWrite("phone")).toMatchObject({
-      value: "555-0445",
-      origin: { provenance: "content" },
-    });
-    expect(await h.tools.recall.execute({ query: "Jordan Lee" })).toMatch(
-      /phone: 555-0445\s+⟨unconfirmed/,
-    );
-    // The approval still covers exactly what was shown.
-    await h.tools.remember.execute(shown, toolContext("c-attack"));
-    expect(await lastWrite("phone")).toMatchObject({
-      value: "555-0444",
-      origin: { provenance: "content-approved" },
-    });
-  });
-
-  // The held approval lives in the store: after a restart it still approves what was shown, and only that.
-  it("across a restart between the pause and the resume, only the shown input is approved", async () => {
-    const shown = { id: "jordan_lee", attributes: { phone: "555-0333" }, source: "content" };
-    expect(await ask(h.tools.remember, shown, "c-restart")).toBe("user-approval");
-    const restarted = await open(dir, "t1");
-    await restarted.tools.remember.execute(
-      { ...shown, attributes: { phone: "555-0334" } },
-      toolContext("c-restart"),
-    );
-    expect(await lastWrite("phone")).toMatchObject({
-      value: "555-0334",
-      origin: { provenance: "content" },
-    });
-    await restarted.tools.remember.execute(shown, toolContext("c-restart"));
-    expect(await lastWrite("phone")).toMatchObject({
-      value: "555-0333",
-      origin: { provenance: "content-approved" },
-    });
-  });
-
-  it("an approval is used once, and a call without an id is never approved", async () => {
-    const replacement = { id: "jordan_lee", attributes: { phone: "555-0555" }, source: "content" };
-    expect(await ask(h.tools.remember, replacement, "c-once")).toBe("user-approval");
-    await h.tools.remember.execute(replacement, toolContext("c-once"));
-    expect(await lastWrite("phone")).toMatchObject({ origin: { provenance: "content-approved" } });
-    // Replaying the same approved input under the same call is not approved a second time.
-    await h.tools.remember.execute(
-      { id: "jordan_lee", attributes: { phone: "555-0500" }, source: "user" },
-      toolContext("c-between"),
-    );
-    await h.tools.remember.execute(replacement, toolContext("c-once"));
-    expect(await lastWrite("phone")).toMatchObject({
-      value: "555-0555",
-      origin: { provenance: "content" },
-    });
-    await h.tools.remember.execute({ ...replacement, attributes: { phone: "555-0557" } });
-    expect(await lastWrite("phone")).toMatchObject({ origin: { provenance: "content" } });
   });
 
   // Last: the user's statement clears the mark the earlier steps read.
@@ -593,11 +530,170 @@ describe("trust gates: handed content is marked, and consequential acts on it pa
     await h.tools.remember.execute({
       id: "jordan_lee",
       attributes: { invoice_email: "jordan@acme.example" },
-      source: "user",
     });
-    expect(await h.tools.recall.execute({ query: "Jordan Lee" })).toContain(
-      "invoice_email: jordan@acme.example\n",
+    expect(await h.tools.recall.execute({ query: "Jordan Lee" })).toMatch(
+      /^ {4}invoice_email: jordan@acme\.example$/m,
     );
+  });
+});
+
+// The model says which writes are the user's; the session decides whether that counts. Only a live turn by the person
+// whose memory this is can state a fact as theirs.
+describe("grounding: a write counts as the user's only from the user's own live turn", () => {
+  let dir: string;
+  let h: Awaited<ReturnType<typeof open>>;
+  beforeAll(async () => {
+    dir = tempDir();
+    h = await open(dir, "g1");
+    await h.tools.remember.execute({
+      id: "home",
+      label: "Home",
+      type: "Place",
+      attributes: { city: "Tempe" },
+    });
+  });
+  const lastWrite = async (key: string) => {
+    const g = await MemoryGraph.create({ dir: join(dir, "g1") });
+    const entry = g
+      .history("home")
+      .filter((e) => e.key === key)
+      .at(-1);
+    g.close();
+    return entry;
+  };
+
+  it("the user's live turn is recorded as the user, with who and when", async () => {
+    expect(await lastWrite("city")).toMatchObject({
+      value: "Tempe",
+      origin: { provenance: "user", claimed: "user", principal: "U-operator", sessionId: "sess-1" },
+    });
+  });
+
+  it.each([
+    ["a scheduled run", { schedule: { definition: "eve-release-watch" } }, { scheduled: true }],
+    [
+      "a delegated task",
+      {
+        parent: { callId: "p", rootSessionId: "r", sessionId: "s", turn: { id: "t", sequence: 0 } },
+      },
+      { delegated: true },
+    ],
+    [
+      "a request from someone other than the user",
+      { who: OTHER_AGENT },
+      { principal: "U-felix-bot" },
+    ],
+  ])(
+    "a write the model calls the user's, from %s, is content and can't replace the user's value",
+    async (from, opts, marks) => {
+      const said = await h.tools.remember.execute(
+        { id: "home", attributes: { city: "Phoenix", note: from }, source: "user" },
+        contextFor(`g-${from}`, opts),
+      );
+      expect(said).toContain('kept city: the user said "Tempe"');
+      expect(await lastWrite("note")).toMatchObject({
+        value: from,
+        origin: { provenance: "content", claimed: "user", from, ...marks },
+      });
+    },
+  );
+
+  it("the user's own turn, labelled content by the model, is content", async () => {
+    await h.tools.remember.execute({ id: "home", attributes: { zip: "85226" }, source: "content" });
+    expect(await lastWrite("zip")).toMatchObject({ origin: { provenance: "content" } });
+  });
+
+  it("a write with no source is never the user's", async () => {
+    const raw = await (shaclMemory({ dir }) as unknown as Harness).tools({ memory: h.memory });
+    await raw.remember.execute({ id: "home", attributes: { floor: "1" } }, toolContext("g-nosrc"));
+    expect(await lastWrite("floor")).toMatchObject({ origin: { provenance: "content" } });
+  });
+});
+
+// The maintenance handoff is the agent's own working state, written by whichever conversation leaves something open:
+// the user's DMs, another agent's request, a scheduled run. Its author declares it, so precedence doesn't strand an
+// item the user's session wrote where another conversation must clear it.
+describe("agentState: records the agent's author declares as its own state aren't ranked", () => {
+  let dir: string;
+  let h: Awaited<ReturnType<typeof open>>;
+  const felix = (callId: string) => contextFor(callId, { who: OTHER_AGENT });
+  beforeAll(async () => {
+    dir = tempDir();
+    h = await open(dir, "a1", { agentState: ["maintenance handoff"] });
+    await h.tools.remember.execute({
+      id: "maintenance handoff",
+      label: "maintenance handoff",
+      attributes: { open_dm_item: "a question in the operator's DM" },
+    });
+    await h.tools.remember.execute({
+      id: "pinned",
+      label: "Pinned fact",
+      attributes: { value: "operator's" },
+    });
+  });
+  const handoff = async () => {
+    const g = await MemoryGraph.create({ dir: join(dir, "a1") });
+    const d = g.describe("maintenance handoff");
+    g.close();
+    return d;
+  };
+
+  it("another agent's request replaces and clears an item the user's session wrote", async () => {
+    await h.tools.remember.execute(
+      {
+        id: "maintenance handoff",
+        attributes: { open_dm_item: "answered; follow up Friday" },
+        source: "user",
+      },
+      felix("a-update"),
+    );
+    expect((await handoff())?.attributes.open_dm_item).toBe("answered; follow up Friday");
+    expect(
+      await h.tools.forget.execute(
+        { id: "maintenance handoff", details: ["open_dm_item"], source: "user" },
+        felix("a-clear"),
+      ),
+    ).toContain("Removed open_dm_item");
+    expect((await handoff())?.attributes).not.toHaveProperty("open_dm_item");
+  });
+
+  it("its writes are recorded as the agent's state, whoever wrote them, and stay attributed", async () => {
+    await h.tools.remember.execute(
+      {
+        id: "Maintenance Handoff",
+        attributes: { open_wake: "resume the deploy thread" },
+        source: "content",
+      },
+      contextFor("a-sched", { schedule: { definition: "nightly" } }),
+    );
+    const g = await MemoryGraph.create({ dir: join(dir, "a1") });
+    expect(g.history("maintenance handoff").at(-1)).toMatchObject({
+      origin: { provenance: "agent-state", scheduled: true, callId: "a-sched" },
+    });
+    g.close();
+  });
+
+  it("the same write on any other record gets the conflict result", async () => {
+    expect(
+      await h.tools.remember.execute(
+        { id: "pinned", attributes: { value: "felix's" }, source: "user" },
+        felix("a-other"),
+      ),
+    ).toContain('kept value: the user said "operator\'s"');
+  });
+
+  it("a record is the agent's state by its declared id, not by its name", async () => {
+    await h.tools.remember.execute({
+      id: "notes",
+      label: "maintenance handoff",
+      attributes: { item: "x" },
+    });
+    expect(
+      await h.tools.remember.execute(
+        { id: "notes", attributes: { item: "y" }, source: "user" },
+        felix("a-label"),
+      ),
+    ).toContain('kept item: the user said "x"');
   });
 });
 
@@ -660,7 +756,7 @@ describe("forget: the agent can retract what is wrong or no longer true (tombsto
 
   it("reverting a forget brings the details back", async () => {
     const g = await direct();
-    g.revertBatch({ callId: "c-forget-pager" });
+    await g.revertBatch({ callId: "c-forget-pager" });
     expect(g.describe("dana")?.attributes.pager).toBe("99-1");
     g.close();
   });

@@ -23,7 +23,10 @@ import { shaclMemory } from "@eve-plus/memory";
 
 export default defineMemory({
   namespace: "my-agent-knowledge-v1",              // eve-level, versioned — see Namespacing below
-  provider: shaclMemory({ dir: "./.eve/memory" }),  // where the SQLite store lives on disk
+  provider: shaclMemory({
+    dir: "./.eve/memory",                           // where the SQLite store lives on disk
+    agentState: ["maintenance handoff"],            // optional: record ids that are the agent's own working state
+  }),
   scope: byPrincipal,
   visibility: "scope",
 });
@@ -62,11 +65,15 @@ Handing an agent open-ended memory raises an obvious question: what happens when
 
 **What's built:**
 
-- **Provenance on every write.** `remember`, `forget`, and `extend_schema` require `source: "user" | "content"`. Values sourced from handed content are marked `⟨unconfirmed⟩` wherever they're surfaced back to the agent, so filed content is never mistaken for something the user stated directly.
-- **Approval before consequential acts.** Content-sourced writes that would replace an existing value, create a same-name duplicate, adopt a new schema rule, or forget a whole record all pause for the operator's approval — via eve's own human-in-the-loop tool-approval mechanism — before they land, not after.
+- **Provenance on every write, grounded in the session.** `remember`, `forget`, and `extend_schema` require `source: "user" | "content"`, but the model's label alone never makes a write the user's. A write counts as the user's only when the model says so **and** it comes from a live turn by the person whose memory this is: the turn's authenticated principal is the scope's own (`byPrincipal`), and it isn't a scheduled run or a delegated session. Everything else is recorded as content, including every write to a scope that isn't one principal's. Values from content are marked `⟨unconfirmed⟩` wherever they're surfaced back to the agent, so filed content is never mistaken for something the user stated.
+- **What the user stated outranks content.** Content can add beside the user's facts, and correct what content wrote, but it can't replace or retract a value the user stated, create a second record under the name of one the user has, or change a record type the user defined. Such a write keeps the user's value and says so ("kept phone: the user said 555-0142; this content claims 555-0999"), so the agent tells the user about the conflict instead of asking permission. Nothing waits on an approval the user may never see, which matters most when the agent runs unattended.
+- **Everything is attributed and revertable.** Every fact and every schema change records its session, turn and tool call, so a bad batch is found and undone with `revertBatch`, and `history` keeps what was replaced.
+- **The agent's own working state.** Records the agent's author declares with `agentState` (say, a handoff of open items that any conversation may add to or clear) are recorded as the agent's state and aren't ranked by precedence. The model can't declare one, so content can't use it to slip a world fact past the rule.
 - **Memory is shown to the model as data, not instructions.** The per-turn context block presenting the agent's own schema is rendered as a plain listing (type and field names only), never as free-form text that could read as an instruction; a rule author's rejection-message text never reaches the model either. Instruction-shaped authored names are capped (≤3 words, ≤24 characters) on both authoring surfaces — schema authoring via `extend_schema` and entity/attribute naming via `remember`.
 
-**What's measured, stated honestly, not overclaimed:** the caps above bound how much text an attacker can inject through an authored name; they don't eliminate the surface entirely. In the worst case we could construct and seed directly — an attacker-controlled name at the cap, on a benign conversational question — we measured roughly 1 in 8 follow-throughs (4 of 32 trials). Aimed at an actual destructive action rather than a style change, the same class of name was followed 0 times across 64 trials. Realistically this residual doesn't translate into unauthorized harm end to end, because any consequential action still has to clear the approval gate described above — the caps are defense in depth, not the only wall. We're not claiming this residual is neutralized, and we're not shipping a classifier to close it; we're stating the bound plainly and defending the rest at the approval-gate and sandbox layer, where it belongs.
+**What's measured, stated honestly, not overclaimed:** the caps above bound how much text an attacker can inject through an authored name; they don't eliminate the surface entirely. In the worst case we could construct and seed directly — an attacker-controlled name at the cap, on a benign conversational question — we measured roughly 1 in 8 follow-throughs (4 of 32 trials). Aimed at an actual destructive action rather than a style change, the same class of name was followed 0 times across 64 trials. Precedence bounds what such a name can do to memory itself: content can't overwrite or retract what the user stated. We're not claiming this residual is neutralized, and we're not shipping a classifier to close it; we're stating the bound plainly and defending the rest at the precedence and sandbox layer, where it belongs.
+
+**The named residual.** Content the user pastes or forwards arrives in their own authenticated message, and no channel signal separates their words from it. If the model labels such content `"user"` in that turn, it's recorded as the user's. What covers that is detection and recovery, not a prompt: the write is attributed to its session, turn and call, `history` keeps what it replaced, and `revertBatch` undoes it.
 
 ## Testing this package
 

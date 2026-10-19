@@ -4,7 +4,6 @@
 // "The only gate is does it lint." (Store chosen mechanically — bake-off: SQLite bounds RAM where
 // quadstore+comunica inflated it +1GB@100k.)
 
-import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -87,7 +86,9 @@ export interface CheckResult {
   issues: { id: string; label?: string; type?: string; messages: string[] }[];
   truncated: boolean;
 }
-export type RememberResult = Ok<{ id: string; summary: string; superseded: Change[] }> | Fail;
+export type RememberResult =
+  | Ok<{ id: string; summary: string; superseded: Change[]; kept: Change[] }>
+  | Fail;
 export type ForgetResult =
   | {
       ok: true;
@@ -96,9 +97,13 @@ export type ForgetResult =
       forgotten: string[];
       breaks: string[];
       lostCoverage: { from: string; rules: string[] } | null;
+      kept: Change[];
     }
   | { ok: false; reason: string };
-export type ExtendResult = Ok<{ class: string; merged?: boolean; rule?: string }> | Fail;
+export type ExtendResult =
+  | Ok<{ class: string; merged?: boolean; rule?: string }>
+  | Fail
+  | { ok: false; kept: string };
 export interface Description {
   id: string;
   label?: string;
@@ -168,7 +173,7 @@ const DT: Record<Datatype, string> = {
 const isDatatype = (d: string | undefined): d is Datatype =>
   d !== undefined && Object.hasOwn(DT, d);
 
-const slug = (s: unknown) =>
+export const slug = (s: unknown) =>
   String(s)
     .trim()
     .toLowerCase()
@@ -330,6 +335,13 @@ const provenanceOf = (origin: string | null) => {
     return "unmarked";
   }
 };
+// Precedence: a value the person stated outranks handed content, so content can add beside it but never replace or
+// retract it. "agent-state" marks records the agent's author declared as the agent's own working state; precedence
+// doesn't rank them. Everything else counts as the person's, including values written before writes were grounded,
+// which can't be told apart.
+const isContent = (origin: string | null) => provenanceOf(origin) === "content";
+const outranksContent = (origin: string | null) =>
+  !["content", "agent-state"].includes(provenanceOf(origin));
 const stripUndefined = <T extends object>(o: T): Partial<T> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 function shapeTtl(cls: string, d: TypeDef) {
@@ -432,23 +444,6 @@ const toTtl = (rows: Triple[]) =>
     .map((t) => `<${t.s}> <${t.p}> ${t.ot === "iri" ? `<${t.o}>` : litTerm(t.o, t.dt)} .`)
     .join("\n");
 const DIRECT = JSON.stringify({ source: "direct" });
-// The same input always fingerprints the same: object keys are sorted at every depth and absent fields dropped, so key
-// order or an omitted optional never makes two identical inputs differ.
-const canonical = (v: unknown): unknown =>
-  Array.isArray(v)
-    ? v.map(canonical)
-    : v !== null && typeof v === "object"
-      ? Object.fromEntries(
-          Object.entries(v)
-            .filter(([, x]) => x !== undefined)
-            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-            .map(([k, x]) => [k, canonical(x)]),
-        )
-      : v;
-const fingerprint = (input: unknown) =>
-  createHash("sha256")
-    .update(JSON.stringify(canonical(input) ?? null))
-    .digest("hex");
 const withoutOrigin = ({ s, p, o, ot, dt }: StoredTriple): Triple => ({ s, p, o, ot, dt });
 
 export class MemoryGraph {
@@ -461,6 +456,10 @@ export class MemoryGraph {
   #shapes!: Dataset;
   #dataValidator!: SHACLValidator;
   #shapeIndex: ShapeEntry[] = [];
+  // Classes the raw shapes name anywhere: as a target, as an implicit class target, or in a constraint. Only the user
+  // adds raw shapes, so these types are the user's. Broader than the classes a shape constrains, which only ever
+  // refuses content more often.
+  #rawClasses = new Set<string>();
   #ins!: Database.Statement<[string, string, string, string, string | null, string, string]>;
   #insF!: Database.Statement<[string, string]>;
   #delF!: Database.Statement<[string]>;
@@ -490,7 +489,9 @@ export class MemoryGraph {
                 CREATE INDEX IF NOT EXISTS i_sp ON triples(s,p);
                 CREATE VIRTUAL TABLE IF NOT EXISTS lit_fts USING fts5(s UNINDEXED, o);
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-                CREATE TABLE IF NOT EXISTS held_approvals(call_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS schema_log(seq INTEGER PRIMARY KEY, class TEXT, def TEXT, raw TEXT,
+                                                      written_at TEXT, origin TEXT);
+                DROP TABLE IF EXISTS held_approvals;
                 DROP TABLE IF EXISTS pending_approvals;`);
     const version = mg.db.pragma("user_version", { simple: true }) as number;
     const columns = () =>
@@ -546,17 +547,30 @@ export class MemoryGraph {
     const meta = (k: string) =>
       (mg.db.prepare("SELECT value FROM meta WHERE key=?").get(k) as { value: string } | undefined)
         ?.value;
-    const legacyTtl = meta("ontology") ?? PREFIXES;
-    const savedDefs = meta("schema_defs");
-    if (savedDefs != null) {
-      mg.#schemaDefs = JSON.parse(savedDefs);
-      mg.#rawTtl = meta("raw_ttl") ?? "";
-    } else
-      ({ defs: mg.#schemaDefs, rawTtl: mg.#rawTtl } = deriveDefs(
-        await parseTurtle(legacyTtl),
-        legacyTtl,
-      ));
-    mg.#ontologyTtl = renderOntology(mg.#schemaDefs, mg.#rawTtl);
+    // Schema changes are an attributed append log like the triples, so revertBatch undoes them too. A store from
+    // before the log seeds it once from its meta rows, attributed to "legacy".
+    if (meta("schema_log_seeded") == null) {
+      const legacyTtl = meta("ontology") ?? PREFIXES;
+      const savedDefs = meta("schema_defs");
+      const { defs, rawTtl } =
+        savedDefs != null
+          ? { defs: JSON.parse(savedDefs) as SchemaDefs, rawTtl: meta("raw_ttl") ?? "" }
+          : deriveDefs(await parseTurtle(legacyTtl), legacyTtl);
+      const legacy = JSON.stringify({ source: "legacy" });
+      const at = new Date().toISOString();
+      const log = mg.db.prepare(
+        "INSERT INTO schema_log(class, def, raw, written_at, origin) VALUES (?, ?, ?, ?, ?)",
+      );
+      mg.db.transaction(() => {
+        for (const [cls, def] of Object.entries(defs))
+          log.run(cls, JSON.stringify({ base: def }), null, at, legacy);
+        if (rawTtl.trim()) log.run(null, null, rawTtl, at, legacy);
+        mg.db
+          .prepare("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_log_seeded','1')")
+          .run();
+      })();
+    }
+    mg.#loadSchema();
     mg.#metaValidator = new SHACLValidator(await parseTurtle(SHACL_SHACL_TTL), { factory: rdf });
     await mg.#reparseShapes();
     return mg;
@@ -631,18 +645,47 @@ export class MemoryGraph {
     this.#shapes = await parseTurtle(this.#ontologyTtl);
     this.#dataValidator = new SHACLValidator(this.#shapes, { factory: rdf });
     this.#shapeIndex = indexShapes(this.#shapes);
+    const raw = await parseTurtle(PREFIXES + this.#rawTtl);
+    this.#rawClasses = new Set(
+      [...raw]
+        .flatMap((q) => [q.subject.value, q.object.value])
+        .filter((iri) => iri.startsWith(C))
+        .map(localName),
+    );
   }
   /** Every active authored rule — bounded by construction (personal scale: a handful). */
   shapeIndex(): ShapeEntry[] {
     return this.#shapeIndex;
   }
-  #saveOntology() {
-    const put = this.db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)");
-    this.db.transaction(() => {
-      put.run("schema_defs", JSON.stringify(this.#schemaDefs));
-      put.run("raw_ttl", this.#rawTtl);
-      put.run("ontology", this.#ontologyTtl);
-    })();
+  // The current schema, folded from the log in order: each row is one change (a legacy store's starting definition,
+  // or one extension's added details), so reverting any one entry removes exactly what it added.
+  #loadSchema() {
+    const rows = this.db.prepare("SELECT class, def, raw FROM schema_log ORDER BY seq").all() as {
+      class: string | null;
+      def: string | null;
+      raw: string | null;
+    }[];
+    const defs: SchemaDefs = {};
+    let raw = "";
+    for (const r of rows) {
+      if (r.class !== null && r.def !== null) {
+        const change = JSON.parse(r.def) as { base?: TypeDef; add?: ExtendInput };
+        defs[r.class] = change.base ?? mergeDef(defs[r.class], change.add ?? {});
+      } else if (r.raw !== null) raw += r.raw;
+    }
+    this.#schemaDefs = defs;
+    this.#rawTtl = raw;
+    this.#ontologyTtl = renderOntology(defs, raw);
+  }
+  #logSchema(
+    cls: string | null,
+    def: { base: TypeDef } | { add: ExtendInput } | null,
+    raw: string | null,
+    origin: string,
+  ) {
+    this.db
+      .prepare("INSERT INTO schema_log(class, def, raw, written_at, origin) VALUES (?, ?, ?, ?, ?)")
+      .run(cls, def && JSON.stringify(def), raw, new Date().toISOString(), origin);
   }
   close(): void {
     this.db.close();
@@ -692,8 +735,19 @@ export class MemoryGraph {
   }
 
   // ---- extend_schema: author a class/shape; gated first by the naming lint, then meta-validation vs SHACL-SHACL ----
-  async extendSchema(def: ExtendInput): Promise<ExtendResult> {
+  async extendSchema(def: ExtendInput, origin: string = DIRECT): Promise<ExtendResult> {
     if (def.rawShape) {
+      // A raw shape can target any class, the user's included, so precedence can't scope it: content never adds one.
+      if (isContent(origin)) {
+        dlog("extend_schema REJECTED (raw shape from content)");
+        return {
+          ok: false,
+          stage: "source",
+          problems: [
+            { message: "A raw shape can only come from the user, not from handed content." },
+          ],
+        };
+      }
       let ds: Dataset;
       try {
         ds = await parseTurtle(PREFIXES + def.rawShape);
@@ -714,10 +768,9 @@ export class MemoryGraph {
         );
         return { ok: false, stage: "meta-validation", problems: reportProblems(rep) };
       }
-      this.#rawTtl += `\n${def.rawShape}\n`;
-      this.#ontologyTtl = renderOntology(this.#schemaDefs, this.#rawTtl);
+      this.#logSchema(null, null, `\n${def.rawShape}\n`, origin);
+      this.#loadSchema();
       await this.#reparseShapes();
-      this.#saveOntology();
       dlog("extend_schema ACCEPTED (raw shape) — ontology grown");
       return { ok: true, class: "raw" };
     }
@@ -741,6 +794,25 @@ export class MemoryGraph {
       dlog("extend_schema REJECTED (naming):", naming.map((p) => p.message).join(" | "));
       return { ok: false, stage: "naming", problems: naming };
     }
+    // A type any raw shape targets is the user's too.
+    if (isContent(origin) && this.#rawClasses.has(cls)) {
+      dlog(
+        "extend_schema KEPT: content asked to change",
+        cls,
+        "which a raw shape of the user's covers",
+      );
+      return { ok: false, kept: cls };
+    }
+    if (isContent(origin) && cls in this.#schemaDefs) {
+      // A type the user defined or extended at any point is the user's: content can't add to it.
+      const changes = this.db.prepare("SELECT origin FROM schema_log WHERE class = ?").all(cls) as {
+        origin: string | null;
+      }[];
+      if (changes.some((c) => outranksContent(c.origin))) {
+        dlog("extend_schema KEPT: content asked to change", cls, "which the user defined");
+        return { ok: false, kept: cls };
+      }
+    }
     const merged = mergeDef(this.#schemaDefs[cls], def);
     const shape = shapeTtl(cls, merged);
     const report = await this.#metaValidator.validate(await parseTurtle(PREFIXES + shape));
@@ -755,10 +827,14 @@ export class MemoryGraph {
       return { ok: false, stage: "meta-validation", problems: reportProblems(report) };
     }
     const existed = cls in this.#schemaDefs;
-    this.#schemaDefs = { ...this.#schemaDefs, [cls]: merged };
-    this.#ontologyTtl = renderOntology(this.#schemaDefs, this.#rawTtl);
+    this.#logSchema(
+      cls,
+      { add: { requires: def.requires, relations: def.relations } },
+      null,
+      origin,
+    );
+    this.#loadSchema();
     await this.#reparseShapes();
-    this.#saveOntology();
     dlog(
       "extend_schema ACCEPTED:",
       cls,
@@ -802,13 +878,56 @@ export class MemoryGraph {
         : this.#freshId(fact.label ?? fact.type ?? "thing");
     const s = `${E}${id}`;
     const before = this.#view(s);
-    const want: Triple[] = [];
+    // Handed content naming a record the person already has is a second, competing record of the same thing (a
+    // "J. Lee" with a different phone): keep the person's record and write nothing.
+    if (isContent(origin) && !before.exists && fact.label && !held) {
+      const twin = this.#namesakes(String(fact.label)).find((sub) =>
+        this.#current.all(sub).some((r) => r.p === LABEL && outranksContent(r.origin)),
+      );
+      if (twin) {
+        const kept = [
+          { key: "record", from: this.#view(twin).label ?? tail(twin), to: String(fact.label) },
+        ];
+        dlog(
+          "remember KEPT: content named a second",
+          JSON.stringify(fact.label),
+          "→ twin of",
+          tail(twin),
+        );
+        return { ok: true, id: tail(twin), summary: "", superseded: [], kept };
+      }
+    }
+    let want: Triple[] = [];
     if (fact.type || !before.exists)
       want.push({ s, p: TYPE, o: `${C}${pascal(fact.type ?? "Thing")}`, ot: "iri", dt: null });
     if (fact.label)
       want.push({ s, p: LABEL, o: String(fact.label), ot: "lit", dt: `${XSD}string` });
     for (const [k, v] of Object.entries(fact.attributes ?? {}))
       want.push({ s, p: `${P}${slug(k)}`, o: String(v), ot: "lit", dt: xsdOf(v) });
+    // Handed content can't replace what the person stated: those keys keep their value and are reported back.
+    const kept: Change[] = [];
+    if (isContent(origin)) {
+      const stated = new Map(
+        this.#current
+          .all(s)
+          .filter((r) => outranksContent(r.origin))
+          .map((r) => [r.p, r]),
+      );
+      want = want.filter((w) => {
+        const c = stated.get(w.p);
+        if (!c) return true;
+        // The same text under another datatype is the same value: nothing to write, and writing it would make the
+        // user's value content's, which content could then replace.
+        if (c.o === w.o) return false;
+        kept.push({
+          key: keyOf(w.p),
+          from: w.p === TYPE ? tail(c.o) : c.o,
+          to: w.p === TYPE ? tail(w.o) : w.o,
+        });
+        return false;
+      });
+      if (kept.length) dlog("remember KEPT the user's values on", id, JSON.stringify(kept));
+    }
     const relations: Triple[] = (fact.relations ?? []).map((r) => ({
       s,
       p: `${P}${slug(r.relation)}`,
@@ -886,7 +1005,7 @@ export class MemoryGraph {
       if (skipped.length > 3) shown.push(`+${skipped.length - 3} more`);
       summary += ` Saved as ${view.type}, so it was NOT checked against your other rules: ${shown.join("; ")}. If it is one of those kinds, save it with that type.`;
     }
-    return { ok: true, id, summary, superseded };
+    return { ok: true, id, summary, superseded, kept };
   }
 
   // ---- forget: retract a whole entity, or some of its details. Appends attributed tombstones — the current
@@ -906,11 +1025,32 @@ export class MemoryGraph {
           "No details were named. To forget the whole thing, leave details out; to forget specific details, name them.",
       };
     const wanted = details ? new Set(details.map((d) => slug(d))) : null;
-    const rows = before.rows.filter((r) => !wanted || wanted.has(slug(keyOf(r.p))));
-    if (rows.length === 0)
+    const named = [...this.#current.all(s), ...this.#relations.all(s)].filter(
+      (r) => !wanted || wanted.has(slug(keyOf(r.p))),
+    );
+    if (named.length === 0)
       return {
         ok: false,
         reason: `"${before.label ?? id}" has none of those details: ${(details ?? []).join(", ")}.`,
+      };
+    // Handed content can't retract what the person stated: those details stay and are reported back.
+    const stated = isContent(origin) ? named.filter((r) => outranksContent(r.origin)) : [];
+    const kept: Change[] = stated.map((r) => ({
+      key: isRelation(r.p, r.ot) ? `${keyOf(r.p)}→${tail(r.o)}` : keyOf(r.p),
+      from: r.p === TYPE || isRelation(r.p, r.ot) ? tail(r.o) : r.o,
+      to: "(forgotten)",
+    }));
+    const rows = named.filter((r) => !stated.includes(r)).map(withoutOrigin);
+    if (kept.length) dlog("forget KEPT the user's details on", slug(id), JSON.stringify(kept));
+    if (rows.length === 0)
+      return {
+        ok: true,
+        label: before.label ?? id,
+        whole: false,
+        forgotten: [],
+        breaks: [],
+        lostCoverage: null,
+        kept,
       };
     const at = new Date().toISOString();
     this.db.transaction(() => {
@@ -953,7 +1093,15 @@ export class MemoryGraph {
             rules: this.#shapeIndex.filter((r) => r.class === before.type).map((r) => r.summary),
           }
         : null;
-    return { ok: true, label: before.label ?? id, whole: !wanted, forgotten, breaks, lostCoverage };
+    return {
+      ok: true,
+      label: before.label ?? id,
+      whole: !wanted && kept.length === 0,
+      forgotten,
+      breaks,
+      lostCoverage,
+      kept,
+    };
   }
 
   // A new record's id: its name plus a suffix no record holds yet. A clash would silently write into another record.
@@ -999,35 +1147,6 @@ export class MemoryGraph {
         )
       );
     });
-  }
-
-  /** Keys whose existing current value this remember would replace (label, type, attributes) — for approval policy. */
-  previewSupersession(fact: Partial<RememberInput>): Change[] {
-    const before = fact?.id ? this.#view(`${E}${slug(fact.id)}`) : undefined;
-    if (!before?.exists) {
-      // A new entity — but one carrying the name of an existing entity is a second, competing record of the same thing
-      // (e.g. a "J. Lee" holding a different phone). Treat that as replacing the existing one, so the same gate applies,
-      // whether the write gives no id or a fresh one.
-      if (!fact?.label) return [];
-      const label = String(fact.label);
-      // Content a record already holds replaces nothing: remember converges to that record.
-      if (!fact.id && this.#holding(fact)) return [];
-      const twin = this.#namesakes(label)[0];
-      if (twin) dlog("preview: a second record", JSON.stringify(label), "→ twin of", tail(twin));
-      return twin ? [{ key: "record", from: tail(twin), to: `a second "${label}"` }] : [];
-    }
-    const out: Change[] = [];
-    if (fact.type && before.type && pascal(fact.type) !== before.type)
-      out.push({ key: "type", from: before.type, to: pascal(fact.type) });
-    if (fact.label && before.label && String(fact.label) !== before.label)
-      out.push({ key: "label", from: before.label, to: String(fact.label) });
-    for (const [k, v] of Object.entries(fact.attributes ?? {})) {
-      const cur = before.attributes[slug(k)];
-      if (cur !== undefined && cur !== String(v))
-        out.push({ key: slug(k), from: cur, to: String(v) });
-    }
-    if (out.length) dlog("preview: replaces on", slug(fact.id), JSON.stringify(out));
-    return out;
   }
 
   // ---- recall: "what do I know about X" — FTS5 over current literal values (indexed, bounded) ----
@@ -1190,45 +1309,22 @@ export class MemoryGraph {
       origin: JSON.parse(r.origin ?? "null"),
     }));
   }
-  /**
-   * Records that a tool call paused for the person's approval, with a fingerprint of the input they were shown. Kept
-   * in the store, not in memory, so it survives a restart between the pause and the resume.
-   */
-  holdApproval(callId: string, shown: unknown): void {
-    this.db
-      .prepare("INSERT OR REPLACE INTO held_approvals(call_id, fingerprint) VALUES (?, ?)")
-      .run(callId, fingerprint(shown));
-  }
-  /**
-   * Whether this call paused for approval of exactly this input, consumed once. A call that never paused, or that
-   * runs with any input other than the one the person was shown, is not approved.
-   *
-   * eve itself guarantees the second part: on approval it runs the tool call already in the transcript, and the
-   * approval response carries no input. The comparison is defense in depth for a provider driven directly or embedded
-   * outside eve's loop, where nothing else binds what executes to what was approved.
-   */
-  takeApproval(callId: string | undefined, input: unknown): boolean {
-    if (!callId) return false;
-    const held = this.db
-      .prepare("SELECT fingerprint FROM held_approvals WHERE call_id = ?")
-      .get(callId) as { fingerprint: string } | undefined;
-    if (held?.fingerprint !== fingerprint(input)) return false;
-    this.db.prepare("DELETE FROM held_approvals WHERE call_id = ?").run(callId);
-    return true;
-  }
-
   /** Drop every row one origin wrote (match on any of its fields, e.g. { callId } or { sessionId }); reads fall back. */
-  revertBatch(match: Record<string, string | number>): {
+  async revertBatch(match: Record<string, string | number>): Promise<{
     removed: number;
+    schema: number;
     entities: string[];
     untyped: string[];
-  } {
+  }> {
     const keys = Object.keys(match);
     if (keys.length === 0) throw new Error("revertBatch needs at least one origin field to match");
     const where = keys
       .map((k) => `json_extract(origin, '$.${k.replace(/[^a-zA-Z]/g, "")}') = ?`)
       .join(" AND ");
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
+      const schema = this.db
+        .prepare(`DELETE FROM schema_log WHERE ${where}`)
+        .run(...keys.map((k) => match[k])).changes;
       const affected = (
         this.db
           .prepare(`SELECT DISTINCT s FROM triples WHERE ${where}`)
@@ -1256,7 +1352,12 @@ export class MemoryGraph {
         "entit(ies)",
         untyped.length ? `untyped: ${untyped.join(", ")}` : "",
       );
-      return { removed, entities: affected.map(tail), untyped };
+      return { removed, schema, entities: affected.map(tail), untyped };
     })();
+    if (result.schema > 0) {
+      this.#loadSchema();
+      await this.#reparseShapes();
+    }
+    return result;
   }
 }
