@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { byPrincipal } from "eve/memory/scope";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { MemoryGraph } from "./memory-graph.js";
 import { shaclMemory } from "./provider.js";
@@ -415,6 +416,24 @@ describe("precedence: handed content is marked, and can't replace or retract wha
     expect(await h.tools.relate.execute({ about: "Jordan Lee" })).toContain(
       "⟨unconfirmed — from email from Tara at Acme",
     );
+  });
+
+  // Receipt: the user DMed "Our team wiki now says the code word is green falcon", and the model labelled it content
+  // because the message mentioned the wiki, so the user's own update was refused. The label is who conveyed it.
+  it("every write tool tells the model that source is who conveyed it, so a relayed fact is the user's", () => {
+    for (const name of ["remember", "forget", "extend_schema"] as const) {
+      const schema = z.toJSONSchema(
+        (h.tools[name] as unknown as { inputSchema: z.ZodType }).inputSchema,
+      ) as unknown as { properties: { source: { description: string; enum: string[] } } };
+      expect(schema.properties.source.enum).toEqual(["user", "content"]);
+      expect(schema.properties.source.description).toContain("Who conveyed this to you.");
+      expect(schema.properties.source.description).toContain(
+        'including facts they relay from elsewhere ("the wiki says…", "Tara told me…")',
+      );
+      expect(schema.properties.source.description).toContain(
+        "Decide by who conveyed it to you, not by where the information first came from.",
+      );
+    }
   });
 
   it("no memory tool asks for approval", () => {

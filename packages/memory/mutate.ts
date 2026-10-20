@@ -510,6 +510,13 @@ const mutations: Mutation[] = [
     replace: "{ base: merged },",
     expect: "reverting a schema change that isn't the latest removes only what it added",
   },
+  {
+    name: "source is defined by where information came from, not who conveyed it",
+    file: "src/provider.ts",
+    find: "Decide by who conveyed it to you, not by where the information first came from.",
+    replace: 'If unsure, use \\"content\\".',
+    expect: "every write tool tells the model that source is who conveyed it",
+  },
   // Grounding: the model's "user" counts only on a live turn by the person whose memory this is.
   {
     name: "a scheduled run counts as the user",

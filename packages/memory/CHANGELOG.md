@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.2
+
+**`source` now means who conveyed a fact to the agent, not where the information came from.** This changes the
+model-facing description of `source` on `remember`, `forget` and `extend_schema`; the rules that act on it don't
+change.
+
+- **`"user"`:** anything the person says or asks in their own message, including facts they relay from elsewhere
+  ("our wiki now says…", "Tara told me…").
+- **`"content"`:** what the agent reads itself, such as a fetched page, a file or attachment, a tool result, or
+  another agent's or bot's message.
+
+**Why:** under 0.2.x's wording ("content if it came from something they handed you"), a user's message that
+*mentioned* a source was labelled content. When a user wrote "Our team wiki now says the code word is green falcon",
+precedence then kept the old value and asked them to confirm their own update.
+
+**Unchanged:**
+
+- **Grounding:** a write counts as the user's only on a live, unscheduled, non-delegated turn by the scope's own
+  principal.
+- **Precedence:** content can't replace or retract what the user stated.
+
+**What it means for consumers:**
+
+- A fact the user relays in their own message ("our wiki now says…") is recorded as theirs, and can update what
+  they said before.
+- What the agent fetches or reads is still content, and still can't override the user.
+- The 0.2.0 residual stands: third-party text the user pastes or forwards into their own message is labelled by
+  the model. If it's labelled `"user"`, it's recorded as theirs, and attribution, `history` and `revertBatch` are the
+  cover.
+
+The model-facing notes and conflict messages use the same wording: "content you read".
+
 ## 0.2.1
 
 Fixes installing 0.2.0 from git. Installing it from git runs `npm install` in the package, which then runs its

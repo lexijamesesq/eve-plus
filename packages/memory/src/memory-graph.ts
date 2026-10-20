@@ -606,7 +606,7 @@ export class MemoryGraph {
       } catch {
         return;
       }
-      const from = o?.from || "content you were handed";
+      const from = o?.from || "something you read";
       if (o?.provenance === "content") filed[key] = from;
       else if (o?.provenance === "content-approved") approved[key] = from;
     };
@@ -739,7 +739,7 @@ export class MemoryGraph {
           ok: false,
           stage: "source",
           problems: [
-            { message: "A raw shape can only come from the user, not from handed content." },
+            { message: "A raw shape can only come from the user, not from content you read." },
           ],
         };
       }

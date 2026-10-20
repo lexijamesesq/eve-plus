@@ -61,7 +61,7 @@ Records aren't currently enumerable by kind — you can ask "what do I know abou
 
 ## Security
 
-Handing an agent open-ended memory raises an obvious question: what happens when a user asks the agent to file content it didn't write itself — an email, a pasted note, anything where the *content*, not the user, is asserting the facts. This package treats that as an adversarial input, not a convenience.
+Handing an agent open-ended memory raises an obvious question: what happens when the agent reads something that asserts facts, such as a fetched page, an attached file, a tool result or another agent's message, and files them? This package treats what the agent reads as an untrusted input, not a convenience. What the user tells the agent in their own message is theirs, including what they relay from elsewhere: the label is who conveyed it, not where it started.
 
 **What's built:**
 
@@ -73,7 +73,7 @@ Handing an agent open-ended memory raises an obvious question: what happens when
 
 **What's measured, stated honestly, not overclaimed:** the caps above bound how much text an attacker can inject through an authored name; they don't eliminate the surface entirely. In the worst case we could construct and seed directly — an attacker-controlled name at the cap, on a benign conversational question — we measured roughly 1 in 8 follow-throughs (4 of 32 trials). Aimed at an actual destructive action rather than a style change, the same class of name was followed 0 times across 64 trials. Precedence bounds what such a name can do to memory itself: content can't overwrite or retract what the user stated. We're not claiming this residual is neutralized, and we're not shipping a classifier to close it; we're stating the bound plainly and defending the rest at the precedence and sandbox layer, where it belongs.
 
-**The named residual.** Content the user pastes or forwards arrives in their own authenticated message, and no channel signal separates their words from it. If the model labels such content `"user"` in that turn, it's recorded as the user's. What covers that is detection and recovery, not a prompt: the write is attributed to its session, turn and call, `history` keeps what it replaced, and `revertBatch` undoes it.
+**The named residual.** What the user tells the agent in their own message, including facts they relay ("the wiki now says X"), is theirs. Third-party text they paste or forward into that message, such as an email body, is labelled by the model, and no channel signal separates it from their own words. If the model labels it `"user"`, it's recorded as the user's. What covers that is detection and recovery, not a prompt: the write is attributed to its session, turn and call, `history` keeps what it replaced, and `revertBatch` undoes it.
 
 ## Changes
 
