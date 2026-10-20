@@ -1,0 +1,24 @@
+name: Git install
+
+# Installs each package the way a git consumer does. Plain pull_request, not pull_request_target: it runs the PR's own
+# install scripts, so it gets a read-only token and no secrets.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  memory:
+    name: git-install / memory
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install packages/memory as a git consumer does
+        run: bash .github/scripts/check-git-install.sh packages/memory
