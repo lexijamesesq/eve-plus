@@ -25,7 +25,7 @@ export default defineMemory({
   namespace: "my-agent-knowledge-v1",              // eve-level, versioned — see Namespacing below
   provider: shaclMemory({
     dir: "./.eve/memory",                           // where the SQLite store lives on disk
-    agentState: ["maintenance handoff"],            // optional: record ids that are the agent's own working state
+    maxWritesPerSession: 200,                       // optional: fail loud past this many writes in one session
   }),
   scope: byPrincipal,
   visibility: "scope",
@@ -37,7 +37,7 @@ export default defineMemory({
 The agent gets a small tool surface; it never sees RDF or SPARQL — this package maps natural language to the graph and back internally.
 
 - **`recall`** — "what do I know about X." Returns matched entities with their attributes.
-- **`remember`** — "record Z." Writes a new fact or entity. Requires a `source` (`user` or `content` — see Security below).
+- **`remember`** — "record Z." Writes a new fact or entity, recorded with who wrote it (see Security below).
 - **`relate`** — "what's connected to Y." Returns an entity's relations, plus its own attributes.
 - **`extend_schema`** — author or extend a record type at runtime (e.g. "a client always needs a phone and a company"). Meta-validated against SHACL-SHACL: the agent can grow the schema, but never the metamodel it's checked against.
 - **`forget`** — remove a fact or a whole record. Appends a tombstone rather than deleting in place; nothing is destroyed.
@@ -61,23 +61,31 @@ Records aren't currently enumerable by kind — you can ask "what do I know abou
 
 ## Security
 
-Handing an agent open-ended memory raises an obvious question: what happens when a user asks the agent to file content it didn't write itself — an email, a pasted note, anything where the *content*, not the user, is asserting the facts. This package treats that as an adversarial input, not a convenience.
+Memory is attributed and revertable. It is not a defense against poisoning, and nothing in it decides whether a fact is true.
 
 **What's built:**
 
-- **Provenance on every write, grounded in the session.** `remember`, `forget`, and `extend_schema` require `source: "user" | "content"`, but the model's label alone never makes a write the user's. A write counts as the user's only when the model says so **and** it comes from a live turn by the person whose memory this is: the turn's authenticated principal is the scope's own (`byPrincipal`), and it isn't a scheduled run or a delegated session. Everything else is recorded as content, including every write to a scope that isn't one principal's. Values from content are marked `⟨unconfirmed⟩` wherever they're surfaced back to the agent, so filed content is never mistaken for something the user stated.
-- **What the user stated outranks content.** Content can add beside the user's facts, and correct what content wrote, but it can't replace or retract a value the user stated, create a second record under the name of one the user has, or change a record type the user defined. Such a write keeps the user's value and says so ("kept phone: the user said 555-0142; this content claims 555-0999"), so the agent tells the user about the conflict instead of asking permission. Nothing waits on an approval the user may never see, which matters most when the agent runs unattended.
-- **Everything is attributed and revertable.** Every fact and every schema change records its session, turn and tool call, so a bad batch is found and undone with `revertBatch`, and `history` keeps what was replaced.
-- **The agent's own working state.** Records the agent's author declares with `agentState` (say, a handoff of open items that any conversation may add to or clear) are recorded as the agent's state and aren't ranked by precedence. The model can't declare one, so content can't use it to slip a world fact past the rule.
+- **Every write lands, recorded with who made it.** Each fact and schema change records, from eve's own session context and never from anything the model says: whether it came from the scope owner's own live conversation, another principal's, a scheduled run or a delegated task; the principal; and the session, turn and tool call. A scope that isn't one principal's (a list, or a shared key) has no owner. `history` keeps every replaced value.
+- **Recall says who recorded a value.** Tool reads show each value as recorded during the user's own conversation, by a scheduled run, by a delegated task, or during a conversation with someone other than the user, with the date. The turn-start block marks only values that weren't recorded in the owner's conversation, to keep it short. Nothing is rendered as "the user said" or "unconfirmed": the store knows who wrote a value, not whether it's true.
+- **Undo by origin.** `revertBatch` takes any recorded origin field, so "everything that scheduled run wrote" (`{ who: "scheduled", sessionId }`) or one tool call (`{ callId }`) comes out in one step.
+- **One control-plane rule.** A record type created in the owner's own conversation can be changed only there, and a record typed there can be re-typed only there. Types named by a raw shape (added through the API, never by the tools) count as the owner's. New types and records are open to any writer, and a refused change says why.
+- **Detection, not gates.** When a scheduled run, a delegated task or another principal replaces or retracts a value written in the owner's conversation, the write lands and is logged as one `[mem] owner-overwrite` warning with its origin, and counted (`MemoryGraph.ownerOverwrites`). The optional `maxWritesPerSession` caps write calls per session: past it, a write throws instead of landing, so a run that goes wrong can't rewrite a whole memory.
 - **Memory is shown to the model as data, not instructions.** The per-turn context block presenting the agent's own schema is rendered as a plain listing (type and field names only), never as free-form text that could read as an instruction; a rule author's rejection-message text never reaches the model either. Instruction-shaped authored names are capped (≤3 words, ≤24 characters) on both authoring surfaces — schema authoring via `extend_schema` and entity/attribute naming via `remember`.
 
-**What's measured, stated honestly, not overclaimed:** the caps above bound how much text an attacker can inject through an authored name; they don't eliminate the surface entirely. In the worst case we could construct and seed directly — an attacker-controlled name at the cap, on a benign conversational question — we measured roughly 1 in 8 follow-throughs (4 of 32 trials). Aimed at an actual destructive action rather than a style change, the same class of name was followed 0 times across 64 trials. Precedence bounds what such a name can do to memory itself: content can't overwrite or retract what the user stated. We're not claiming this residual is neutralized, and we're not shipping a classifier to close it; we're stating the bound plainly and defending the rest at the precedence and sandbox layer, where it belongs.
+**The name caps are a heuristic, measured:** they bound how much text an attacker can inject through an authored name; they don't eliminate the surface. In the worst case we could construct and seed directly — an attacker-controlled name at the cap, on a benign conversational question — we measured roughly 1 in 8 follow-throughs (4 of 32 trials). Aimed at an actual destructive action rather than a style change, the same class of name was followed 0 times across 64 trials.
 
-**The named residual.** Content the user pastes or forwards arrives in their own authenticated message, and no channel signal separates their words from it. If the model labels such content `"user"` in that turn, it's recorded as the user's. What covers that is detection and recovery, not a prompt: the write is attributed to its session, turn and call, `history` keeps what it replaced, and `revertBatch` undoes it.
+**Named residuals:**
+
+- **Content in the owner's own turn can change facts.** Text the user pastes or forwards arrives in their own message, and no signal separates it from their words, so whatever the agent saves from it is recorded as written in the owner's conversation. Attribution finds it; `revertBatch` undoes it.
+- **Memory steers answers.** A wrong value, whoever wrote it, shapes what the agent says next. Recall says who recorded it, not whether it's true.
+- **No cryptographic integrity.** Origins are rows in a SQLite file. Anyone who can write the file can rewrite them.
+- **Retention is deferred.** Nothing expires: replaced values stay in history until a scope is reset.
+
+**Resetting one scope:** stop the agent and move `<dir>/<scope key>/` aside (the scope key with characters outside `a-zA-Z0-9._-` replaced by `_`); that scope starts empty on its next use, and the moved copy can be restored.
 
 ## Changes
 
-See [CHANGELOG.md](./CHANGELOG.md). 0.2.0 removes the approval gates and changes how writes are ranked; read it before upgrading from 0.1.0.
+See [CHANGELOG.md](./CHANGELOG.md). 0.3.0 removes 0.2.x's precedence and the model's `source` field; read it before upgrading.
 
 ## Testing this package
 

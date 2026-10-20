@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.3.0
+
+A breaking change for 0.2.x consumers. 0.2.x's precedence was a misstep, and it's removed. It ranked a write by the
+model's own `source` label, then refused writes it ranked below the user's. That refused real updates: a user who
+relayed a fact ("the wiki now says the code word is green falcon") had it labelled content and kept from replacing
+the old value. 0.3.0 goes back to 0.1.0's model, where every write lands, and keeps what 0.1.0 had: the append-only
+log, `history`, `revertBatch`, per-principal scopes, the lint gate and the name caps. It adds attribution in place
+of ranking.
+
+### Removed
+
+- **The `source` and `from` fields** on `remember`, `forget` and `extend_schema`. The model no longer says where a
+  write came from. Extra fields are ignored, so an agent prompted to pass them keeps working.
+- **Precedence.** A write from content no longer keeps a value back, refuses a second record under a user record's
+  name, refuses a raw shape, or returns `kept` / "Not changed" results. `RememberResult`, `ForgetResult` and
+  `ExtendResult` lose `kept`.
+- **The `agentState` option.** It existed only to exempt records from precedence. Remove it from your
+  `shaclMemory({ … })` call; TypeScript reports it as an unknown option.
+- **The `⟨unconfirmed⟩` marks and the note asking the model to confirm** values with the user. `Fact`, `RelateResult`
+  and `Description` lose `filed` and `approved`.
+
+### Added
+
+- **Attribution on every write,** from eve's session context: `who` (`owner`, `other`, `scheduled`, `delegated`), the
+  `principal`, `scopeOwner`, and the session, turn and call. `revertBatch` selects on any of them.
+- **`recorded` on reads:** each value's `{ who, on }`. Recall renders it as "recorded during the user's own
+  conversation on 2026-10-19", "by a scheduled run", "by a delegated task" or "during a conversation with someone other
+  than the user".
+- **One rule:** a record type created in the owner's own conversation, or a record typed there, changes type or
+  definition only there. A refusal returns stage `owner-type` with a reason.
+- **Detection:** a scheduled, delegated or other-principal write over an owner-conversation value logs one
+  `[mem] owner-overwrite` warning and increments `MemoryGraph.ownerOverwrites`.
+- **`maxWritesPerSession`:** an optional cap on write calls per session. Past it, a write throws.
+
+### Upgrading
+
+No migration step: stores open as they are, and the schema log is unchanged.
+
+- **From 0.2.x:** values written as `"user"` in the owner's live turn read as the owner's, and scheduled or
+  delegated writes read as such. Other 0.2.x content values read as `legacy` (unmarked). Types the user created under
+  0.2.x keep the new rule's protection.
+- **From 0.1.0:** values and types read as `legacy` and are open to every writer, as they were under 0.1.0. Types a
+  raw shape names count as the owner's.
+- **Behaviour you'll see:** writes that 0.2.x kept back now land. If you relied on that to protect values, use
+  attribution to find and revert what you don't want, and `maxWritesPerSession` to bound a run.
+
 ## 0.2.1
 
 Fixes installing 0.2.0 from git. Installing it from git runs `npm install` in the package, which then runs its
