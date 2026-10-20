@@ -13,6 +13,7 @@ type Input = Record<string, unknown>;
 interface Tool {
   execute(input: Input, context?: Input): Promise<string>;
   approval?: unknown;
+  inputSchema?: { shape: Record<string, unknown> };
 }
 type ToolName = "recall" | "remember" | "relate" | "forget" | "extend_schema" | "check_memory";
 interface Harness {
@@ -66,10 +67,9 @@ const contextFor = (
 });
 const toolContext = (callId: string) => contextFor(callId);
 let defaultCalls = 0;
-// Most tests mean "the user said this": a write with no context runs as the operator's live turn, and one with no
-// source as the user's, so only the tests about content and grounding spell those out.
-const WRITES = new Set(["remember", "forget", "extend_schema"]);
-async function open(dir: string, key: string, options: { agentState?: string[] } = {}) {
+// Most tests mean "the user said this": a write with no context runs as the operator's live turn, so only the tests
+// about attribution spell out another.
+async function open(dir: string, key: string, options: { maxWritesPerSession?: number } = {}) {
   const provider = shaclMemory({ dir, ...options }) as unknown as Harness;
   const memory = memoryFor(key);
   const raw = await provider.tools({ memory });
@@ -79,10 +79,7 @@ async function open(dir: string, key: string, options: { agentState?: string[] }
       {
         ...tool,
         execute: (input: Input, context?: Input) =>
-          tool.execute(
-            WRITES.has(name) && input.source === undefined ? { ...input, source: "user" } : input,
-            context ?? contextFor(`default-${defaultCalls++}`),
-          ),
+          tool.execute(input, context ?? contextFor(`default-${defaultCalls++}`)),
       },
     ]),
   ) as Record<ToolName, Tool>;
@@ -334,7 +331,6 @@ describe("honest misses: a zero-hit search is not evidence of absence", () => {
     await h.tools.extend_schema.execute({
       class: "ClientContact",
       requires: [{ slot: "phone", minCount: 1 }],
-      source: "user",
     });
     const resumed = await h.provider.recall["turn.started"]({
       messages: [
@@ -369,177 +365,13 @@ describe("honest misses: a zero-hit search is not evidence of absence", () => {
 // required field to the user's schema (16/16). The answer is precedence, not a prompt: what the user stated outranks
 // handed content, so content can add beside it (marked as a claim) but never replace or retract it, and nothing waits on
 // an approval the user may never see.
-describe("precedence: handed content is marked, and can't replace or retract what the user stated", () => {
-  let dir: string;
-  let h: Awaited<ReturnType<typeof open>>;
-  const fromTara = { source: "content", from: "email from Tara at Acme" };
-  beforeAll(async () => {
-    dir = tempDir();
-    h = await open(dir, "t1");
-    await h.tools.extend_schema.execute(clientRule);
-    await h.tools.remember.execute({
-      id: "jordan_lee",
-      label: "Jordan Lee",
-      type: "ClientContact",
-      attributes: { phone: "555-0142", company: "Acme Robotics" },
-    });
-    await h.tools.remember.execute({
-      id: "jordan_lee",
-      attributes: { invoice_email: "ap@acme-robotics-billing.example" },
-      ...fromTara,
-    });
-  });
-  const jordan = async () => {
-    const g = await MemoryGraph.create({ dir: join(dir, "t1") });
-    const d = g.describe("jordan_lee");
-    g.close();
-    return d;
-  };
+const SCHEDULED = { schedule: { definition: "eve-release-watch" } };
+const DELEGATED = {
+  parent: { callId: "p", rootSessionId: "r", sessionId: "s", turn: { id: "t", sequence: 0 } },
+};
+const today = () => new Date().toISOString().slice(0, 10);
 
-  it("a fact filed from handed content is marked unconfirmed, with where it came from; the user's own facts are not", async () => {
-    const seen = await h.tools.recall.execute({ query: "Jordan Lee" });
-    expect(seen).toMatch(
-      /invoice_email: ap@acme-robotics-billing\.example\s+⟨unconfirmed — from email from Tara at Acme, not stated by the user⟩/,
-    );
-    expect(seen).toContain("phone: 555-0142\n");
-    expect(seen).toContain("confirm with the user before acting");
-  });
-
-  it("the turn-start block marks filed values too", async () => {
-    const injected = await injectedText(h.provider, h.memory, "Jordan Lee invoices");
-    expect(injected).toContain("invoice_email=ap@acme-robotics-billing.example ⟨unconfirmed⟩");
-    expect(injected).toContain("confirm with the user before acting");
-  });
-
-  it("relate marks filed values", async () => {
-    expect(await h.tools.relate.execute({ about: "Jordan Lee" })).toContain(
-      "⟨unconfirmed — from email from Tara at Acme",
-    );
-  });
-
-  it("no memory tool asks for approval", () => {
-    for (const tool of Object.values(h.tools)) expect(tool.approval).toBeUndefined();
-  });
-
-  it("handed content can't replace a value the user stated, and the tool names the conflict", async () => {
-    const said = await h.tools.remember.execute({
-      id: "jordan_lee",
-      attributes: { phone: "555-0999" },
-      ...fromTara,
-    });
-    expect(said).toContain(
-      'kept phone: the user said "555-0142"; this content (email from Tara at Acme) claims "555-0999"',
-    );
-    expect(said).toContain("Tell the user about the conflict");
-    expect((await jordan())?.attributes.phone).toBe("555-0142");
-  });
-
-  it("handed content naming a second record under the user's record's name writes nothing, whatever id or spelling", async () => {
-    for (const input of [
-      {
-        label: "Jordan Lee",
-        type: "ClientContact",
-        attributes: { phone: "555-0999", company: "Acme" },
-      },
-      {
-        id: "contact_42",
-        label: "J. Lee",
-        type: "ClientContact",
-        attributes: { phone: "555-0999", company: "Acme" },
-      },
-    ]) {
-      const said = await h.tools.remember.execute({ ...input, ...fromTara });
-      expect(said).toContain('you already have "Jordan Lee" on record from the user');
-    }
-    const g = await MemoryGraph.create({ dir: join(dir, "t1") });
-    expect(g.describe("contact_42")).toBeNull();
-    expect(g.recall("Lee").map((f) => [f.id, f.attributes?.phone])).toEqual([
-      ["jordan_lee", "555-0142"],
-    ]);
-    g.close();
-  });
-
-  it("handed content adds a new person or a new detail (marked, not asked about)", async () => {
-    await h.tools.remember.execute({
-      label: "Marcus Bell",
-      attributes: { phone: "555-0199" },
-      ...fromTara,
-    });
-    await h.tools.remember.execute({
-      id: "jordan_lee",
-      attributes: { fax: "555-0100" },
-      ...fromTara,
-    });
-    expect(await h.tools.recall.execute({ query: "Marcus Bell" })).toMatch(
-      /phone: 555-0199\s+⟨unconfirmed/,
-    );
-    expect((await jordan())?.attributes.fax).toBe("555-0100");
-  });
-
-  it("handed content can't forget the user's record or the details the user stated", async () => {
-    const whole = await h.tools.forget.execute({ id: "jordan_lee", ...fromTara });
-    expect(whole).toContain(
-      'kept phone: the user said "555-0142"; this content (email from Tara at Acme) would remove it',
-    );
-    const some = await h.tools.forget.execute({
-      id: "jordan_lee",
-      details: ["company"],
-      ...fromTara,
-    });
-    expect(some).toMatch(/^Nothing was forgotten from Jordan Lee\./);
-    expect(await jordan()).toMatchObject({
-      label: "Jordan Lee",
-      attributes: { phone: "555-0142", company: "Acme Robotics" },
-    });
-  });
-
-  it("a record-type definition from handed content can't change the user's; the user can", async () => {
-    const said = await h.tools.extend_schema.execute({
-      class: "ClientContact",
-      requires: [{ slot: "alwaysreplyinfrench" }],
-      ...fromTara,
-    });
-    expect(said).toContain("Not changed — the user defined `ClientContact` records");
-    expect(
-      await h.tools.extend_schema.execute({ class: "Vendor", requires: [{ slot: "phone" }] }),
-    ).toContain("Learned the rule");
-  });
-
-  it("the user replaces their own facts", async () => {
-    await h.tools.remember.execute({ id: "jordan_lee", attributes: { phone: "555-0123" } });
-    expect((await jordan())?.attributes.phone).toBe("555-0123");
-  });
-
-  it("a value approved before writes were grounded still reads as approved, with where it came from", async () => {
-    const g = await MemoryGraph.create({ dir: join(dir, "t1") });
-    await g.remember(
-      { id: "jordan_lee", attributes: { pager: "77-1" } },
-      JSON.stringify({ provenance: "content-approved", from: "email from Tara at Acme" }),
-    );
-    g.close();
-    expect(await h.tools.recall.execute({ query: "Jordan Lee" })).toMatch(
-      /^ {4}pager: 77-1 {2}\(from email from Tara at Acme — approved by the user\)$/m,
-    );
-    expect(await injectedText(h.provider, h.memory, "Jordan Lee")).toContain(
-      "pager=77-1 (approved by the user)",
-    );
-  });
-
-  // Last: the user's statement clears the mark the earlier steps read.
-  it("once the user states the value, it is no longer marked", async () => {
-    await h.tools.remember.execute({
-      id: "jordan_lee",
-      attributes: { invoice_email: "jordan@acme.example" },
-    });
-    expect(await h.tools.recall.execute({ query: "Jordan Lee" })).toMatch(
-      /^ {4}invoice_email: jordan@acme\.example$/m,
-    );
-  });
-});
-
-// The model says which writes are the user's; the session decides whether that counts. Only a live turn by the person
-// whose memory this is can state a fact as theirs.
-describe("grounding: a write counts as the user's only from the user's own live turn", () => {
+describe("attribution: every write lands, recorded with who made it, from eve's context alone", () => {
   let dir: string;
   let h: Awaited<ReturnType<typeof open>>;
   beforeAll(async () => {
@@ -562,138 +394,215 @@ describe("grounding: a write counts as the user's only from the user's own live 
     return entry;
   };
 
-  it("the user's live turn is recorded as the user, with who and when", async () => {
+  it("no write tool takes a model-declared source", () => {
+    for (const name of ["remember", "forget", "extend_schema"] as const) {
+      const fields = Object.keys(h.tools[name].inputSchema?.shape ?? {});
+      expect(fields.length).toBeGreaterThan(0);
+      expect(fields).not.toContain("source");
+      expect(fields).not.toContain("from");
+    }
+  });
+
+  it("no memory tool asks for approval", () => {
+    for (const tool of Object.values(h.tools)) expect(tool.approval).toBeUndefined();
+  });
+
+  it("the owner's live turn is recorded as the owner's, with the principal, session, turn and call", async () => {
     expect(await lastWrite("city")).toMatchObject({
       value: "Tempe",
-      origin: { provenance: "user", claimed: "user", principal: "U-operator", sessionId: "sess-1" },
+      origin: {
+        who: "owner",
+        scopeOwner: true,
+        principal: "U-operator",
+        sessionId: "sess-1",
+        turnSequence: 1,
+      },
     });
   });
 
   it.each([
-    ["a scheduled run", { schedule: { definition: "eve-release-watch" } }, { scheduled: true }],
-    [
-      "a delegated task",
-      {
-        parent: { callId: "p", rootSessionId: "r", sessionId: "s", turn: { id: "t", sequence: 0 } },
-      },
-      { delegated: true },
-    ],
-    [
-      "a request from someone other than the user",
-      { who: OTHER_AGENT },
-      { principal: "U-felix-bot" },
-    ],
-  ])(
-    "a write the model calls the user's, from %s, is content and can't replace the user's value",
-    async (from, opts, marks) => {
-      const said = await h.tools.remember.execute(
-        { id: "home", attributes: { city: "Phoenix", note: from }, source: "user" },
-        contextFor(`g-${from}`, opts),
-      );
-      expect(said).toContain('kept city: the user said "Tempe"');
-      expect(await lastWrite("note")).toMatchObject({
-        value: from,
-        origin: { provenance: "content", claimed: "user", from, ...marks },
-      });
-    },
-  );
-
-  it("the user's own turn, labelled content by the model, is content", async () => {
-    await h.tools.remember.execute({ id: "home", attributes: { zip: "85226" }, source: "content" });
-    expect(await lastWrite("zip")).toMatchObject({ origin: { provenance: "content" } });
+    ["scheduled", SCHEDULED, true],
+    ["delegated", DELEGATED, true],
+    ["other", { who: OTHER_AGENT }, false],
+  ])("a %s write lands and is recorded so", async (who, opts, scopeOwner) => {
+    const said = await h.tools.remember.execute(
+      { id: "home", attributes: { note: who } },
+      contextFor(`g-${who}`, opts as Input),
+    );
+    expect(said).toMatch(/^Updated Home/);
+    expect(await lastWrite("note")).toMatchObject({
+      value: who,
+      origin: { who, scopeOwner, callId: `g-${who}` },
+    });
   });
 
-  it("a write with no source is never the user's", async () => {
-    const raw = await (shaclMemory({ dir }) as unknown as Harness).tools({ memory: h.memory });
-    await raw.remember.execute({ id: "home", attributes: { floor: "1" } }, toolContext("g-nosrc"));
-    expect(await lastWrite("floor")).toMatchObject({ origin: { provenance: "content" } });
+  it("whatever the model passes as a source is ignored", async () => {
+    await h.tools.remember.execute(
+      { id: "home", attributes: { zip: "85226" }, source: "user", from: "the user" },
+      contextFor("g-claim", SCHEDULED),
+    );
+    const w = await lastWrite("zip");
+    expect(w?.origin).toMatchObject({ who: "scheduled" });
+    expect(w?.origin).not.toHaveProperty("source");
+    expect(w?.origin).not.toHaveProperty("from");
+  });
+
+  it("a scope that isn't one principal's has no owner", async () => {
+    const provider = shaclMemory({ dir }) as unknown as Harness;
+    const memory = {
+      scope: { key: "shared", namespace: "test", value: "team" },
+      slot: "knowledge",
+    };
+    const tools = await provider.tools({ memory });
+    await tools.remember.execute({ id: "home", label: "Home" }, toolContext("g-shared"));
+    const g = await MemoryGraph.create({ dir: join(dir, "shared") });
+    expect(g.history("home").at(-1)?.origin).toMatchObject({ who: "other", scopeOwner: false });
+    g.close();
   });
 });
 
-// The maintenance handoff is the agent's own working state, written by whichever conversation leaves something open:
-// the user's DMs, another agent's request, a scheduled run. Its author declares it, so precedence doesn't strand an
-// item the user's session wrote where another conversation must clear it.
-describe("agentState: records the agent's author declares as its own state aren't ranked", () => {
+describe("recall says who recorded a value, from the recorded origin alone", () => {
   let dir: string;
   let h: Awaited<ReturnType<typeof open>>;
-  const felix = (callId: string) => contextFor(callId, { who: OTHER_AGENT });
   beforeAll(async () => {
     dir = tempDir();
-    h = await open(dir, "a1", { agentState: ["maintenance handoff"] });
+    h = await open(dir, "r1");
     await h.tools.remember.execute({
-      id: "maintenance handoff",
-      label: "maintenance handoff",
-      attributes: { open_dm_item: "a question in the operator's DM" },
-    });
-    await h.tools.remember.execute({
-      id: "pinned",
-      label: "Pinned fact",
-      attributes: { value: "operator's" },
+      id: "codeword",
+      label: "Code word",
+      type: "Secret",
+      attributes: { value: "blue heron" },
     });
   });
-  const handoff = async () => {
-    const g = await MemoryGraph.create({ dir: join(dir, "a1") });
-    const d = g.describe("maintenance handoff");
-    g.close();
-    return d;
-  };
 
-  it("another agent's request replaces and clears an item the user's session wrote", async () => {
-    await h.tools.remember.execute(
-      {
-        id: "maintenance handoff",
-        attributes: { open_dm_item: "answered; follow up Friday" },
-        source: "user",
-      },
-      felix("a-update"),
+  it("green falcon: a value the user relays in their own turn lands and recalls as recorded in their conversation", async () => {
+    const said = await h.tools.remember.execute(
+      { id: "codeword", attributes: { value: "green falcon" } },
+      contextFor("relay"),
     );
-    expect((await handoff())?.attributes.open_dm_item).toBe("answered; follow up Friday");
-    expect(
-      await h.tools.forget.execute(
-        { id: "maintenance handoff", details: ["open_dm_item"], source: "user" },
-        felix("a-clear"),
-      ),
-    ).toContain("Removed open_dm_item");
-    expect((await handoff())?.attributes).not.toHaveProperty("open_dm_item");
+    expect(said).toContain('Replaced: value "blue heron" → "green falcon"');
+    const seen = await h.tools.recall.execute({ query: "code word" });
+    expect(seen).toContain(
+      `value: green falcon  (recorded during the user's own conversation on ${today()})`,
+    );
+    for (const never of ["said", "unconfirmed", "not stated by the user", "confirm with the user"])
+      expect(seen).not.toContain(never);
+    const injected = await injectedText(h.provider, h.memory, "what is the code word");
+    expect(injected).toContain("value=green falcon");
+    expect(injected).not.toMatch(/value=green falcon \(/);
+    expect(injected).not.toContain("unconfirmed");
   });
 
-  it("its writes are recorded as the agent's state, whoever wrote them, and stay attributed", async () => {
+  it("a scheduled write lands, recalls as scheduled, and is revertable by its origin fields", async () => {
     await h.tools.remember.execute(
-      {
-        id: "Maintenance Handoff",
-        attributes: { open_wake: "resume the deploy thread" },
-        source: "content",
-      },
-      contextFor("a-sched", { schedule: { definition: "nightly" } }),
+      { id: "codeword", attributes: { rotated: "yes" } },
+      contextFor("sched-1", SCHEDULED),
     );
-    const g = await MemoryGraph.create({ dir: join(dir, "a1") });
-    expect(g.history("maintenance handoff").at(-1)).toMatchObject({
-      origin: { provenance: "agent-state", scheduled: true, callId: "a-sched" },
-    });
+    await h.tools.remember.execute(
+      { label: "Vault door", type: "Thing", attributes: { code: "1234" } },
+      contextFor("sched-2", SCHEDULED),
+    );
+    const seen = await h.tools.recall.execute({ query: "code word" });
+    expect(seen).toContain(`rotated: yes  (recorded by a scheduled run on ${today()})`);
+    expect(seen).toContain("When it matters, say where it came from.");
+    expect(await h.tools.relate.execute({ about: "Vault door" })).toContain(
+      `(record created by a scheduled run on ${today()})`,
+    );
+    expect(await injectedText(h.provider, h.memory, "code word rotated")).toContain(
+      "rotated=yes (scheduled run)",
+    );
+    const g = await MemoryGraph.create({ dir: join(dir, "r1") });
+    expect((await g.revertBatch({ who: "scheduled", sessionId: "sess-1" })).removed).toBe(4);
+    expect(g.describe("codeword")?.attributes.rotated).toBeUndefined();
+    expect(g.describe("codeword")?.attributes.value).toBe("green falcon");
     g.close();
   });
 
-  it("the same write on any other record gets the conflict result", async () => {
-    expect(
-      await h.tools.remember.execute(
-        { id: "pinned", attributes: { value: "felix's" }, source: "user" },
-        felix("a-other"),
-      ),
-    ).toContain('kept value: the user said "operator\'s"');
+  it.each([
+    ["delegated", DELEGATED, "by a delegated task", "delegated task"],
+    [
+      "other",
+      { who: OTHER_AGENT },
+      "during a conversation with someone other than the user",
+      "someone else's conversation",
+    ],
+  ])("a %s value recalls with its origin", async (who, opts, full, short) => {
+    await h.tools.remember.execute(
+      { id: "codeword", attributes: { [`by_${who}`]: "x" } },
+      contextFor(`r-${who}`, opts as Input),
+    );
+    expect(await h.tools.recall.execute({ query: "code word" })).toContain(
+      `by_${who}: x  (recorded ${full} on ${today()})`,
+    );
+    expect(await injectedText(h.provider, h.memory, "code word")).toContain(`(${short})`);
+  });
+});
+
+describe("the owner's types and record types change only in the owner's conversation", () => {
+  let h: Awaited<ReturnType<typeof open>>;
+  beforeAll(async () => {
+    h = await open(tempDir(), "c1");
+    await h.tools.extend_schema.execute(clientRule);
+    await h.tools.remember.execute({
+      id: "jordan",
+      label: "Jordan",
+      type: "ClientContact",
+      attributes: { phone: "1", company: "Acme" },
+    });
   });
 
-  it("a record is the agent's state by its declared id, not by its name", async () => {
-    await h.tools.remember.execute({
-      id: "notes",
-      label: "maintenance handoff",
-      attributes: { item: "x" },
-    });
+  it("another writer can't alter the owner's type or re-type the owner's record; the tool says why", async () => {
+    const ext = await h.tools.extend_schema.execute(
+      { class: "ClientContact", requires: [{ slot: "evil", minCount: 1 }] },
+      contextFor("x1", SCHEDULED),
+    );
+    expect(ext).toContain("Couldn't add that (owner-type)");
+    expect(ext).toContain("only the user's own conversation can change that definition");
+    const retype = await h.tools.remember.execute(
+      { id: "jordan", type: "Vendor" },
+      contextFor("x2", { who: OTHER_AGENT }),
+    );
+    expect(retype).toContain("only the user's own conversation can change its type");
+  });
+
+  it("another writer's new types and records are open; the owner changes their own", async () => {
     expect(
-      await h.tools.remember.execute(
-        { id: "notes", attributes: { item: "y" }, source: "user" },
-        felix("a-label"),
+      await h.tools.extend_schema.execute(
+        { class: "Vendor", requires: [{ slot: "sku" }] },
+        contextFor("x3", DELEGATED),
       ),
-    ).toContain('kept item: the user said "x"');
+    ).toMatch(/^Learned the rule/);
+    expect(
+      await h.tools.extend_schema.execute({
+        class: "ClientContact",
+        requires: [{ slot: "email" }],
+      }),
+    ).toMatch(/^Learned the rule/);
+  });
+});
+
+describe("maxWritesPerSession: a runaway session fails loud", () => {
+  it("writes past the cap throw, per session, and reads still work", async () => {
+    const h = await open(tempDir(), "w1", { maxWritesPerSession: 2 });
+    await h.tools.remember.execute({ id: "a", label: "A" });
+    await h.tools.forget.execute({ id: "a", details: ["label"] });
+    await expect(h.tools.remember.execute({ id: "b", label: "B" })).rejects.toThrow(
+      "This session has reached its memory write limit (2)",
+    );
+    await expect(
+      h.tools.extend_schema.execute({ class: "Thing2", requires: [{ slot: "x" }] }),
+    ).rejects.toThrow("memory write limit");
+    expect(await h.tools.recall.execute({ query: "B" })).not.toContain("[b]");
+    const other = {
+      ...contextFor("w-other"),
+      session: { ...contextFor("w-other").session, id: "sess-2" },
+    };
+    expect(await h.tools.remember.execute({ id: "b", label: "B" }, other)).toMatch(/^Remembered B/);
+  });
+
+  it("is off by default", async () => {
+    const h = await open(tempDir(), "w2");
+    for (let i = 0; i < 30; i++) await h.tools.remember.execute({ id: `n${i}`, label: `N${i}` });
   });
 });
 
