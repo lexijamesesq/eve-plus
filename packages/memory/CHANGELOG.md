@@ -28,8 +28,8 @@ of ranking.
 - **`recorded` on reads:** each value's `{ who, on }`. Recall renders it as "recorded during the user's own
   conversation on 2026-10-19", "by a scheduled run", "by a delegated task" or "during a conversation with someone other
   than the user".
-- **One rule:** a record type created in the owner's own conversation, or a record typed there, changes type or
-  definition only there. A refusal returns stage `owner-type` with a reason.
+- **One rule:** a record type created or extended in the owner's own conversation, or a record typed there, changes
+  type or definition only there. A refusal returns stage `owner-type` with a reason.
 - **Detection:** a scheduled, delegated or other-principal write over an owner-conversation value logs one
   `[mem] owner-overwrite` warning and increments `MemoryGraph.ownerOverwrites`.
 - **`maxWritesPerSession`:** an optional cap on write calls per session. Past it, a write throws.
@@ -41,8 +41,8 @@ No migration step: stores open as they are, and the schema log is unchanged.
 - **From 0.2.x:** values written as `"user"` in the owner's live turn read as the owner's, and scheduled or
   delegated writes read as such. Other 0.2.x content values read as `legacy` (unmarked). Types the user created under
   0.2.x keep the new rule's protection.
-- **From 0.1.0:** values and types read as `legacy` and are open to every writer, as they were under 0.1.0. Types a
-  raw shape names count as the owner's.
+- **From 0.1.0:** values read as `legacy` and are open to every writer. Types and record types count as the owner's,
+  since they came from the owner's conversations, as do types a raw shape names.
 - **Behaviour you'll see:** writes that 0.2.x kept back now land. If you relied on that to protect values, use
   attribution to find and revert what you don't want, and `maxWritesPerSession` to bound a run.
 

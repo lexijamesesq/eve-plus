@@ -66,9 +66,9 @@ Memory is attributed and revertable. It is not a defense against poisoning, and 
 **What's built:**
 
 - **Every write lands, recorded with who made it.** Each fact and schema change records, from eve's own session context and never from anything the model says: whether it came from the scope owner's own live conversation, another principal's, a scheduled run or a delegated task; the principal; and the session, turn and tool call. A scope that isn't one principal's (a list, or a shared key) has no owner. `history` keeps every replaced value.
-- **Recall says who recorded a value.** Tool reads show each value as recorded during the user's own conversation, by a scheduled run, by a delegated task, or during a conversation with someone other than the user, with the date. The turn-start block marks only values that weren't recorded in the owner's conversation, to keep it short. Nothing is rendered as "the user said" or "unconfirmed": the store knows who wrote a value, not whether it's true.
+- **Recall says who recorded a value.** Tool reads show each value as recorded during the memory owner's own conversation, by a scheduled run, by a delegated task, or during a conversation with someone other than the memory owner, with the date. The turn-start block marks only values that weren't recorded in the owner's conversation, to keep it short. Nothing is rendered as "the user said" or "unconfirmed": the store knows who wrote a value, not whether it's true.
 - **Undo by origin.** `revertBatch` takes any recorded origin field, so "everything that scheduled run wrote" (`{ who: "scheduled", sessionId }`) or one tool call (`{ callId }`) comes out in one step.
-- **One control-plane rule.** A record type created in the owner's own conversation can be changed only there, and a record typed there can be re-typed only there. Types named by a raw shape (added through the API, never by the tools) count as the owner's. New types and records are open to any writer, and a refused change says why.
+- **One control-plane rule.** Once a record type has been created or extended in the owner's own conversation, only the owner's conversation can change it, and a record typed there can be re-typed only there. Otherwise another writer could change a type so the owner's own saves fail lint. Types and record types from a 0.1.0 store, and types a raw shape names (added through the API, never by the tools), count as the owner's. New types and records are open to any writer, values are never protected, and a refused change says why.
 - **Detection, not gates.** When a scheduled run, a delegated task or another principal replaces or retracts a value written in the owner's conversation, the write lands and is logged as one `[mem] owner-overwrite` warning with its origin, and counted (`MemoryGraph.ownerOverwrites`). The optional `maxWritesPerSession` caps write calls per session: past it, a write throws instead of landing, so a run that goes wrong can't rewrite a whole memory.
 - **Memory is shown to the model as data, not instructions.** The per-turn context block presenting the agent's own schema is rendered as a plain listing (type and field names only), never as free-form text that could read as an instruction; a rule author's rejection-message text never reaches the model either. Instruction-shaped authored names are capped (≤3 words, ≤24 characters) on both authoring surfaces — schema authoring via `extend_schema` and entity/attribute naming via `remember`.
 
@@ -78,10 +78,10 @@ Memory is attributed and revertable. It is not a defense against poisoning, and 
 
 - **Content in the owner's own turn can change facts.** Text the user pastes or forwards arrives in their own message, and no signal separates it from their words, so whatever the agent saves from it is recorded as written in the owner's conversation. Attribution finds it; `revertBatch` undoes it.
 - **Memory steers answers.** A wrong value, whoever wrote it, shapes what the agent says next. Recall says who recorded it, not whether it's true.
-- **No cryptographic integrity.** Origins are rows in a SQLite file. Anyone who can write the file can rewrite them.
+- **No cryptographic integrity.** Origins are rows in a SQLite file. Anyone who can write the file can rewrite them, which is acceptable where the store sits on one operator's own volume.
 - **Retention is deferred.** Nothing expires: replaced values stay in history until a scope is reset.
 
-**Resetting one scope:** stop the agent and move `<dir>/<scope key>/` aside (the scope key with characters outside `a-zA-Z0-9._-` replaced by `_`); that scope starts empty on its next use, and the moved copy can be restored.
+**Resetting one scope** (the operator who runs the agent's host does this): stop the agent and move `<dir>/<scope key>/` aside (the scope key with characters outside `a-zA-Z0-9._-` replaced by `_`); that scope starts empty on its next use, and the moved copy can be restored.
 
 ## Changes
 

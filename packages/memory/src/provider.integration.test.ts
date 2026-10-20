@@ -483,7 +483,7 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
     expect(said).toContain('Replaced: value "blue heron" → "green falcon"');
     const seen = await h.tools.recall.execute({ query: "code word" });
     expect(seen).toContain(
-      `value: green falcon  (recorded during the user's own conversation on ${today()})`,
+      `value: green falcon  (recorded during the memory owner's own conversation on ${today()})`,
     );
     for (const never of ["said", "unconfirmed", "not stated by the user", "confirm with the user"])
       expect(seen).not.toContain(never);
@@ -505,9 +505,9 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
     const seen = await h.tools.recall.execute({ query: "code word" });
     expect(seen).toContain(`rotated: yes  (recorded by a scheduled run on ${today()})`);
     expect(seen).toContain("When it matters, say where it came from.");
-    expect(await h.tools.relate.execute({ about: "Vault door" })).toContain(
-      `(record created by a scheduled run on ${today()})`,
-    );
+    const related = await h.tools.relate.execute({ about: "Vault door" });
+    expect(related).toContain(`(record created by a scheduled run on ${today()})`);
+    expect(related).toContain("When it matters, say where it came from.");
     expect(await injectedText(h.provider, h.memory, "code word rotated")).toContain(
       "rotated=yes (scheduled run)",
     );
@@ -523,7 +523,7 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
     [
       "other",
       { who: OTHER_AGENT },
-      "during a conversation with someone other than the user",
+      "during a conversation with someone other than the memory owner",
       "someone else's conversation",
     ],
   ])("a %s value recalls with its origin", async (who, opts, full, short) => {
@@ -557,12 +557,12 @@ describe("the owner's types and record types change only in the owner's conversa
       contextFor("x1", SCHEDULED),
     );
     expect(ext).toContain("Couldn't add that (owner-type)");
-    expect(ext).toContain("only the user's own conversation can change that definition");
+    expect(ext).toContain("only the memory owner's own conversation can change that definition");
     const retype = await h.tools.remember.execute(
       { id: "jordan", type: "Vendor" },
       contextFor("x2", { who: OTHER_AGENT }),
     );
-    expect(retype).toContain("only the user's own conversation can change its type");
+    expect(retype).toContain("only the memory owner's own conversation can change its type");
   });
 
   it("another writer's new types and records are open; the owner changes their own", async () => {

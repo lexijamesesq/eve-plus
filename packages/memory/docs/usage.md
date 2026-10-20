@@ -98,7 +98,7 @@ Every write lands, and records who made it from eve's session, never from the mo
 
 ```text
 recall("code word")
-→ value: green falcon  (recorded during the user's own conversation on 2026-10-19)
+→ value: green falcon  (recorded during the memory owner's own conversation on 2026-10-19)
   rotated: yes  (recorded by a scheduled run on 2026-10-20)
 ```
 
@@ -110,12 +110,12 @@ If a scheduled run, delegated task or another principal replaces a value from th
 await graph.revertBatch({ who: "scheduled", sessionId: "<the run's session>" });
 ```
 
-One rule is enforced: a record type created in the owner's conversation, and a record typed there, change type or definition only in the owner's conversation. Another writer gets a reason it can act on:
+One rule is enforced: a record type created or extended in the owner's conversation, and a record typed there, change type or definition only in the owner's conversation. Another writer gets a reason it can act on:
 
 ```text
 extend_schema({ class: "ClientContact", requires: [{ slot: "fax" }] })   // from a scheduled run
-→ "Couldn't add that (owner-type): `ClientContact` records were defined in the user's own conversation, so only
-   the user's own conversation can change that definition. Define a new type instead, or ask the user."
+→ "Couldn't add that (owner-type): `ClientContact` records were defined in the memory owner's own conversation, so only
+   the memory owner's own conversation can change that definition. Define a new type instead, or ask the memory owner."
 ```
 
 ## Errors, generally

@@ -65,13 +65,13 @@ function byWhom(r: Recorded): string {
   const on = r.on ? ` on ${r.on}` : "";
   switch (r.who) {
     case "owner":
-      return `during the user's own conversation${on}`;
+      return `during the memory owner's own conversation${on}`;
     case "scheduled":
       return `by a scheduled run${on}`;
     case "delegated":
       return `by a delegated task${on}`;
     case "other":
-      return `during a conversation with someone other than the user${on}`;
+      return `during a conversation with someone other than the memory owner${on}`;
     default:
       return on.trim();
   }
@@ -129,7 +129,7 @@ function recordMark(origins: Origins): string {
 }
 
 const ORIGIN_NOTE =
-  "A value marked as recorded by a scheduled run, a delegated task or someone other than the user wasn't recorded in the user's own conversation. When it matters, say where it came from.";
+  "A value marked as recorded by a scheduled run, a delegated task or someone other than the memory owner wasn't recorded in the memory owner's own conversation. When it matters, say where it came from.";
 
 function formatRecall(
   facts: readonly {

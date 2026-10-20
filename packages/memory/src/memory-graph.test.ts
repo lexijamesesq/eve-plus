@@ -335,7 +335,7 @@ describe("the one control-plane rule: the owner's types and record types change 
       expect(r.ok).toBe(false);
       if (r.ok) return;
       expect(r.stage).toBe("owner-type");
-      expect(r.problems[0]?.message).toMatch(/defined in the user's own conversation/);
+      expect(r.problems[0]?.message).toMatch(/defined in the memory owner's own conversation/);
       expect(
         g
           .shapeIndex()
@@ -357,17 +357,27 @@ describe("the one control-plane rule: the owner's types and record types change 
     ).toBe(true);
   });
 
-  it("new types are open to anyone, and a type another writer created stays open after the owner extends it", async () => {
+  it("new types are open to anyone, and stay open until the owner changes them", async () => {
     const g = await MemoryGraph.create();
     for (const who of nonOwners)
       expect(
         (await g.extendSchema({ class: `T${who}`, requires: [{ slot: "a" }] }, by(who))).ok,
       ).toBe(true);
-    await g.extendSchema({ class: "Tscheduled", requires: [{ slot: "b" }] }, owner);
     expect(
-      (await g.extendSchema({ class: "Tscheduled", requires: [{ slot: "c" }] }, by("delegated")))
+      (await g.extendSchema({ class: "Tscheduled", requires: [{ slot: "b" }] }, by("delegated")))
         .ok,
     ).toBe(true);
+  });
+
+  it("a type another writer created is the owner's once the owner extends it", async () => {
+    const g = await MemoryGraph.create();
+    await g.extendSchema({ class: "Gadget", requires: [{ slot: "sku" }] }, by("scheduled"));
+    await g.extendSchema({ class: "Gadget", requires: [{ slot: "color" }] }, owner);
+    const r = await g.extendSchema(
+      { class: "Gadget", requires: [{ slot: "evil" }] },
+      by("scheduled"),
+    );
+    expect(r.ok || r.stage).toBe("owner-type");
   });
 
   it("a type a raw shape names is the owner's", async () => {
@@ -382,6 +392,13 @@ describe("the one control-plane rule: the owner's types and record types change 
       by("scheduled"),
     );
     expect(r.ok || r.stage).toBe("owner-type");
+    // A shape that is its own class target names its type too.
+    await g.extendSchema({
+      class: "raw",
+      rawShape: "c:Dd a sh:NodeShape, rdfs:Class ; sh:property [ sh:path p:size ] .",
+    });
+    const d = await g.extendSchema({ class: "Dd", requires: [{ slot: "evil" }] }, by("scheduled"));
+    expect(d.ok || d.stage).toBe("owner-type");
   });
 
   it("a record the owner typed can't be re-typed by another writer, but its details can change", async () => {
@@ -410,7 +427,7 @@ describe("the one control-plane rule: the owner's types and record types change 
 });
 
 describe("upgrading older stores", () => {
-  it("a 0.1.0 store keeps its types and values, recorded as legacy: open to every writer, still linted", async () => {
+  it("a 0.1.0 store keeps its types and values: its values are open to every writer, its types are the owner's", async () => {
     const dir = mkdtempSync(join(tmpdir(), "eve-plus-upgrade-"));
     try {
       // The store as 0.1.0 leaves it: definitions and raw shapes in meta rows, no schema log, no origins.
@@ -444,9 +461,17 @@ describe("upgrading older stores", () => {
       expect(g.describe("den")?.recorded.size?.who).toBe("legacy");
       expect((await g.remember({ id: "r", label: "Den", type: "Room" })).ok).toBe(false);
       const scheduled = JSON.stringify({ who: "scheduled" });
-      expect(
-        (await g.extendSchema({ class: "Room", requires: [{ slot: "x" }] }, scheduled)).ok,
-      ).toBe(true);
+      // Its values are open to every writer.
+      expect((await g.remember({ id: "den", attributes: { size: "small" } }, scheduled)).ok).toBe(
+        true,
+      );
+      expect(g.describe("den")?.attributes.size).toBe("small");
+      // Its types and record types came from the owner's conversations: the owner's.
+      const room = await g.extendSchema({ class: "Room", requires: [{ slot: "x" }] }, scheduled);
+      expect(room.ok || room.stage).toBe("owner-type");
+      const retype = await g.remember({ id: "den", type: "Hall" }, scheduled);
+      expect(retype.ok || retype.stage).toBe("owner-type");
+      expect((await g.extendSchema({ class: "Room", requires: [{ slot: "x" }] })).ok).toBe(true);
       // A raw shape is the operator's, whatever the store's age.
       const hall = await g.extendSchema({ class: "Hall", requires: [{ slot: "x" }] }, scheduled);
       expect(hall.ok || hall.stage).toBe("owner-type");

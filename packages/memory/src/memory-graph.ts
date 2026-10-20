@@ -145,8 +145,8 @@ type View = {
   relations: Triple[];
   rows: Triple[];
   recorded: Record<string, Recorded>;
-  /** Who typed the record: the origin of its current type. */
-  typedBy: Who | null;
+  /** Whether the record's current type is under the owner's control. */
+  ownerTyped: boolean;
 };
 
 const B = "https://eve.local/mem/";
@@ -191,27 +191,12 @@ const pascal = (s: unknown) =>
     .join("") || "X";
 const esc = (s: unknown) => String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 const tail = (iri: string) => iri.split("/").pop() ?? iri;
-// Two names are the same name when they differ only in case, accents, punctuation, spacing or word order, or when an
-// initial stands for a word it begins ("J. Lee" is "Jordan Lee").
 const nameTokens = (s: string) =>
   String(s)
     .normalize("NFKD")
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase()
     .match(/[a-z0-9]+/g) ?? [];
-function sameName(a: string, b: string): boolean {
-  const x = nameTokens(a);
-  const rest = nameTokens(b);
-  if (x.length === 0 || x.length !== rest.length) return false;
-  for (const t of x) {
-    const i = rest.findIndex(
-      (u) => u === t || (t.length === 1 && u.startsWith(t)) || (u.length === 1 && t.startsWith(u)),
-    );
-    if (i < 0) return false;
-    rest.splice(i, 1);
-  }
-  return true;
-}
 // FTS5 MATCH from free text: tokenize, drop 1–2 char noise (with a fallback so an all-short query still runs),
 // quote each token, OR-join. A single quoted phrase would require the whole string to appear adjacent+in-order —
 // so a multi-word query could never match a stored literal. OR over tokens is the "any word matches" recall we want.
@@ -351,6 +336,10 @@ export function whoOf(origin: string | null): Who {
   if (o?.source === "direct") return "owner";
   return "legacy";
 }
+// Whether a row puts a type or a record's type under the owner's control: written in the owner's own conversation, or
+// carried over from a 0.1.0 store, whose types and record types came from the owner's conversations.
+const ownerControlled = (origin: string | null): boolean =>
+  origin === null || whoOf(origin) === "owner" || parseOrigin(origin)?.source === "legacy";
 const onOf = (writtenAt: string | null) => (writtenAt ? writtenAt.slice(0, 10) : null);
 const stripUndefined = <T extends object>(o: T): Partial<T> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
@@ -628,7 +617,7 @@ export class MemoryGraph {
       relations: relations.map(withoutOrigin),
       rows: [...single, ...relations].map(withoutOrigin),
       recorded,
-      typedBy: recorded.type?.who ?? null,
+      ownerTyped: single.some((r) => r.p === TYPE && ownerControlled(r.origin)),
     };
   }
   // The search index serves the current view only — a superseded value must not be findable as if it were true.
@@ -787,7 +776,7 @@ export class MemoryGraph {
         stage: "owner-type",
         problems: [
           {
-            message: `\`${cls}\` records were defined in the user's own conversation, so only the user's own conversation can change that definition. Define a new type instead, or ask the user.`,
+            message: `\`${cls}\` records were defined in the memory owner's own conversation, so only the memory owner's own conversation can change that definition. Define a new type instead, or ask the memory owner.`,
           },
         ],
       };
@@ -864,7 +853,7 @@ export class MemoryGraph {
       before.exists &&
       before.type !== undefined &&
       pascal(fact.type) !== before.type &&
-      before.typedBy === "owner" &&
+      before.ownerTyped &&
       whoOf(origin) !== "owner"
     ) {
       dlog("remember REFUSED: a non-owner write asked to re-type", id);
@@ -873,7 +862,7 @@ export class MemoryGraph {
         stage: "owner-type",
         problems: [
           {
-            message: `${before.label ?? id} was typed \`${before.type}\` in the user's own conversation, so only the user's own conversation can change its type. Save the other details without a type, or ask the user.`,
+            message: `${before.label ?? id} was typed \`${before.type}\` in the memory owner's own conversation, so only the memory owner's own conversation can change its type. Save the other details without a type, or ask the memory owner.`,
           },
         ],
       };
@@ -1075,14 +1064,14 @@ export class MemoryGraph {
     );
   }
 
-  // Whether a type was created in the owner's own conversation (its first recorded definition), or is named by a raw
-  // shape. Who extended it later doesn't matter.
+  // Whether the owner's saves depend on a type: any change to it was made in the owner's own conversation (creating it
+  // or extending it), it came with a 0.1.0 store, or a raw shape names it.
   #ownerDefined(cls: string): boolean {
     if (this.#rawClasses.has(cls)) return true;
-    const first = this.db
-      .prepare("SELECT origin FROM schema_log WHERE class = ? ORDER BY seq LIMIT 1")
-      .get(cls) as { origin: string | null } | undefined;
-    return first !== undefined && whoOf(first.origin) === "owner";
+    const rows = this.db.prepare("SELECT origin FROM schema_log WHERE class = ?").all(cls) as {
+      origin: string | null;
+    }[];
+    return rows.some((r) => ownerControlled(r.origin));
   }
 
   // A new record's id: its name plus a suffix no record holds yet. A clash would silently write into another record.
@@ -1093,8 +1082,8 @@ export class MemoryGraph {
     }
   }
 
-  // Records whose current name is the same name as `label`. Candidates share a full word with it in the current view;
-  // bounded, since this runs on every write.
+  // Records whose current name is `label`. Candidates share a full word with it in the current view; bounded, since
+  // this runs on every id-less write.
   #namesakes(label: string): string[] {
     const words = nameTokens(label).filter((t) => t.length > 1);
     if (words.length === 0) return [];
@@ -1105,7 +1094,7 @@ export class MemoryGraph {
       .map((r) => r.s)
       .filter((sub) => {
         const existing = this.#view(sub).label;
-        return existing !== undefined && sameName(existing, label);
+        return existing === label;
       });
   }
 
@@ -1118,7 +1107,6 @@ export class MemoryGraph {
     return this.#namesakes(label).find((sub) => {
       const v = this.#view(sub);
       return (
-        v.label === label &&
         (!fact.type || v.type === pascal(fact.type)) &&
         Object.entries(fact.attributes ?? {}).every(
           ([k, val]) => v.attributes[slug(k)] === String(val),
