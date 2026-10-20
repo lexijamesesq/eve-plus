@@ -194,6 +194,18 @@ function formatRecall(
   return body;
 }
 
+// Whether a scope value is one principal's key, as eve's `byPrincipal` builds it.
+function isPrincipalKey(value: string | readonly string[]): boolean {
+  if (value === "local-dev") return true;
+  if (typeof value !== "string") return false;
+  try {
+    const key: unknown = JSON.parse(value);
+    return Array.isArray(key) && key.length === 4;
+  } catch {
+    return false;
+  }
+}
+
 function problemsToText(problems: { path?: string; message: string }[]): string {
   return problems.map((p) => `• ${p.message}`).join("\n");
 }
@@ -202,7 +214,7 @@ function problemsToText(problems: { path?: string; message: string }[]): string 
 // wrote it (the scope owner in their own live conversation, another principal, a scheduled run, a delegated task),
 // the principal, and the session, turn and tool call, so a bad batch can be found and undone with revertBatch by
 // any of these. Nothing here comes from what the model says about a write. A scope that isn't one principal's (a
-// list, or a shared key) has no owner, so no write to it is the owner's.
+// list, or a shared key) has no owner, so no write to it is the owner's, and `ownedScope` records that.
 function originOf(
   scope: { key: string; value: string | readonly string[] },
   tool: ToolContext | undefined,
@@ -217,7 +229,8 @@ function originOf(
           channel: {},
         })
       : null;
-  const scopeOwner = speaker !== null && speaker === scope.value;
+  const ownedScope = isPrincipalKey(scope.value);
+  const scopeOwner = ownedScope && speaker !== null && speaker === scope.value;
   const who = !session
     ? "unattributed"
     : session.schedule
@@ -232,6 +245,7 @@ function originOf(
     who,
     principal,
     scopeOwner,
+    ownedScope,
     sessionId: session?.id,
     turnId: session?.turn?.id,
     turnSequence: session?.turn?.sequence,

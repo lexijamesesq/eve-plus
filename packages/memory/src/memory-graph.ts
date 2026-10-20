@@ -351,6 +351,9 @@ const ownerControlled = (origin: string | null): boolean => {
   const who = whoOf(origin);
   return who === "owner" || (parseOrigin(origin)?.who === undefined && who === "legacy");
 };
+// Whether the scope a write lands in has an owner to protect. A scope that isn't one principal's (a list, a shared
+// key) has none, so the control-plane rule doesn't apply there.
+const hasOwner = (origin: string): boolean => parseOrigin(origin)?.ownedScope !== false;
 const onOf = (writtenAt: string | null) => (writtenAt ? writtenAt.slice(0, 10) : null);
 const stripUndefined = <T extends object>(o: T): Partial<T> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
@@ -789,7 +792,7 @@ export class MemoryGraph {
     }
     // The one control-plane rule: a type defined in the owner's own conversation is changed only there. It's keyed to
     // who recorded the definition, never to anything the model says, and a new type is open to any writer.
-    if (whoOf(origin) !== "owner" && this.#ownerDefined(cls)) {
+    if (whoOf(origin) !== "owner" && hasOwner(origin) && this.#ownerDefined(cls)) {
       dlog("extend_schema REFUSED: a non-owner write asked to change", cls);
       return {
         ok: false,
@@ -875,7 +878,8 @@ export class MemoryGraph {
       ownerType !== undefined &&
       target !== undefined &&
       target !== ownerType &&
-      whoOf(origin) !== "owner"
+      whoOf(origin) !== "owner" &&
+      hasOwner(origin)
     ) {
       dlog("remember REFUSED: a non-owner write asked to re-type", id);
       return {
@@ -1095,7 +1099,7 @@ export class MemoryGraph {
   }
 
   // Whether the owner's saves depend on a type: any change to it was made in the owner's own conversation (creating it
-  // or extending it), it came with a 0.1.0 store, or a raw shape names it.
+  // or extending it), it was written before 0.3.0 and not as a scheduled or delegated write, or a raw shape names it.
   #ownerDefined(cls: string): boolean {
     if (this.#rawClasses.has(cls)) return true;
     const rows = this.db.prepare("SELECT origin FROM schema_log WHERE class = ?").all(cls) as {

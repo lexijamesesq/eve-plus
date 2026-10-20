@@ -413,6 +413,7 @@ describe("attribution: every write lands, recorded with who made it, from eve's 
       origin: {
         who: "owner",
         scopeOwner: true,
+        ownedScope: true,
         principal: "U-operator",
         sessionId: "sess-1",
         turnSequence: 1,
@@ -459,7 +460,16 @@ describe("attribution: every write lands, recorded with who made it, from eve's 
     expect(w?.origin).not.toHaveProperty("from");
   });
 
-  it("a scope that isn't one principal's has no owner", async () => {
+  it("a scope that isn't one principal's has no owner, so no type in it is held for one", async () => {
+    // Types and record types from before 0.3.0, in a shared store: no writer is ever its owner.
+    const seed = await MemoryGraph.create({ dir: join(dir, "shared") });
+    const v010 = JSON.stringify({ scope: "shared", provenance: "user", callId: "old" });
+    await seed.extendSchema({ class: "Desk", requires: [{ slot: "floor" }] }, v010);
+    await seed.remember(
+      { id: "desk", label: "Desk", type: "Desk", attributes: { floor: "2" } },
+      v010,
+    );
+    seed.close();
     const provider = shaclMemory({ dir }) as unknown as Harness;
     const memory = {
       scope: { key: "shared", namespace: "test", value: "team" },
@@ -467,8 +477,21 @@ describe("attribution: every write lands, recorded with who made it, from eve's 
     };
     const tools = await provider.tools({ memory });
     await tools.remember.execute({ id: "home", label: "Home" }, toolContext("g-shared"));
+    expect(
+      await tools.extend_schema.execute(
+        { class: "Desk", requires: [{ slot: "seats" }] },
+        toolContext("g-shared-2"),
+      ),
+    ).toMatch(/^Learned the rule/);
+    expect(
+      await tools.remember.execute({ id: "desk", type: "Room" }, toolContext("g-shared-3")),
+    ).toMatch(/^Updated Desk \(Room\)/);
     const g = await MemoryGraph.create({ dir: join(dir, "shared") });
-    expect(g.history("home").at(-1)?.origin).toMatchObject({ who: "other", scopeOwner: false });
+    expect(g.history("home").at(-1)?.origin).toMatchObject({
+      who: "other",
+      scopeOwner: false,
+      ownedScope: false,
+    });
     g.close();
   });
 });

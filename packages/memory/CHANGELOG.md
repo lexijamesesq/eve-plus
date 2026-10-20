@@ -24,12 +24,14 @@ of ranking.
 ### Added
 
 - **Attribution on every write,** from eve's session context: `who` (`owner`, `other`, `scheduled`, `delegated`), the
-  `principal`, `scopeOwner`, and the session, turn and call. `revertBatch` selects on any of them.
+  `principal`, `scopeOwner`, `ownedScope` (whether the scope is one principal's), and the session, turn and call.
+  `revertBatch` selects on any of them.
 - **`recorded`, `recordedName` and `recordedType` on reads:** each detail's, and the record's name's and type's,
   `{ who, on }`. Recall renders a value as "recorded during the memory owner's own conversation on 2026-10-19", "by a
   scheduled run", "by a delegated task" or "during a conversation with someone other than the memory owner".
 - **One rule:** a record type created or extended in the owner's own conversation, or a record typed there, changes
-  type or definition only there. A refusal returns stage `owner-type` with a reason.
+  type or definition only there. A refusal returns stage `owner-type` with a reason. A scope with no owner (a list
+  or a shared key) has no such rule.
 - **Detection:** a scheduled, delegated or other-principal write over an owner-conversation value logs one
   `[mem] owner-overwrite #N` warning, where N is the running count for that store since the process started.
 - **`maxWritesPerSession`:** an optional cap on write calls per session. Past it, a write throws.

@@ -447,7 +447,7 @@ const mutations: Mutation[] = [
   {
     name: "another principal is recorded as the owner",
     file: "src/provider.ts",
-    find: "const scopeOwner = speaker !== null && speaker === scope.value;",
+    find: "const scopeOwner = ownedScope && speaker !== null && speaker === scope.value;",
     replace: "const scopeOwner = true;",
     expect: "a other write lands and is recorded so",
   },
@@ -514,15 +514,15 @@ const mutations: Mutation[] = [
   {
     name: "the owner's types are open to every writer",
     file: "src/memory-graph.ts",
-    find: 'if (whoOf(origin) !== "owner" && this.#ownerDefined(cls)) {',
+    find: 'if (whoOf(origin) !== "owner" && hasOwner(origin) && this.#ownerDefined(cls)) {',
     replace: "if (false) {",
     expect: "a type the owner created can't be altered by any other writer",
   },
   {
     name: "only a scheduled run is held to the rule",
     file: "src/memory-graph.ts",
-    find: 'if (whoOf(origin) !== "owner" && this.#ownerDefined(cls)) {',
-    replace: 'if (whoOf(origin) === "scheduled" && this.#ownerDefined(cls)) {',
+    find: 'if (whoOf(origin) !== "owner" && hasOwner(origin) && this.#ownerDefined(cls)) {',
+    replace: 'if (whoOf(origin) === "scheduled" && hasOwner(origin) && this.#ownerDefined(cls)) {',
     expect: "a type the owner created can't be altered by any other writer",
   },
   {
@@ -647,6 +647,28 @@ const mutations: Mutation[] = [
     find: 'a.recordedName && NOT_OWNER.has(a.recordedName.who) ? `named ${byWhom(a.recordedName)}` : "",',
     replace: '"",',
     expect: "a scheduled write lands, recalls as scheduled",
+  },
+  // A scope with no owner has no control-plane rule.
+  {
+    name: "a scope with no owner still holds types for one",
+    file: "src/memory-graph.ts",
+    find: "const hasOwner = (origin: string): boolean => parseOrigin(origin)?.ownedScope !== false;",
+    replace: "const hasOwner = (origin: string): boolean => true;",
+    expect: "in a scope with no owner, nothing is held for one",
+  },
+  {
+    name: "every scope is recorded as owned",
+    file: "src/provider.ts",
+    find: "const ownedScope = isPrincipalKey(scope.value);",
+    replace: "const ownedScope = true;",
+    expect: "a scope that isn't one principal's has no owner",
+  },
+  {
+    name: "no scope is recorded as owned",
+    file: "src/provider.ts",
+    find: "const ownedScope = isPrincipalKey(scope.value);",
+    replace: "const ownedScope = false;",
+    expect: "the owner's live turn is recorded as the owner's",
   },
 ];
 

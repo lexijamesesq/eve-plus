@@ -458,6 +458,23 @@ describe("the one control-plane rule: the owner's types and record types change 
     expect((await g.remember({ id: "ann", type: "Vendor" }, by("scheduled"))).ok).toBe(true);
   });
 
+  it("in a scope with no owner, nothing is held for one", async () => {
+    const g = await MemoryGraph.create();
+    const v010 = JSON.stringify({ provenance: "user", callId: "old" });
+    await g.extendSchema({ class: "Desk", requires: [{ slot: "floor" }] }, v010);
+    await g.remember({ id: "desk", label: "Desk", type: "Desk", attributes: { floor: "2" } }, v010);
+    const owned = JSON.stringify({ who: "other", ownedScope: true });
+    const shared = JSON.stringify({ who: "other", ownedScope: false });
+    const ext = await g.extendSchema({ class: "Desk", requires: [{ slot: "x" }] }, owned);
+    expect(ext.ok || ext.stage).toBe("owner-type");
+    const retype = await g.remember({ id: "desk", type: "Room" }, owned);
+    expect(retype.ok || retype.stage).toBe("owner-type");
+    expect((await g.extendSchema({ class: "Desk", requires: [{ slot: "x" }] }, shared)).ok).toBe(
+      true,
+    );
+    expect((await g.remember({ id: "desk", type: "Room" }, shared)).ok).toBe(true);
+  });
+
   it("the owner re-types any record; any writer re-types one another writer typed", async () => {
     const g = await MemoryGraph.create();
     await g.remember({ id: "jordan", label: "Jordan", type: "Person" }, owner);
