@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { MemoryGraph } from "./memory-graph.js";
 
@@ -86,9 +86,9 @@ describe("an id-less save converges on the record that already holds it", () => 
     if (!first.ok || !again.ok) return;
     expect(again.id).toBe(first.id);
     expect(jordans(g)).toHaveLength(1);
-    // From handed content too: the record that holds it is not a second one.
-    const fromContent = await g.remember(jordan, JSON.stringify({ provenance: "content" }));
-    expect(fromContent.ok && fromContent.kept).toEqual([]);
+    // From a scheduled run too: the record that holds it is not a second one.
+    const scheduled = await g.remember(jordan, JSON.stringify({ who: "scheduled" }));
+    expect(scheduled.ok && scheduled.id).toBe(first.id);
     expect(jordans(g)).toHaveLength(1);
   });
 
@@ -222,279 +222,281 @@ describe("the current view: kinds never shadow each other, and write order is ex
 
 // What the user stated outranks handed content: content adds beside it but never replaces or retracts it. The provider
 // grounds which writes are content; the store enforces the rule on whatever origin it is handed.
-describe("precedence: handed content can't replace or retract what the user stated", () => {
-  const user = JSON.stringify({ provenance: "user", callId: "u" });
-  const content = (callId = "c") =>
-    JSON.stringify({ provenance: "content", from: "email from Tara", callId });
-  const agentState = JSON.stringify({ provenance: "agent-state", callId: "a" });
+describe("attribution, not precedence: every write lands, recorded with who made it", () => {
+  const owner = (callId = "o") => JSON.stringify({ who: "owner", principal: "lexi", callId });
+  const scheduled = (callId = "s") =>
+    JSON.stringify({ who: "scheduled", principal: "lexi", sessionId: "run-1", callId });
   const person = async () => {
     const g = await MemoryGraph.create();
     await g.remember(
       { id: "jordan", label: "Jordan Lee", type: "Person", attributes: { phone: "555-0142" } },
-      user,
+      owner(),
     );
     return g;
   };
+  const today = new Date().toISOString().slice(0, 10);
 
-  it("content can't supersede a value the user stated, and says what it kept", async () => {
+  it("a scheduled write replaces an owner value, is recorded as scheduled, and is counted", async () => {
     const g = await person();
-    const r = await g.remember({ id: "jordan", attributes: { phone: "555-0999" } }, content());
-    expect(r).toMatchObject({
-      ok: true,
-      kept: [{ key: "phone", from: "555-0142", to: "555-0999" }],
-    });
-    expect(g.describe("jordan")?.attributes.phone).toBe("555-0142");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const r = await g.remember({ id: "jordan", attributes: { phone: "555-9999" } }, scheduled());
+      expect(r.ok && r.superseded).toEqual([{ key: "phone", from: "555-0142", to: "555-9999" }]);
+      const d = g.describe("jordan");
+      expect(d?.attributes.phone).toBe("555-9999");
+      expect(d?.recorded.phone).toEqual({ who: "scheduled", on: today });
+      expect(d?.recordedName).toEqual({ who: "owner", on: today });
+      expect(d?.recordedType).toEqual({ who: "owner", on: today });
+      expect(g.ownerOverwrites).toBe(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(
+        /owner-overwrite #1: a scheduled write changed jordan \(phone\)/,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it("content can't change the type or name the user gave a record", async () => {
+  it("only a non-owner write over an owner value is counted", async () => {
     const g = await person();
-    const r = await g.remember({ id: "jordan", label: "J. Lee", type: "Vendor" }, content());
-    expect(r.ok && r.kept.map((k) => k.key).sort()).toEqual(["label", "type"]);
-    expect(g.describe("jordan")).toMatchObject({ label: "Jordan Lee", type: "Person" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await g.remember({ id: "jordan", attributes: { phone: "555-1111" } }, owner("o2"));
+      await g.remember({ id: "jordan", attributes: { email: "j@x.example" } }, scheduled());
+      await g.remember({ id: "jordan", attributes: { email: "j@y.example" } }, scheduled("s2"));
+      for (const who of ["delegated", "other"]) {
+        const h = await person();
+        await h.remember(
+          { id: "jordan", attributes: { phone: "1" } },
+          JSON.stringify({ who, callId: "x" }),
+        );
+        expect(h.ownerOverwrites).toBe(1);
+      }
+      await g.remember(
+        { id: "jordan", attributes: { phone: "2" } },
+        JSON.stringify({ who: "unattributed" }),
+      );
+      expect(g.ownerOverwrites).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it("content can still add a detail beside the user's, in the same write as a kept one", async () => {
+  it("a scheduled forget of an owner value lands, and is counted", async () => {
     const g = await person();
-    const r = await g.remember(
-      { id: "jordan", attributes: { phone: "555-0999", fax: "555-0100" } },
-      content(),
-    );
-    expect(r.ok && r.kept).toHaveLength(1);
-    expect(g.describe("jordan")?.attributes).toMatchObject({ phone: "555-0142", fax: "555-0100" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const r = await g.forget({ id: "jordan", details: ["phone"] }, scheduled());
+      expect(r.ok && r.forgotten).toEqual(["phone"]);
+      expect(g.describe("jordan")?.attributes.phone).toBeUndefined();
+      expect(g.ownerOverwrites).toBe(1);
+      const whole = await g.forget({ id: "jordan" }, scheduled("s2"));
+      expect(whole.ok && whole.whole).toBe(true);
+      expect(g.describe("jordan")).toBeNull();
+      expect(g.ownerOverwrites).toBe(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it("content updates and forgets what content wrote", async () => {
+  it("everything a scheduled run wrote is revertable by its recorded origin", async () => {
     const g = await person();
-    await g.remember({ id: "jordan", attributes: { fax: "555-0100" } }, content("c1"));
-    const r = await g.remember({ id: "jordan", attributes: { fax: "555-0101" } }, content("c2"));
-    expect(r.ok && r.kept).toEqual([]);
-    expect(g.describe("jordan")?.attributes.fax).toBe("555-0101");
-    const f = await g.forget({ id: "jordan", details: ["fax"] }, content("c3"));
-    expect(f).toMatchObject({ ok: true, forgotten: ["fax"], kept: [] });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await g.remember({ id: "jordan", attributes: { phone: "555-9999" } }, scheduled("s1"));
+      await g.remember({ label: "Acme", type: "Org" }, scheduled("s2"));
+      await g.remember({ label: "Beta", type: "Org" }, owner("o2"));
+      const r = await g.revertBatch({ who: "scheduled", sessionId: "run-1" });
+      expect(r.removed).toBe(3);
+      expect(g.describe("jordan")?.attributes.phone).toBe("555-0142");
+      expect(g.recall("Acme").filter((f) => f.label === "Acme")).toEqual([]);
+      expect(g.recall("Beta").filter((f) => f.label === "Beta")).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it("content can't forget a detail the user stated, or the user's record as a whole", async () => {
-    const g = await person();
-    await g.remember({ id: "jordan", attributes: { fax: "555-0100" } }, content());
-    const some = await g.forget({ id: "jordan", details: ["phone"] }, content());
-    expect(some).toMatchObject({
-      ok: true,
-      forgotten: [],
-      kept: [{ key: "phone", from: "555-0142" }],
-    });
-    const whole = await g.forget({ id: "jordan" }, content());
-    expect(whole).toMatchObject({ ok: true, whole: false, forgotten: ["fax"] });
-    expect(g.describe("jordan")).toMatchObject({
-      label: "Jordan Lee",
-      attributes: { phone: "555-0142" },
-    });
-  });
-
-  it("content can't take over a value the user stated by resending it as another datatype", async () => {
-    const g = await MemoryGraph.create();
-    await g.remember(
-      { id: "jl", label: "JL", attributes: { phone: "5550142", active: "true" } },
-      user,
-    );
-    const retyped = await g.remember(
-      { id: "jl", attributes: { phone: 5550142, active: true } },
-      content(),
-    );
-    expect(retyped.ok && [retyped.superseded, retyped.kept]).toEqual([[], []]);
-    const taken = await g.remember(
-      { id: "jl", attributes: { phone: "5550999", active: "false" } },
-      content(),
-    );
-    expect(taken.ok && taken.kept.map((k) => k.key).sort()).toEqual(["active", "phone"]);
-    expect(g.describe("jl")?.attributes).toMatchObject({ phone: "5550142", active: "true" });
-    expect(g.history("jl").filter((e) => e.origin?.provenance === "content")).toEqual([]);
-  });
-
-  // Forgetting means "not current", not "never again": content that meets it again is new evidence, filed beside
-  // the user's facts as content.
-  it("content may re-add what the user forgot, recorded as content", async () => {
-    const g = await person();
-    await g.forget({ id: "jordan", details: ["phone"] }, user);
-    const back = await g.remember({ id: "jordan", attributes: { phone: "555-0142" } }, content());
-    expect(back.ok && back.kept).toEqual([]);
-    expect(g.describe("jordan")?.filed).toHaveProperty("phone");
-  });
-
-  it("content can't rename its own record onto the user's record's name", async () => {
+  it("a detail named label or type keeps its own origin, apart from the record's name and type", async () => {
     const g = await person();
     await g.remember(
-      { id: "c1", label: "Acme Billing", attributes: { phone: "555-0999" } },
-      content(),
+      { id: "jordan", attributes: { label: "SNEAKY", type: "SNEAKT" } },
+      scheduled(),
     );
-    const renamed = await g.remember(
-      { id: "c1", label: "Jordan Lee", attributes: { fax: "1" } },
-      content(),
-    );
-    expect(renamed).toMatchObject({ ok: true, kept: [{ key: "record", from: "Jordan Lee" }] });
-    expect(g.describe("c1")).toMatchObject({ label: "Acme Billing", attributes: { fax: "1" } });
+    expect(g.describe("jordan")?.recordedName?.who).toBe("owner");
+    expect(g.describe("jordan")?.recordedType?.who).toBe("owner");
+    await g.remember({ id: "jordan", label: "Jordan L", type: "Contact" }, owner("o2"));
+    const d = g.describe("jordan");
+    expect(d?.recorded.label?.who).toBe("scheduled");
+    expect(d?.recorded.type?.who).toBe("scheduled");
+    expect(d?.recordedName?.who).toBe("owner");
+    expect(d?.recordedType?.who).toBe("owner");
   });
 
-  it("content naming a second record under the user's record's name writes nothing", async () => {
+  it("a value written again with the same text keeps one current row, now the writer's", async () => {
     const g = await person();
-    const r = await g.remember(
-      { id: "contact_42", label: "J. Lee", type: "Person", attributes: { phone: "555-0999" } },
-      content(),
-    );
-    expect(r).toMatchObject({
-      ok: true,
-      id: "jordan",
-      kept: [{ key: "record", from: "Jordan Lee" }],
-    });
-    expect(g.describe("contact_42")).toBeNull();
-  });
-
-  it("the user replaces and forgets their own values", async () => {
-    const g = await person();
-    await g.remember({ id: "jordan", attributes: { phone: "555-0123" } }, user);
-    expect(g.describe("jordan")?.attributes.phone).toBe("555-0123");
-    expect(await g.forget({ id: "jordan" }, user)).toMatchObject({ whole: true, kept: [] });
-  });
-
-  it("values from before writes were grounded rank as the user's, including approved ones", async () => {
-    const g = await MemoryGraph.create();
-    await g.remember({ id: "a", label: "A", attributes: { x: "1" } }); // the store's own default origin
-    await g.remember(
-      { id: "a", attributes: { y: "2" } },
-      JSON.stringify({ provenance: "content-approved", from: "email" }),
-    );
-    await g.remember({ id: "a", attributes: { z: "3" } }, JSON.stringify({ source: "legacy" }));
-    const r = await g.remember({ id: "a", attributes: { x: "9", y: "9", z: "9" } }, content());
-    expect(r.ok && r.kept.map((k) => k.key).sort()).toEqual(["x", "y", "z"]);
-  });
-
-  it("the agent's declared state isn't ranked: content replaces and clears what the user's session wrote there", async () => {
-    const g = await MemoryGraph.create();
-    await g.remember(
-      {
-        id: "maintenance handoff",
-        label: "maintenance handoff",
-        attributes: { open_a: "dm item" },
-      },
-      agentState,
-    );
-    const r = await g.remember(
-      { id: "maintenance handoff", attributes: { open_a: "updated" } },
-      agentState,
-    );
-    expect(r.ok && r.kept).toEqual([]);
-    expect(
-      await g.forget({ id: "maintenance handoff", details: ["open_a"] }, content()),
-    ).toMatchObject({ forgotten: ["open_a"], kept: [] });
+    await g.remember({ id: "jordan", attributes: { phone: "555-0142" } }, scheduled());
+    expect(g.describe("jordan")?.recorded.phone?.who).toBe("owner");
   });
 });
 
-describe("schema changes are attributed and revertable, with the same precedence", () => {
-  const user = JSON.stringify({ provenance: "user", callId: "s-user" });
-  const content = (callId: string) => JSON.stringify({ provenance: "content", callId });
+describe("the one control-plane rule: the owner's types and record types change only in the owner's conversation", () => {
+  const owner = JSON.stringify({ who: "owner", callId: "o" });
+  const by = (who: string) => JSON.stringify({ who, callId: who });
+  const nonOwners = ["scheduled", "delegated", "other", "unattributed", "legacy"];
 
-  it("content can't change a record type the user defined", async () => {
-    const g = await MemoryGraph.create();
-    await g.extendSchema(
-      { class: "ClientContact", requires: [{ slot: "phone", minCount: 1 }] },
-      user,
-    );
-    const r = await g.extendSchema(
-      { class: "ClientContact", requires: [{ slot: "always_cc", minCount: 1 }] },
-      content("s-spec"),
-    );
-    expect(r).toEqual({ ok: true, class: "ClientContact", kept: true });
-    expect(
-      g
-        .shapeIndex()
-        .find((x) => x.class === "ClientContact")
-        ?.requires.map((x) => x.slot),
-    ).toEqual(["phone"]);
+  it("a type the owner created can't be altered by any other writer, and the refusal says why", async () => {
+    for (const who of nonOwners) {
+      const g = await MemoryGraph.create();
+      await g.extendSchema({ class: "Vendor", requires: [{ slot: "phone" }] }, owner);
+      const r = await g.extendSchema({ class: "Vendor", requires: [{ slot: "evil" }] }, by(who));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.stage).toBe("owner-type");
+      expect(r.problems[0]?.message).toMatch(/defined in the memory owner's own conversation/);
+      expect(
+        g
+          .shapeIndex()
+          .find((x) => x.class === "Vendor")
+          ?.requires.map((x) => x.slot),
+      ).toEqual(["phone"]);
+    }
   });
 
-  it("a type the user extended after content defined it is the user's", async () => {
+  it("the owner alters their own type, and any writer's type", async () => {
     const g = await MemoryGraph.create();
-    await g.extendSchema({ class: "Gadget", requires: [{ slot: "sku" }] }, content("s1"));
-    await g.extendSchema({ class: "Gadget", requires: [{ slot: "weight" }] }, user);
+    await g.extendSchema({ class: "Vendor", requires: [{ slot: "phone" }] }, owner);
     expect(
-      await g.extendSchema({ class: "Gadget", requires: [{ slot: "color" }] }, content("s3")),
-    ).toEqual({ ok: true, class: "Gadget", kept: true });
+      (await g.extendSchema({ class: "Vendor", requires: [{ slot: "email" }] }, owner)).ok,
+    ).toBe(true);
+    await g.extendSchema({ class: "Gadget", requires: [{ slot: "sku" }] }, by("scheduled"));
+    expect(
+      (await g.extendSchema({ class: "Gadget", requires: [{ slot: "color" }] }, owner)).ok,
+    ).toBe(true);
   });
 
-  it("a raw shape from content is refused: it could target the user's types", async () => {
+  it("new types are open to anyone, and stay open until the owner changes them", async () => {
     const g = await MemoryGraph.create();
-    await g.extendSchema(
-      { class: "Room", requires: [{ slot: "floor", datatype: "integer", minCount: 1 }] },
-      user,
-    );
-    const raw = await g.extendSchema(
-      {
-        rawShape:
-          "c:Zed a sh:NodeShape ; sh:targetClass c:Room ; sh:property [ sh:path p:color ; sh:minCount 1 ] .",
-      },
-      content("s-raw"),
-    );
-    expect(raw).toMatchObject({ ok: false, stage: "source" });
+    for (const who of nonOwners)
+      expect(
+        (await g.extendSchema({ class: `T${who}`, requires: [{ slot: "a" }] }, by(who))).ok,
+      ).toBe(true);
     expect(
-      (await g.remember({ id: "r1", label: "Den", type: "Room", attributes: { floor: 1 } }, user))
+      (await g.extendSchema({ class: "Tscheduled", requires: [{ slot: "b" }] }, by("delegated")))
         .ok,
     ).toBe(true);
   });
 
-  it("content can't define a type the user's raw shape already covers", async () => {
+  it("a type another writer created is the owner's once the owner extends it", async () => {
     const g = await MemoryGraph.create();
-    await g.extendSchema(
-      {
-        rawShape:
-          "c:RoomShape a sh:NodeShape ; sh:targetClass c:Room ; sh:property [ sh:path p:floor ; sh:minCount 1 ] .",
-      },
-      user,
+    await g.extendSchema({ class: "Gadget", requires: [{ slot: "sku" }] }, by("scheduled"));
+    await g.extendSchema({ class: "Gadget", requires: [{ slot: "color" }] }, owner);
+    const r = await g.extendSchema(
+      { class: "Gadget", requires: [{ slot: "evil" }] },
+      by("scheduled"),
     );
-    expect(
-      await g.extendSchema(
-        { class: "Room", requires: [{ slot: "color", minCount: 1 }] },
-        content("s-r"),
-      ),
-    ).toEqual({ ok: true, class: "Room", kept: true });
+    expect(r.ok || r.stage).toBe("owner-type");
   });
 
-  it("content can't add to its own type once the user's raw shape covers it", async () => {
+  it("a type a raw shape names is the owner's", async () => {
     const g = await MemoryGraph.create();
-    await g.extendSchema({ class: "Mix", requires: [{ slot: "a" }] }, content("m1"));
-    await g.extendSchema(
-      {
-        rawShape: "c:MixRule a sh:NodeShape ; sh:targetClass c:Mix ; sh:property [ sh:path p:b ] .",
-      },
-      user,
+    await g.extendSchema({
+      class: "raw",
+      rawShape:
+        "c:HallRule a sh:NodeShape ; sh:targetClass c:Hall ; sh:property [ sh:path p:size ; sh:minCount 1 ] .",
+    });
+    const r = await g.extendSchema(
+      { class: "Hall", requires: [{ slot: "evil" }] },
+      by("scheduled"),
     );
-    expect(
-      await g.extendSchema(
-        { class: "Mix", requires: [{ slot: "evil", minCount: 1 }] },
-        content("m3"),
-      ),
-    ).toEqual({ ok: true, class: "Mix", kept: true });
+    expect(r.ok || r.stage).toBe("owner-type");
+    // A shape that is its own class target names its type too.
+    await g.extendSchema({
+      class: "raw",
+      rawShape: "c:Dd a sh:NodeShape, rdfs:Class ; sh:property [ sh:path p:size ] .",
+    });
+    const d = await g.extendSchema({ class: "Dd", requires: [{ slot: "evil" }] }, by("scheduled"));
+    expect(d.ok || d.stage).toBe("owner-type");
   });
 
-  it("a raw shape that is its own class target makes that type the user's", async () => {
-    const g = await MemoryGraph.create();
-    await g.extendSchema(
-      { rawShape: "c:Dd a sh:NodeShape, rdfs:Class ; sh:property [ sh:path p:size ] ." },
-      user,
-    );
-    expect(
-      await g.extendSchema(
-        { class: "Dd", requires: [{ slot: "evil", minCount: 1 }] },
-        content("d1"),
-      ),
-    ).toEqual({ ok: true, class: "Dd", kept: true });
+  it("a record the owner typed can't be re-typed by another writer, but its details can change", async () => {
+    for (const who of nonOwners) {
+      const g = await MemoryGraph.create();
+      await g.remember({ id: "jordan", label: "Jordan", type: "Person" }, owner);
+      const r = await g.remember({ id: "jordan", type: "Vendor" }, by(who));
+      expect(r.ok || r.stage).toBe("owner-type");
+      expect(g.describe("jordan")?.type).toBe("Person");
+      // Restating the same type isn't a re-type, and details without a type land.
+      expect((await g.remember({ id: "jordan", type: "Person" }, by(who))).ok).toBe(true);
+      expect((await g.remember({ id: "jordan", attributes: { role: "buyer" } }, by(who))).ok).toBe(
+        true,
+      );
+    }
   });
 
-  it("a 0.1.0 store upgrades with its types intact, as the user's", async () => {
+  it("forgetting the type or the whole record doesn't free the owner's record for another writer to re-type", async () => {
+    for (const forget of [{ details: ["type"] }, {}]) {
+      const g = await MemoryGraph.create();
+      await g.remember({ id: "ann", label: "Ann", type: "Contact" }, owner);
+      expect((await g.forget({ id: "ann", ...forget }, by("scheduled"))).ok).toBe(true);
+      expect((await g.remember({ id: "ann", type: "Evil" }, by("scheduled"))).ok).toBe(false);
+      // A whole forget leaves nothing, so a typeless save would type it `Thing`: a re-type too.
+      const gone = g.describe("ann") === null;
+      const named = await g.remember({ id: "ann", label: "Ann" }, by("scheduled"));
+      expect(named.ok).toBe(!gone);
+      if (gone)
+        expect(named.ok ? "" : named.problems[0]?.message).toContain("save it with type `Contact`");
+      expect(g.describe("ann")?.type ?? "untyped").not.toBe("Evil");
+      // Restating the owner's type is not a re-type.
+      expect((await g.remember({ id: "ann", type: "Contact" }, by("scheduled"))).ok).toBe(true);
+    }
+  });
+
+  it("once the owner untypes a record, it is open again", async () => {
+    const g = await MemoryGraph.create();
+    await g.remember({ id: "ann", label: "Ann", type: "Contact" }, owner);
+    await g.forget({ id: "ann", details: ["type"] }, owner);
+    expect((await g.remember({ id: "ann", type: "Vendor" }, by("scheduled"))).ok).toBe(true);
+  });
+
+  it("in a scope with no owner, nothing is held for one", async () => {
+    const g = await MemoryGraph.create();
+    const v010 = JSON.stringify({ provenance: "user", callId: "old" });
+    await g.extendSchema({ class: "Desk", requires: [{ slot: "floor" }] }, v010);
+    await g.remember({ id: "desk", label: "Desk", type: "Desk", attributes: { floor: "2" } }, v010);
+    const owned = JSON.stringify({ who: "other", ownedScope: true });
+    const shared = JSON.stringify({ who: "other", ownedScope: false });
+    const ext = await g.extendSchema({ class: "Desk", requires: [{ slot: "x" }] }, owned);
+    expect(ext.ok || ext.stage).toBe("owner-type");
+    const retype = await g.remember({ id: "desk", type: "Room" }, owned);
+    expect(retype.ok || retype.stage).toBe("owner-type");
+    expect((await g.extendSchema({ class: "Desk", requires: [{ slot: "x" }] }, shared)).ok).toBe(
+      true,
+    );
+    expect((await g.remember({ id: "desk", type: "Room" }, shared)).ok).toBe(true);
+  });
+
+  it("the owner re-types any record; any writer re-types one another writer typed", async () => {
+    const g = await MemoryGraph.create();
+    await g.remember({ id: "jordan", label: "Jordan", type: "Person" }, owner);
+    expect((await g.remember({ id: "jordan", type: "Vendor" }, owner)).ok).toBe(true);
+    await g.remember({ id: "acme", label: "Acme", type: "Org" }, by("scheduled"));
+    expect((await g.remember({ id: "acme", type: "Vendor" }, by("delegated"))).ok).toBe(true);
+    expect(g.describe("acme")?.type).toBe("Vendor");
+  });
+});
+
+describe("upgrading older stores", () => {
+  it("a 0.1.0 store keeps its types and values: its values are open to every writer, its types are the owner's", async () => {
     const dir = mkdtempSync(join(tmpdir(), "eve-plus-upgrade-"));
     try {
-      // The store as 0.1.0 leaves it: definitions and raw shapes in meta rows, no schema log.
-      (await MemoryGraph.create({ dir })).close();
+      // The store as 0.1.0 leaves it: definitions and raw shapes in meta rows, no schema log, no origins.
+      const seed = await MemoryGraph.create({ dir });
+      await seed.remember({ id: "den", label: "Den", type: "Thing", attributes: { size: "big" } });
+      seed.close();
       const db = new Database(join(dir, "graph.db"));
-      db.exec("DELETE FROM schema_log; DELETE FROM meta WHERE key = 'schema_log_seeded';");
+      db.exec(
+        "DELETE FROM schema_log; DELETE FROM meta WHERE key = 'schema_log_seeded'; UPDATE triples SET origin = NULL;",
+      );
       const put = db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)");
       put.run(
         "schema_defs",
@@ -515,30 +517,111 @@ describe("schema changes are attributed and revertable, with the same precedence
       const rule = (cls: string) => g.shapeIndex().find((x) => x.class === cls)?.summary;
       expect(rule("Room")).toBe("Room (requires floor)");
       expect(rule("Hall")).toBe("Hall (requires size)");
-      const log = g.db.prepare("SELECT class, origin FROM schema_log ORDER BY seq").all();
-      expect(log).toEqual([
-        { class: "Room", origin: JSON.stringify({ source: "legacy" }) },
-        { class: null, origin: JSON.stringify({ source: "legacy" }) },
-      ]);
+      expect(g.describe("den")?.recorded.size?.who).toBe("legacy");
       expect((await g.remember({ id: "r", label: "Den", type: "Room" })).ok).toBe(false);
-      const c = JSON.stringify({ provenance: "content" });
-      for (const cls of ["Room", "Hall"])
-        expect(
-          await g.extendSchema({ class: cls, requires: [{ slot: "evil", minCount: 1 }] }, c),
-        ).toEqual({
-          ok: true,
-          class: cls,
-          kept: true,
+      const scheduled = JSON.stringify({ who: "scheduled" });
+      // Its values are open to every writer.
+      expect((await g.remember({ id: "den", attributes: { size: "small" } }, scheduled)).ok).toBe(
+        true,
+      );
+      expect(g.describe("den")?.attributes.size).toBe("small");
+      // Its types and record types came from the owner's conversations: the owner's. That includes records the 0.1.0
+      // provider wrote, whose origins carry its model-labelled provenance and no `who`.
+      for (const provenance of ["user", "content", "content-approved"]) {
+        const v010 = JSON.stringify({
+          scope: "principal",
+          provenance,
+          sessionId: "s",
+          callId: "c",
         });
+        await g.remember({ id: `r-${provenance}`, label: "R", type: "Client" }, v010);
+        const r = await g.remember({ id: `r-${provenance}`, type: "Vendor" }, scheduled);
+        expect(r.ok || r.stage).toBe("owner-type");
+      }
+      const room = await g.extendSchema({ class: "Room", requires: [{ slot: "x" }] }, scheduled);
+      expect(room.ok || room.stage).toBe("owner-type");
+      const retype = await g.remember({ id: "den", type: "Hall" }, scheduled);
+      expect(retype.ok || retype.stage).toBe("owner-type");
+      expect((await g.extendSchema({ class: "Room", requires: [{ slot: "x" }] })).ok).toBe(true);
+      // A raw shape is the operator's, whatever the store's age.
+      const hall = await g.extendSchema({ class: "Hall", requires: [{ slot: "x" }] }, scheduled);
+      expect(hall.ok || hall.stage).toBe("owner-type");
       g.close();
-      // Seeded once: reopening doesn't add a second copy.
       const again = await MemoryGraph.create({ dir });
-      expect(again.db.prepare("SELECT count(*) AS n FROM schema_log").get()).toEqual({ n: 2 });
+      expect(
+        again.db.prepare("SELECT count(*) AS n FROM schema_log WHERE class IS NULL").get(),
+      ).toEqual({ n: 1 });
       again.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("a 0.2.x store's grounded origins read as who wrote them, and every write to it now lands", async () => {
+    const v02 = {
+      user: JSON.stringify({
+        scope: "principal",
+        provenance: "user",
+        claimed: "user",
+        callId: "u",
+      }),
+      scheduled: JSON.stringify({
+        scope: "principal",
+        provenance: "content",
+        claimed: "user",
+        from: "a scheduled run",
+        scheduled: true,
+      }),
+      delegated: JSON.stringify({
+        provenance: "content",
+        from: "a delegated task",
+        delegated: true,
+      }),
+      content: JSON.stringify({ provenance: "content", claimed: "content", from: "email" }),
+      agentState: JSON.stringify({ provenance: "agent-state", claimed: "user" }),
+    };
+    const g = await MemoryGraph.create();
+    await g.extendSchema({ class: "Vendor", requires: [{ slot: "phone" }] }, v02.user);
+    await g.remember({ id: "v", label: "V", type: "Vendor", attributes: { phone: "1" } }, v02.user);
+    await g.remember({ id: "v", attributes: { a: "1" } }, v02.scheduled);
+    await g.remember({ id: "v", attributes: { b: "1" } }, v02.delegated);
+    await g.remember({ id: "v", attributes: { c: "1" } }, v02.content);
+    await g.remember({ id: "v", attributes: { d: "1" } }, v02.agentState);
+    expect(
+      Object.fromEntries(
+        Object.entries(g.describe("v")?.recorded ?? {}).map(([k, r]) => [k, r.who]),
+      ),
+    ).toEqual({
+      phone: "owner",
+      a: "scheduled",
+      b: "delegated",
+      c: "legacy",
+      d: "legacy",
+    });
+    expect(g.describe("v")?.recordedName?.who).toBe("owner");
+    // A record type a 0.2.x scheduled or delegated write set stays open; one any other 0.2.x write set is the owner's.
+    await g.remember({ id: "s", label: "S", type: "Org" }, v02.scheduled);
+    await g.remember({ id: "d", label: "D", type: "Org" }, v02.delegated);
+    await g.remember({ id: "c", label: "C", type: "Org" }, v02.content);
+    const other = JSON.stringify({ who: "other" });
+    expect((await g.remember({ id: "s", type: "Vendor" }, other)).ok).toBe(true);
+    expect((await g.remember({ id: "d", type: "Vendor" }, other)).ok).toBe(true);
+    const c = await g.remember({ id: "c", type: "Vendor" }, other);
+    expect(c.ok || c.stage).toBe("owner-type");
+    // 0.2.x's "user" writes are the owner's: the rule holds for them.
+    const scheduled = JSON.stringify({ who: "scheduled" });
+    expect(
+      (await g.extendSchema({ class: "Vendor", requires: [{ slot: "x" }] }, scheduled)).ok,
+    ).toBe(false);
+    // And a 0.2.x content value no longer holds back an update.
+    const r = await g.remember({ id: "v", attributes: { phone: "2" } }, v02.content);
+    expect(r.ok && g.describe("v")?.attributes.phone).toBe("2");
+  });
+});
+
+describe("schema changes are attributed and revertable", () => {
+  const user = JSON.stringify({ who: "owner", callId: "s-user" });
+  const content = (callId: string) => JSON.stringify({ who: "scheduled", callId });
 
   it("reverting a schema change that isn't the latest removes only what it added", async () => {
     const g = await MemoryGraph.create();
@@ -546,7 +629,7 @@ describe("schema changes are attributed and revertable, with the same precedence
     await g.extendSchema({ class: "Gadget", requires: [{ slot: "color" }] }, content("c2"));
     await g.extendSchema(
       { class: "Gadget", requires: [{ slot: "weight" }] },
-      JSON.stringify({ provenance: "user", callId: "u3" }),
+      JSON.stringify({ who: "owner", callId: "u3" }),
     );
     expect((await g.revertBatch({ callId: "c2" })).schema).toBe(1);
     expect(
@@ -557,7 +640,7 @@ describe("schema changes are attributed and revertable, with the same precedence
     ).toEqual(["sku", "weight"]);
   });
 
-  it("content defines new types and extends its own", async () => {
+  it("a scheduled run defines new types and extends its own", async () => {
     const g = await MemoryGraph.create();
     expect(
       (await g.extendSchema({ class: "Vendor", requires: [{ slot: "phone" }] }, content("s1"))).ok,
@@ -574,7 +657,7 @@ describe("schema changes are attributed and revertable, with the same precedence
       await g.extendSchema({ class: "Vendor", requires: [{ slot: "phone", minCount: 1 }] }, user);
       await g.extendSchema(
         { class: "Vendor", requires: [{ slot: "email", minCount: 1 }] },
-        JSON.stringify({ provenance: "user", callId: "s-email" }),
+        JSON.stringify({ who: "owner", callId: "s-email" }),
       );
       expect((await g.revertBatch({ callId: "s-email" })).schema).toBe(1);
       const slots = (m: MemoryGraph) =>
@@ -716,59 +799,6 @@ describe("names are capped: replayed every turn, a name must stay a short noun",
     });
     expect(threeWords.ok).toBe(true);
     expect(g.shapeIndex().map((r) => r.class)).not.toContainEqual(expect.stringMatching(/French/));
-  });
-});
-
-describe("handed content naming a second record under the user's record's name is kept out", () => {
-  async function withJordan() {
-    const g = await MemoryGraph.create();
-    await g.remember({
-      id: "jordan_lee",
-      label: "Jordan Lee",
-      type: "ClientContact",
-      attributes: { phone: "555-0142" },
-    });
-    return g;
-  }
-  const twinOf = async (g: MemoryGraph, label: string, id?: string) => {
-    const r = await g.remember(
-      { id, label, attributes: { phone: "555-0999" } },
-      JSON.stringify({ provenance: "content" }),
-    );
-    return r.ok ? r.kept : [];
-  };
-
-  it("a varied spelling of an existing name is caught as a second record", async () => {
-    const g = await withJordan();
-    for (const label of ["Jordan  Lee", "jordan lee", "Lee, Jordan", "Jordán Lee", "JORDAN-LEE"])
-      expect(await twinOf(g, label), label).toEqual([
-        expect.objectContaining({ key: "record", from: "Jordan Lee" }),
-      ]);
-  });
-
-  it("an initial stands for the word it begins", async () => {
-    const g = await withJordan();
-    for (const label of ["J. Lee", "Jordan L.", "Lee J"])
-      expect(await twinOf(g, label), label).toHaveLength(1);
-  });
-
-  it("a fresh id does not dodge the check", async () => {
-    const g = await withJordan();
-    expect(await twinOf(g, "Jordan Lee", "jordan_lee_billing")).toHaveLength(1);
-    expect(await twinOf(g, "J. Lee", "contact_42")).toHaveLength(1);
-  });
-
-  it("different names and a run of initials are not twins", async () => {
-    const g = await withJordan();
-    for (const label of ["Jordan Leeds", "Dana Lee", "Jordan", "J. L.", "Marcus Bell"])
-      expect(await twinOf(g, label), label).toEqual([]);
-  });
-
-  it("only the current name counts, not one it was renamed from", async () => {
-    const g = await withJordan();
-    await g.remember({ id: "jordan_lee", label: "Jordan Smith" });
-    expect(await twinOf(g, "Jordan Lee")).toEqual([]);
-    expect(await twinOf(g, "J. Smith")).toHaveLength(1);
   });
 });
 

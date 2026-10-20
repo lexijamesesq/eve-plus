@@ -58,10 +58,12 @@ export interface Fact {
   label?: string;
   type?: string;
   attributes?: Record<string, string>;
-  /** Keys whose current value was filed from handed content (not stated by the user) → where it came from. */
-  filed?: Record<string, string>;
-  /** Keys whose current value came from handed content and the person approved → where it came from. */
-  approved?: Record<string, string>;
+  /** Who wrote each current detail, and when (detail → origin), from the write's recorded origin. */
+  recorded?: Record<string, Recorded>;
+  /** Who gave the record its current name, and when. */
+  recordedName?: Recorded;
+  /** Who gave the record its current type, and when. */
+  recordedType?: Recorded;
 }
 export interface RelateResult {
   found: boolean;
@@ -69,8 +71,9 @@ export interface RelateResult {
   label?: string;
   type?: string;
   attributes?: Record<string, string>;
-  filed?: Record<string, string>;
-  approved?: Record<string, string>;
+  recorded?: Record<string, Recorded>;
+  recordedName?: Recorded;
+  recordedType?: Recorded;
   connections: { relation: string; target: string }[];
 }
 export interface ShapeEntry {
@@ -86,9 +89,7 @@ export interface CheckResult {
   issues: { id: string; label?: string; type?: string; messages: string[] }[];
   truncated: boolean;
 }
-export type RememberResult =
-  | Ok<{ id: string; summary: string; superseded: Change[]; kept: Change[] }>
-  | Fail;
+export type RememberResult = Ok<{ id: string; summary: string; superseded: Change[] }> | Fail;
 export type ForgetResult =
   | {
       ok: true;
@@ -97,20 +98,18 @@ export type ForgetResult =
       forgotten: string[];
       breaks: string[];
       lostCoverage: { from: string; rules: string[] } | null;
-      kept: Change[];
     }
   | { ok: false; reason: string };
-export type ExtendResult =
-  | Ok<{ class: string; merged?: boolean; rule?: string; kept?: boolean }>
-  | Fail;
+export type ExtendResult = Ok<{ class: string; merged?: boolean; rule?: string }> | Fail;
 export interface Description {
   id: string;
   label?: string;
   type?: string;
   attributes: Record<string, string>;
   relations: { relation: string; to: string }[];
-  filed: Record<string, string>;
-  approved: Record<string, string>;
+  recorded: Record<string, Recorded>;
+  recordedName?: Recorded;
+  recordedType?: Recorded;
 }
 export interface HistoryEntry {
   key: string;
@@ -123,7 +122,18 @@ type Dataset = Awaited<ReturnType<typeof parseTurtle>>;
 type Term = NonNullable<Parameters<Dataset["match"]>[0]>;
 type Report = Awaited<ReturnType<SHACLValidator["validate"]>>;
 type Triple = { s: string; p: string; o: string; ot: string; dt: string | null };
-type StoredTriple = Triple & { origin: string | null };
+type StoredTriple = Triple & { origin: string | null; written_at: string | null };
+/**
+ * Who wrote a value, from its recorded origin: in the scope owner's own live conversation, another principal's, a
+ * scheduled run, a delegated task, an unattributed write, or a store from before writes were attributed ("legacy").
+ * Recorded at write time; nothing is decided from what the model says about a write.
+ */
+export type Who = "owner" | "other" | "scheduled" | "delegated" | "unattributed" | "legacy";
+export interface Recorded {
+  who: Who;
+  /** The write's date, YYYY-MM-DD. */
+  on: string | null;
+}
 // Canonical record-type definition, one per class: what extend_schema merges into and the ontology is rendered from.
 type SlotRule = {
   datatype?: Datatype;
@@ -142,8 +152,9 @@ type View = {
   attributes: Record<string, string>;
   relations: Triple[];
   rows: Triple[];
-  filed: Record<string, string>;
-  approved: Record<string, string>;
+  recorded: Record<string, Recorded>;
+  recordedName?: Recorded;
+  recordedType?: Recorded;
 };
 
 const B = "https://eve.local/mem/";
@@ -188,27 +199,12 @@ const pascal = (s: unknown) =>
     .join("") || "X";
 const esc = (s: unknown) => String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 const tail = (iri: string) => iri.split("/").pop() ?? iri;
-// Two names are the same name when they differ only in case, accents, punctuation, spacing or word order, or when an
-// initial stands for a word it begins ("J. Lee" is "Jordan Lee").
 const nameTokens = (s: string) =>
   String(s)
     .normalize("NFKD")
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase()
     .match(/[a-z0-9]+/g) ?? [];
-function sameName(a: string, b: string): boolean {
-  const x = nameTokens(a);
-  const rest = nameTokens(b);
-  if (x.length === 0 || x.length !== rest.length) return false;
-  for (const t of x) {
-    const i = rest.findIndex(
-      (u) => u === t || (t.length === 1 && u.startsWith(t)) || (u.length === 1 && t.startsWith(u)),
-    );
-    if (i < 0) return false;
-    rest.splice(i, 1);
-  }
-  return true;
-}
 // FTS5 MATCH from free text: tokenize, drop 1–2 char noise (with a fallback so an all-short query still runs),
 // quote each token, OR-join. A single quoted phrase would require the whole string to appear adjacent+in-order —
 // so a multi-word query could never match a stored literal. OR over tokens is the "any word matches" recall we want.
@@ -327,20 +323,38 @@ function mergeDef(
     };
   return out;
 }
-const provenanceOf = (origin: string | null) => {
+const parseOrigin = (origin: string | null): Record<string, unknown> | null => {
   try {
-    return JSON.parse(origin ?? "null")?.provenance ?? "unmarked";
+    return JSON.parse(origin ?? "null");
   } catch {
-    return "unmarked";
+    return null;
   }
 };
-// Precedence: a value the person stated outranks handed content, so content can add beside it but never replace or
-// retract it. "agent-state" marks records the agent's author declared as the agent's own working state; precedence
-// doesn't rank them. Everything else counts as the person's, including values written before writes were grounded,
-// which can't be told apart.
-const isContent = (origin: string | null) => provenanceOf(origin) === "content";
-const outranksContent = (origin: string | null) =>
-  !["content", "agent-state"].includes(provenanceOf(origin));
+/**
+ * Who wrote a row. 0.3 records `who`. 0.2.x grounded its "user" provenance the same way (a live turn by the scope's
+ * own principal, marked by its `claimed` field) and flagged scheduled and delegated writes. A write through this
+ * class's API without a provider origin is the operator's own code. Anything else can't be told apart: "legacy".
+ */
+export function whoOf(origin: string | null): Who {
+  const o = parseOrigin(origin);
+  if (typeof o?.who === "string") return o.who as Who;
+  if (o?.provenance === "user" && "claimed" in o) return "owner";
+  if (o?.scheduled === true) return "scheduled";
+  if (o?.delegated === true) return "delegated";
+  if (o?.source === "direct") return "owner";
+  return "legacy";
+}
+// Whether a row puts a type or a record's type under the owner's control: written in the owner's own conversation, or
+// written before 0.3.0 (no recorded `who`) by anything but a scheduled run or delegated task. Older stores' types came
+// from the owner's conversations, and only 0.2.x recorded which writes were scheduled or delegated.
+const ownerControlled = (origin: string | null): boolean => {
+  const who = whoOf(origin);
+  return who === "owner" || (parseOrigin(origin)?.who === undefined && who === "legacy");
+};
+// Whether the scope a write lands in has an owner to protect. A scope that isn't one principal's (a list, a shared
+// key) has none, so the control-plane rule doesn't apply there.
+const hasOwner = (origin: string): boolean => parseOrigin(origin)?.ownedScope !== false;
+const onOf = (writtenAt: string | null) => (writtenAt ? writtenAt.slice(0, 10) : null);
 const stripUndefined = <T extends object>(o: T): Partial<T> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 function shapeTtl(cls: string, d: TypeDef) {
@@ -455,9 +469,11 @@ export class MemoryGraph {
   #shapes!: Dataset;
   #dataValidator!: SHACLValidator;
   #shapeIndex: ShapeEntry[] = [];
-  // Classes the raw shapes name anywhere: as a target, as an implicit class target, or in a constraint. Only the user
-  // adds raw shapes, so these types are the user's. Broader than the classes a shape constrains, which only ever
-  // refuses content more often.
+  // Writes by a scheduled run, a delegated task or another principal that replaced or retracted a value written in the
+  // owner's own conversation: counted and logged, never blocked (detection, not a gate).
+  #ownerOverwrites = 0;
+  // Classes a raw shape names. Raw shapes come only from the operator's own code (this API, or an older store), never
+  // through the tools, so these types are the owner's.
   #rawClasses = new Set<string>();
   #ins!: Database.Statement<[string, string, string, string, string | null, string, string]>;
   #insF!: Database.Statement<[string, string]>;
@@ -580,10 +596,10 @@ export class MemoryGraph {
     // edges and accumulate. Each kind resolves only against rows of its own kind — text and a relation under the same
     // key are different facts and never shadow each other. Superseded rows stay in the log but never reach a read.
     this.#current =
-      this.db.prepare(`SELECT s,p,o,ot,dt,origin FROM triples t WHERE s=? AND ${SINGLE_VALUED}
+      this.db.prepare(`SELECT s,p,o,ot,dt,origin,written_at FROM triples t WHERE s=? AND ${SINGLE_VALUED}
                                      AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED}) AND ot != 'tomb'`);
     this.#relations =
-      this.db.prepare(`SELECT s,p,o,ot,dt,origin FROM triples t WHERE s=? AND ${EDGE}
+      this.db.prepare(`SELECT s,p,o,ot,dt,origin,written_at FROM triples t WHERE s=? AND ${EDGE}
                                        AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND o=t.o AND ${EDGE}) AND ot = 'iri'`);
     this.#currentOfType = this.db.prepare(`SELECT s FROM triples t WHERE p='${TYPE}' AND o=?
                                            AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p) LIMIT ?`);
@@ -594,31 +610,27 @@ export class MemoryGraph {
     const single = this.#current.all(s);
     const relations = this.#relations.all(s);
     const attributes: Record<string, string> = {};
-    // Values the agent wrote while handling content it was handed (an email, a document) rather than stated by the
-    // user: key → where they came from. Reads surface this so a filed claim is never mistaken for the user's own fact.
-    const filed: Record<string, string> = {};
-    // The same, once the person approved the value: still from the content, but no longer an unconfirmed claim.
-    const approved: Record<string, string> = {};
-    const note = (key: string, row: StoredTriple) => {
-      let o: { from?: string; provenance?: string } | null = null;
-      try {
-        o = JSON.parse(row.origin ?? "null");
-      } catch {
-        return;
-      }
-      const from = o?.from || "content you were handed";
-      if (o?.provenance === "content") filed[key] = from;
-      else if (o?.provenance === "content-approved") approved[key] = from;
-    };
+    const recorded: Record<string, Recorded> = {};
+    const by = (row: StoredTriple): Recorded => ({
+      who: whoOf(row.origin),
+      on: onOf(row.written_at),
+    });
+    let recordedName: Recorded | undefined, recordedType: Recorded | undefined;
     let type: string | undefined, label: string | undefined;
     for (const r of single) {
       const key = keyOf(r.p);
-      if (r.p === TYPE) type = tail(r.o);
-      else if (r.p === LABEL) label = r.o;
-      else if (r.ot === "lit" && r.p.startsWith(P)) attributes[key] = r.o;
-      note(key, r);
+      if (r.p === TYPE) {
+        type = tail(r.o);
+        recordedType = by(r);
+      } else if (r.p === LABEL) {
+        label = r.o;
+        recordedName = by(r);
+      } else if (r.ot === "lit" && r.p.startsWith(P)) {
+        attributes[key] = r.o;
+        recorded[key] = by(r);
+      }
     }
-    for (const r of relations) note(`${tail(r.p)}→${tail(r.o)}`, r);
+    for (const r of relations) recorded[`${tail(r.p)}→${tail(r.o)}`] = by(r);
     return {
       exists: single.length + relations.length > 0,
       type,
@@ -626,8 +638,9 @@ export class MemoryGraph {
       attributes,
       relations: relations.map(withoutOrigin),
       rows: [...single, ...relations].map(withoutOrigin),
-      filed,
-      approved,
+      recorded,
+      recordedName,
+      recordedType,
     };
   }
   // The search index serves the current view only — a superseded value must not be findable as if it were true.
@@ -640,9 +653,8 @@ export class MemoryGraph {
     this.#shapes = await parseTurtle(this.#ontologyTtl);
     this.#dataValidator = new SHACLValidator(this.#shapes, { factory: rdf });
     this.#shapeIndex = indexShapes(this.#shapes);
-    const raw = await parseTurtle(PREFIXES + this.#rawTtl);
     this.#rawClasses = new Set(
-      [...raw]
+      [...(await parseTurtle(PREFIXES + this.#rawTtl))]
         .flatMap((q) => [q.subject.value, q.object.value])
         .filter((iri) => iri.startsWith(C))
         .map(localName),
@@ -732,17 +744,6 @@ export class MemoryGraph {
   // ---- extend_schema: author a class/shape; gated first by the naming lint, then meta-validation vs SHACL-SHACL ----
   async extendSchema(def: ExtendInput, origin: string = DIRECT): Promise<ExtendResult> {
     if (def.rawShape) {
-      // A raw shape can target any class, the user's included, so precedence can't scope it: content never adds one.
-      if (isContent(origin)) {
-        dlog("extend_schema REJECTED (raw shape from content)");
-        return {
-          ok: false,
-          stage: "source",
-          problems: [
-            { message: "A raw shape can only come from the user, not from handed content." },
-          ],
-        };
-      }
       let ds: Dataset;
       try {
         ds = await parseTurtle(PREFIXES + def.rawShape);
@@ -789,24 +790,19 @@ export class MemoryGraph {
       dlog("extend_schema REJECTED (naming):", naming.map((p) => p.message).join(" | "));
       return { ok: false, stage: "naming", problems: naming };
     }
-    // A type any raw shape targets is the user's too.
-    if (isContent(origin) && this.#rawClasses.has(cls)) {
-      dlog(
-        "extend_schema KEPT: content asked to change",
-        cls,
-        "which a raw shape of the user's covers",
-      );
-      return { ok: true, class: cls, kept: true };
-    }
-    if (isContent(origin) && cls in this.#schemaDefs) {
-      // A type the user defined or extended at any point is the user's: content can't add to it.
-      const changes = this.db.prepare("SELECT origin FROM schema_log WHERE class = ?").all(cls) as {
-        origin: string | null;
-      }[];
-      if (changes.some((c) => outranksContent(c.origin))) {
-        dlog("extend_schema KEPT: content asked to change", cls, "which the user defined");
-        return { ok: true, class: cls, kept: true };
-      }
+    // The one control-plane rule: a type defined in the owner's own conversation is changed only there. It's keyed to
+    // who recorded the definition, never to anything the model says, and a new type is open to any writer.
+    if (whoOf(origin) !== "owner" && hasOwner(origin) && this.#ownerDefined(cls)) {
+      dlog("extend_schema REFUSED: a non-owner write asked to change", cls);
+      return {
+        ok: false,
+        stage: "owner-type",
+        problems: [
+          {
+            message: `\`${cls}\` records were defined in the memory owner's own conversation, so only the memory owner's own conversation can change that definition. Define a new type instead, or ask the memory owner.`,
+          },
+        ],
+      };
     }
     const merged = mergeDef(this.#schemaDefs[cls], def);
     const shape = shapeTtl(cls, merged);
@@ -873,64 +869,36 @@ export class MemoryGraph {
         : this.#freshId(fact.label ?? fact.type ?? "thing");
     const s = `${E}${id}`;
     const before = this.#view(s);
-    // Handed content naming a record the person already has is a second, competing record of the same thing (a
-    // "J. Lee" with a different phone), whether it's a new record or one of content's renamed: keep the person's
-    // record as the only one by that name.
-    let renameKept: Change | undefined;
-    if (isContent(origin) && fact.label && !held && String(fact.label) !== before.label) {
-      const twin = this.#namesakes(String(fact.label)).find(
-        (sub) =>
-          sub !== s &&
-          this.#current.all(sub).some((r) => r.p === LABEL && outranksContent(r.origin)),
-      );
-      if (twin) {
-        const kept = {
-          key: "record",
-          from: this.#view(twin).label ?? tail(twin),
-          to: String(fact.label),
-        };
-        dlog(
-          "remember KEPT: content named a second",
-          JSON.stringify(fact.label),
-          "→ twin of",
-          tail(twin),
-        );
-        if (!before.exists)
-          return { ok: true, id: tail(twin), summary: "", superseded: [], kept: [kept] };
-        renameKept = kept;
-      }
+    // The same control-plane rule for records: one typed in the owner's own conversation is re-typed only there, so
+    // another writer can't move it out from under the owner's record types. Read from the log, so forgetting the type
+    // or the whole record first doesn't free it.
+    const ownerType = this.#ownerType(s);
+    const target = fact.type ? pascal(fact.type) : before.exists ? undefined : "Thing";
+    if (
+      ownerType !== undefined &&
+      target !== undefined &&
+      target !== ownerType &&
+      whoOf(origin) !== "owner" &&
+      hasOwner(origin)
+    ) {
+      dlog("remember REFUSED: a non-owner write asked to re-type", id);
+      return {
+        ok: false,
+        stage: "owner-type",
+        problems: [
+          {
+            message: `${before.label ?? id} was typed \`${ownerType}\` in the memory owner's own conversation, so only the memory owner's own conversation can change its type. ${fact.type ? "Save the other details without a type, or ask the memory owner." : `The record was forgotten, and saving it again would type it \`Thing\`: save it with type \`${ownerType}\`, or ask the memory owner.`}`,
+          },
+        ],
+      };
     }
-    let want: Triple[] = [];
+    const want: Triple[] = [];
     if (fact.type || !before.exists)
       want.push({ s, p: TYPE, o: `${C}${pascal(fact.type ?? "Thing")}`, ot: "iri", dt: null });
-    if (fact.label && !renameKept)
+    if (fact.label)
       want.push({ s, p: LABEL, o: String(fact.label), ot: "lit", dt: `${XSD}string` });
     for (const [k, v] of Object.entries(fact.attributes ?? {}))
       want.push({ s, p: `${P}${slug(k)}`, o: String(v), ot: "lit", dt: xsdOf(v) });
-    // Handed content can't replace what the person stated: those keys keep their value and are reported back.
-    const kept: Change[] = renameKept ? [renameKept] : [];
-    if (isContent(origin)) {
-      const stated = new Map(
-        this.#current
-          .all(s)
-          .filter((r) => outranksContent(r.origin))
-          .map((r) => [r.p, r]),
-      );
-      want = want.filter((w) => {
-        const c = stated.get(w.p);
-        if (!c) return true;
-        // The same text under another datatype is the same value: nothing to write, and writing it would make the
-        // user's value content's, which content could then replace.
-        if (c.o === w.o) return false;
-        kept.push({
-          key: keyOf(w.p),
-          from: w.p === TYPE ? tail(c.o) : c.o,
-          to: w.p === TYPE ? tail(w.o) : w.o,
-        });
-        return false;
-      });
-      if (kept.length) dlog("remember KEPT the user's values on", id, JSON.stringify(kept));
-    }
     const relations: Triple[] = (fact.relations ?? []).map((r) => ({
       s,
       p: `${P}${slug(r.relation)}`,
@@ -979,6 +947,12 @@ export class MemoryGraph {
           ]
         : [];
     });
+    this.#detectOwnerOverwrite(
+      origin,
+      id,
+      changes.filter((w) => current.has(w.p)).map((w) => current.get(w.p) as Triple),
+      this.#current.all(s),
+    );
     if (changes.length + newRels.length > 0) {
       const at = new Date().toISOString();
       this.db.transaction(() => {
@@ -993,12 +967,12 @@ export class MemoryGraph {
       id,
       `(${view.type})`,
       JSON.stringify(fact.attributes ?? {}),
-      `source=${provenanceOf(origin)}`,
+      `who=${whoOf(origin)}`,
       superseded.length ? `superseded ${JSON.stringify(superseded)}` : "",
     );
     // Surface the id: the model needs it to connect other things to this one (relations resolve by id, so a
     // relation to a bare label would dangle to a non-existent node).
-    let summary = `${before.exists ? "Updated" : "Remembered"} ${view.label ?? id} (${view.type}) [id: ${id}]. Use this id to connect other things to it.`;
+    let summary = `${before.exists ? "Updated" : "Remembered"} ${view.label ?? id} (${view.type ?? "untyped"}) [id: ${id}]. Use this id to connect other things to it.`;
     if (superseded.length)
       summary += ` Replaced: ${superseded.map((c) => `${c.key} "${c.from}" → "${c.to}"`).join("; ")} (earlier values are kept in history).`;
     // Loud, never blocking: a rule binds by type, so a save under another type silently dodges it. Say so.
@@ -1006,9 +980,9 @@ export class MemoryGraph {
     if (skipped.length) {
       const shown = skipped.slice(0, 3).map((r) => r.summary);
       if (skipped.length > 3) shown.push(`+${skipped.length - 3} more`);
-      summary += ` Saved as ${view.type}, so it was NOT checked against your other rules: ${shown.join("; ")}. If it is one of those kinds, save it with that type.`;
+      summary += ` Saved as ${view.type ?? "untyped"}, so it was NOT checked against your other rules: ${shown.join("; ")}. If it is one of those kinds, save it with that type.`;
     }
-    return { ok: true, id, summary, superseded, kept };
+    return { ok: true, id, summary, superseded };
   }
 
   // ---- forget: retract a whole entity, or some of its details. Appends attributed tombstones — the current
@@ -1036,25 +1010,8 @@ export class MemoryGraph {
         ok: false,
         reason: `"${before.label ?? id}" has none of those details: ${(details ?? []).join(", ")}.`,
       };
-    // Handed content can't retract what the person stated: those details stay and are reported back.
-    const stated = isContent(origin) ? named.filter((r) => outranksContent(r.origin)) : [];
-    const kept: Change[] = stated.map((r) => ({
-      key: isRelation(r.p, r.ot) ? `${keyOf(r.p)}→${tail(r.o)}` : keyOf(r.p),
-      from: r.p === TYPE || isRelation(r.p, r.ot) ? tail(r.o) : r.o,
-      to: "(forgotten)",
-    }));
-    const rows = named.filter((r) => !stated.includes(r)).map(withoutOrigin);
-    if (kept.length) dlog("forget KEPT the user's details on", slug(id), JSON.stringify(kept));
-    if (rows.length === 0)
-      return {
-        ok: true,
-        label: before.label ?? id,
-        whole: false,
-        forgotten: [],
-        breaks: [],
-        lostCoverage: null,
-        kept,
-      };
+    const rows = named.map(withoutOrigin);
+    this.#detectOwnerOverwrite(origin, slug(id), rows, named);
     const at = new Date().toISOString();
     this.db.transaction(() => {
       for (const r of rows)
@@ -1074,7 +1031,7 @@ export class MemoryGraph {
       "forget:",
       slug(id),
       wanted ? forgotten.join(", ") : "(whole entity)",
-      `source=${provenanceOf(origin)}`,
+      `who=${whoOf(origin)}`,
     );
     // Loud, never blocking: forgetting a detail a rule requires leaves the entity out of conformance — say so now
     // rather than leaving it as drift for check_memory to find later.
@@ -1099,12 +1056,56 @@ export class MemoryGraph {
     return {
       ok: true,
       label: before.label ?? id,
-      whole: !wanted && kept.length === 0,
+      whole: !wanted,
       forgotten,
       breaks,
       lostCoverage,
-      kept,
     };
+  }
+
+  /** How many writes by a scheduled run, a delegated task or another principal replaced an owner-conversation value. */
+  get ownerOverwrites(): number {
+    return this.#ownerOverwrites;
+  }
+
+  // Detection, not a gate: a write by a scheduled run, a delegated task or another principal that replaces or retracts
+  // a value written in the owner's own conversation lands, and is logged and counted so it can be found and reverted.
+  #detectOwnerOverwrite(
+    origin: string,
+    id: string,
+    replaced: readonly Triple[],
+    currentRows: readonly StoredTriple[],
+  ): void {
+    const writer = whoOf(origin);
+    if (writer !== "scheduled" && writer !== "delegated" && writer !== "other") return;
+    const owners = new Set(
+      currentRows.filter((r) => whoOf(r.origin) === "owner").map((r) => `${r.p} ${r.o}`),
+    );
+    const hit = replaced.filter((r) => owners.has(`${r.p} ${r.o}`)).map((r) => keyOf(r.p));
+    if (hit.length === 0) return;
+    this.#ownerOverwrites++;
+    console.warn(
+      `[mem] owner-overwrite #${this.#ownerOverwrites}: a ${writer} write changed ${id} (${hit.join(", ")}), values written in the owner's own conversation; origin ${origin}`,
+    );
+  }
+
+  // The type the owner last gave a record, from the log: undefined if the owner never typed it, or last untyped it.
+  #ownerType(s: string): string | undefined {
+    const rows = this.db
+      .prepare(`SELECT o, ot, origin FROM triples WHERE s = ? AND p = '${TYPE}' ORDER BY seq DESC`)
+      .all(s) as { o: string; ot: string; origin: string | null }[];
+    const last = rows.find((r) => ownerControlled(r.origin));
+    return last?.ot === "iri" ? tail(last.o) : undefined;
+  }
+
+  // Whether the owner's saves depend on a type: any change to it was made in the owner's own conversation (creating it
+  // or extending it), it was written before 0.3.0 and not as a scheduled or delegated write, or a raw shape names it.
+  #ownerDefined(cls: string): boolean {
+    if (this.#rawClasses.has(cls)) return true;
+    const rows = this.db.prepare("SELECT origin FROM schema_log WHERE class = ?").all(cls) as {
+      origin: string | null;
+    }[];
+    return rows.some((r) => ownerControlled(r.origin));
   }
 
   // A new record's id: its name plus a suffix no record holds yet. A clash would silently write into another record.
@@ -1115,8 +1116,8 @@ export class MemoryGraph {
     }
   }
 
-  // Records whose current name is the same name as `label`. Candidates share a full word with it in the current view;
-  // bounded, since this runs on every write.
+  // Records whose current name is `label`. Candidates share a full word with it in the current view; bounded, since
+  // this runs on every id-less write.
   #namesakes(label: string): string[] {
     const words = nameTokens(label).filter((t) => t.length > 1);
     if (words.length === 0) return [];
@@ -1127,7 +1128,7 @@ export class MemoryGraph {
       .map((r) => r.s)
       .filter((sub) => {
         const existing = this.#view(sub).label;
-        return existing !== undefined && sameName(existing, label);
+        return existing === label;
       });
   }
 
@@ -1140,7 +1141,6 @@ export class MemoryGraph {
     return this.#namesakes(label).find((sub) => {
       const v = this.#view(sub);
       return (
-        v.label === label &&
         (!fact.type || v.type === pascal(fact.type)) &&
         Object.entries(fact.attributes ?? {}).every(
           ([k, val]) => v.attributes[slug(k)] === String(val),
@@ -1179,8 +1179,9 @@ export class MemoryGraph {
         label: v.label,
         type: v.type,
         attributes: v.attributes,
-        filed: v.filed,
-        approved: v.approved,
+        recorded: v.recorded,
+        recordedName: v.recordedName,
+        recordedType: v.recordedType,
       };
     });
   }
@@ -1272,8 +1273,9 @@ export class MemoryGraph {
       label: v.label,
       type: v.type,
       attributes: v.attributes,
-      filed: v.filed,
-      approved: v.approved,
+      recorded: v.recorded,
+      recordedName: v.recordedName,
+      recordedType: v.recordedType,
       connections,
     };
   }
@@ -1288,8 +1290,9 @@ export class MemoryGraph {
           type: v.type,
           attributes: v.attributes,
           relations: v.relations.map((r) => ({ relation: tail(r.p), to: tail(r.o) })),
-          filed: v.filed,
-          approved: v.approved,
+          recorded: v.recorded,
+          recordedName: v.recordedName,
+          recordedType: v.recordedType,
         }
       : null;
   }
