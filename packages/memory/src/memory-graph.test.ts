@@ -245,7 +245,8 @@ describe("attribution, not precedence: every write lands, recorded with who made
       const d = g.describe("jordan");
       expect(d?.attributes.phone).toBe("555-9999");
       expect(d?.recorded.phone).toEqual({ who: "scheduled", on: today });
-      expect(d?.recorded.label).toEqual({ who: "owner", on: today });
+      expect(d?.recordedName).toEqual({ who: "owner", on: today });
+      expect(d?.recordedType).toEqual({ who: "owner", on: today });
       expect(g.ownerOverwrites).toBe(1);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.[0])).toMatch(
@@ -313,6 +314,22 @@ describe("attribution, not precedence: every write lands, recorded with who made
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("a detail named label or type keeps its own origin, apart from the record's name and type", async () => {
+    const g = await person();
+    await g.remember(
+      { id: "jordan", attributes: { label: "SNEAKY", type: "SNEAKT" } },
+      scheduled(),
+    );
+    expect(g.describe("jordan")?.recordedName?.who).toBe("owner");
+    expect(g.describe("jordan")?.recordedType?.who).toBe("owner");
+    await g.remember({ id: "jordan", label: "Jordan L", type: "Contact" }, owner("o2"));
+    const d = g.describe("jordan");
+    expect(d?.recorded.label?.who).toBe("scheduled");
+    expect(d?.recorded.type?.who).toBe("scheduled");
+    expect(d?.recordedName?.who).toBe("owner");
+    expect(d?.recordedType?.who).toBe("owner");
   });
 
   it("a value written again with the same text keeps one current row, now the writer's", async () => {
@@ -414,6 +431,29 @@ describe("the one control-plane rule: the owner's types and record types change 
         true,
       );
     }
+  });
+
+  it("forgetting the type or the whole record doesn't free the owner's record for another writer to re-type", async () => {
+    for (const forget of [{ details: ["type"] }, {}]) {
+      const g = await MemoryGraph.create();
+      await g.remember({ id: "ann", label: "Ann", type: "Contact" }, owner);
+      expect((await g.forget({ id: "ann", ...forget }, by("scheduled"))).ok).toBe(true);
+      expect((await g.remember({ id: "ann", type: "Evil" }, by("scheduled"))).ok).toBe(false);
+      // A whole forget leaves nothing, so a typeless save would type it `Thing`: a re-type too.
+      const gone = g.describe("ann") === null;
+      const named = await g.remember({ id: "ann", label: "Ann" }, by("scheduled"));
+      expect(named.ok).toBe(!gone);
+      expect(g.describe("ann")?.type ?? "untyped").not.toBe("Evil");
+      // Restating the owner's type is not a re-type.
+      expect((await g.remember({ id: "ann", type: "Contact" }, by("scheduled"))).ok).toBe(true);
+    }
+  });
+
+  it("once the owner untypes a record, it is open again", async () => {
+    const g = await MemoryGraph.create();
+    await g.remember({ id: "ann", label: "Ann", type: "Contact" }, owner);
+    await g.forget({ id: "ann", details: ["type"] }, owner);
+    expect((await g.remember({ id: "ann", type: "Vendor" }, by("scheduled"))).ok).toBe(true);
   });
 
   it("the owner re-types any record; any writer re-types one another writer typed", async () => {
@@ -521,14 +561,13 @@ describe("upgrading older stores", () => {
         Object.entries(g.describe("v")?.recorded ?? {}).map(([k, r]) => [k, r.who]),
       ),
     ).toEqual({
-      type: "owner",
-      label: "owner",
       phone: "owner",
       a: "scheduled",
       b: "delegated",
       c: "legacy",
       d: "legacy",
     });
+    expect(g.describe("v")?.recordedName?.who).toBe("owner");
     // 0.2.x's "user" writes are the owner's: the rule holds for them.
     const scheduled = JSON.stringify({ who: "scheduled" });
     expect(

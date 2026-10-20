@@ -506,7 +506,9 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
     expect(seen).toContain(`rotated: yes  (recorded by a scheduled run on ${today()})`);
     expect(seen).toContain("When it matters, say where it came from.");
     const related = await h.tools.relate.execute({ about: "Vault door" });
-    expect(related).toContain(`(record created by a scheduled run on ${today()})`);
+    expect(related).toContain(
+      `(named by a scheduled run on ${today()}; typed by a scheduled run on ${today()})`,
+    );
     expect(related).toContain("When it matters, say where it came from.");
     expect(await injectedText(h.provider, h.memory, "code word rotated")).toContain(
       "rotated=yes (scheduled run)",

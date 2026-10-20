@@ -62,7 +62,7 @@ const mutations: Mutation[] = [
   {
     name: "attributes are write-only",
     file: "src/memory-graph.ts",
-    find: "else if (r.ot === 'lit' && r.p.startsWith(P)) attributes[key] = r.o",
+    find: "attributes[key] = r.o;",
     replace: "",
     expect: "recall returns stored attributes",
   },
@@ -503,10 +503,10 @@ const mutations: Mutation[] = [
     expect: "a scheduled write lands, recalls as scheduled",
   },
   {
-    name: "a record another writer created isn't marked",
+    name: "a record another writer typed isn't marked",
     file: "src/provider.ts",
-    find: "? ` (record created ${byWhom(r)})`",
-    replace: '? ""',
+    find: 'a.recordedType && NOT_OWNER.has(a.recordedType.who) ? `typed ${byWhom(a.recordedType)}` : "",',
+    replace: '"",',
     expect: "a scheduled write lands, recalls as scheduled",
   },
 
@@ -556,21 +556,21 @@ const mutations: Mutation[] = [
   {
     name: "any writer re-types the owner's record",
     file: "src/memory-graph.ts",
-    find: "before.ownerTyped &&",
+    find: "ownerType !== undefined &&",
     replace: "false &&",
     expect: "a record the owner typed can't be re-typed by another writer",
   },
   {
     name: "every typed record is the owner's",
     file: "src/memory-graph.ts",
-    find: "before.ownerTyped &&",
-    replace: "",
+    find: "const last = rows.find((r) => ownerControlled(r.origin));",
+    replace: 'const last = rows.find((r) => r.ot === "iri");',
     expect: "any writer re-types one another writer typed",
   },
   {
     name: "restating a record's type counts as re-typing it",
     file: "src/memory-graph.ts",
-    find: "pascal(fact.type) !== before.type &&",
+    find: "target !== ownerType &&",
     replace: "",
     expect: "a record the owner typed can't be re-typed by another writer",
   },
@@ -617,6 +617,42 @@ const mutations: Mutation[] = [
     find: "const id = tool?.session?.id;",
     replace: 'const id = tool?.session ? "all" : undefined;',
     expect: "writes past the cap throw",
+  },
+  // The re-type rule reads the log, so a forget doesn't free a record; record-level origins stand apart from details.
+  {
+    name: "the re-type rule reads only the latest type row (a forget frees the record)",
+    file: "src/memory-graph.ts",
+    find: "const last = rows.find((r) => ownerControlled(r.origin));",
+    replace: "const last = rows[0];",
+    expect: "forgetting the type or the whole record doesn't free the owner's record",
+  },
+  {
+    name: "a typeless save of a forgotten record isn't a re-type",
+    file: "src/memory-graph.ts",
+    find: 'const target = fact.type ? pascal(fact.type) : before.exists ? undefined : "Thing";',
+    replace: "const target = fact.type ? pascal(fact.type) : undefined;",
+    expect: "forgetting the type or the whole record doesn't free the owner's record",
+  },
+  {
+    name: "the owner untyping a record doesn't release it",
+    file: "src/memory-graph.ts",
+    find: 'return last?.ot === "iri" ? tail(last.o) : undefined;',
+    replace: "return last ? tail(last.o) : undefined;",
+    expect: "once the owner untypes a record, it is open again",
+  },
+  {
+    name: "a detail named label takes over the record name's origin",
+    file: "src/memory-graph.ts",
+    find: "recorded[key] = by(r);",
+    replace: 'recorded[key] = by(r);\n        if (key === "label") recordedName = by(r);',
+    expect: "a detail named label or type keeps its own origin",
+  },
+  {
+    name: "a record named by another writer isn't marked",
+    file: "src/provider.ts",
+    find: 'a.recordedName && NOT_OWNER.has(a.recordedName.who) ? `named ${byWhom(a.recordedName)}` : "",',
+    replace: '"",',
+    expect: "a scheduled write lands, recalls as scheduled",
   },
 ];
 

@@ -58,8 +58,12 @@ export interface Fact {
   label?: string;
   type?: string;
   attributes?: Record<string, string>;
-  /** Who wrote each current value, and when (key → origin), from the write's recorded origin. */
+  /** Who wrote each current detail, and when (detail → origin), from the write's recorded origin. */
   recorded?: Record<string, Recorded>;
+  /** Who gave the record its current name, and when. */
+  recordedName?: Recorded;
+  /** Who gave the record its current type, and when. */
+  recordedType?: Recorded;
 }
 export interface RelateResult {
   found: boolean;
@@ -68,6 +72,8 @@ export interface RelateResult {
   type?: string;
   attributes?: Record<string, string>;
   recorded?: Record<string, Recorded>;
+  recordedName?: Recorded;
+  recordedType?: Recorded;
   connections: { relation: string; target: string }[];
 }
 export interface ShapeEntry {
@@ -102,6 +108,8 @@ export interface Description {
   attributes: Record<string, string>;
   relations: { relation: string; to: string }[];
   recorded: Record<string, Recorded>;
+  recordedName?: Recorded;
+  recordedType?: Recorded;
 }
 export interface HistoryEntry {
   key: string;
@@ -145,8 +153,8 @@ type View = {
   relations: Triple[];
   rows: Triple[];
   recorded: Record<string, Recorded>;
-  /** Whether the record's current type is under the owner's control. */
-  ownerTyped: boolean;
+  recordedName?: Recorded;
+  recordedType?: Recorded;
 };
 
 const B = "https://eve.local/mem/";
@@ -597,18 +605,26 @@ export class MemoryGraph {
     const relations = this.#relations.all(s);
     const attributes: Record<string, string> = {};
     const recorded: Record<string, Recorded> = {};
-    const note = (key: string, row: StoredTriple) => {
-      recorded[key] = { who: whoOf(row.origin), on: onOf(row.written_at) };
-    };
+    const by = (row: StoredTriple): Recorded => ({
+      who: whoOf(row.origin),
+      on: onOf(row.written_at),
+    });
+    let recordedName: Recorded | undefined, recordedType: Recorded | undefined;
     let type: string | undefined, label: string | undefined;
     for (const r of single) {
       const key = keyOf(r.p);
-      if (r.p === TYPE) type = tail(r.o);
-      else if (r.p === LABEL) label = r.o;
-      else if (r.ot === "lit" && r.p.startsWith(P)) attributes[key] = r.o;
-      note(key, r);
+      if (r.p === TYPE) {
+        type = tail(r.o);
+        recordedType = by(r);
+      } else if (r.p === LABEL) {
+        label = r.o;
+        recordedName = by(r);
+      } else if (r.ot === "lit" && r.p.startsWith(P)) {
+        attributes[key] = r.o;
+        recorded[key] = by(r);
+      }
     }
-    for (const r of relations) note(`${tail(r.p)}→${tail(r.o)}`, r);
+    for (const r of relations) recorded[`${tail(r.p)}→${tail(r.o)}`] = by(r);
     return {
       exists: single.length + relations.length > 0,
       type,
@@ -617,7 +633,8 @@ export class MemoryGraph {
       relations: relations.map(withoutOrigin),
       rows: [...single, ...relations].map(withoutOrigin),
       recorded,
-      ownerTyped: single.some((r) => r.p === TYPE && ownerControlled(r.origin)),
+      recordedName,
+      recordedType,
     };
   }
   // The search index serves the current view only — a superseded value must not be findable as if it were true.
@@ -847,13 +864,14 @@ export class MemoryGraph {
     const s = `${E}${id}`;
     const before = this.#view(s);
     // The same control-plane rule for records: one typed in the owner's own conversation is re-typed only there, so
-    // another writer can't move it out from under the owner's record types.
+    // another writer can't move it out from under the owner's record types. Read from the log, so forgetting the type
+    // or the whole record first doesn't free it.
+    const ownerType = this.#ownerType(s);
+    const target = fact.type ? pascal(fact.type) : before.exists ? undefined : "Thing";
     if (
-      fact.type &&
-      before.exists &&
-      before.type !== undefined &&
-      pascal(fact.type) !== before.type &&
-      before.ownerTyped &&
+      ownerType !== undefined &&
+      target !== undefined &&
+      target !== ownerType &&
       whoOf(origin) !== "owner"
     ) {
       dlog("remember REFUSED: a non-owner write asked to re-type", id);
@@ -862,7 +880,7 @@ export class MemoryGraph {
         stage: "owner-type",
         problems: [
           {
-            message: `${before.label ?? id} was typed \`${before.type}\` in the memory owner's own conversation, so only the memory owner's own conversation can change its type. Save the other details without a type, or ask the memory owner.`,
+            message: `${before.label ?? id} was typed \`${ownerType}\` in the memory owner's own conversation, so only the memory owner's own conversation can change its type. Save the other details without a type, or ask the memory owner.`,
           },
         ],
       };
@@ -947,7 +965,7 @@ export class MemoryGraph {
     );
     // Surface the id: the model needs it to connect other things to this one (relations resolve by id, so a
     // relation to a bare label would dangle to a non-existent node).
-    let summary = `${before.exists ? "Updated" : "Remembered"} ${view.label ?? id} (${view.type}) [id: ${id}]. Use this id to connect other things to it.`;
+    let summary = `${before.exists ? "Updated" : "Remembered"} ${view.label ?? id} (${view.type ?? "untyped"}) [id: ${id}]. Use this id to connect other things to it.`;
     if (superseded.length)
       summary += ` Replaced: ${superseded.map((c) => `${c.key} "${c.from}" → "${c.to}"`).join("; ")} (earlier values are kept in history).`;
     // Loud, never blocking: a rule binds by type, so a save under another type silently dodges it. Say so.
@@ -955,7 +973,7 @@ export class MemoryGraph {
     if (skipped.length) {
       const shown = skipped.slice(0, 3).map((r) => r.summary);
       if (skipped.length > 3) shown.push(`+${skipped.length - 3} more`);
-      summary += ` Saved as ${view.type}, so it was NOT checked against your other rules: ${shown.join("; ")}. If it is one of those kinds, save it with that type.`;
+      summary += ` Saved as ${view.type ?? "untyped"}, so it was NOT checked against your other rules: ${shown.join("; ")}. If it is one of those kinds, save it with that type.`;
     }
     return { ok: true, id, summary, superseded };
   }
@@ -1064,6 +1082,15 @@ export class MemoryGraph {
     );
   }
 
+  // The type the owner last gave a record, from the log: undefined if the owner never typed it, or last untyped it.
+  #ownerType(s: string): string | undefined {
+    const rows = this.db
+      .prepare(`SELECT o, ot, origin FROM triples WHERE s = ? AND p = '${TYPE}' ORDER BY seq DESC`)
+      .all(s) as { o: string; ot: string; origin: string | null }[];
+    const last = rows.find((r) => ownerControlled(r.origin));
+    return last?.ot === "iri" ? tail(last.o) : undefined;
+  }
+
   // Whether the owner's saves depend on a type: any change to it was made in the owner's own conversation (creating it
   // or extending it), it came with a 0.1.0 store, or a raw shape names it.
   #ownerDefined(cls: string): boolean {
@@ -1146,6 +1173,8 @@ export class MemoryGraph {
         type: v.type,
         attributes: v.attributes,
         recorded: v.recorded,
+        recordedName: v.recordedName,
+        recordedType: v.recordedType,
       };
     });
   }
@@ -1238,6 +1267,8 @@ export class MemoryGraph {
       type: v.type,
       attributes: v.attributes,
       recorded: v.recorded,
+      recordedName: v.recordedName,
+      recordedType: v.recordedType,
       connections,
     };
   }
@@ -1253,6 +1284,8 @@ export class MemoryGraph {
           attributes: v.attributes,
           relations: v.relations.map((r) => ({ relation: tail(r.p), to: tail(r.o) })),
           recorded: v.recorded,
+          recordedName: v.recordedName,
+          recordedType: v.recordedType,
         }
       : null;
   }

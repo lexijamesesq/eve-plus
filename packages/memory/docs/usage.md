@@ -107,7 +107,12 @@ A value isn't marked true or untrue: a fact the user relays ("the wiki says the 
 If a scheduled run, delegated task or another principal replaces a value from the owner's conversation, the write lands, and the store logs an `owner-overwrite` warning with the write's origin. To undo it:
 
 ```ts
+import { MemoryGraph } from "@eve-plus/memory";
+
+// With the agent stopped, open the scope's store and revert by any recorded origin field.
+const graph = await MemoryGraph.create({ dir: "<dir>/<scope key>" });
 await graph.revertBatch({ who: "scheduled", sessionId: "<the run's session>" });
+graph.close();
 ```
 
 One rule is enforced: a record type created or extended in the owner's conversation, and a record typed there, change type or definition only in the owner's conversation. Another writer gets a reason it can act on:
