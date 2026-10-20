@@ -2,8 +2,9 @@
 
 ## 0.2.1
 
-Fixes installing 0.2.0 from git. The package's `prepare` step runs `npm install` in the package, and npm refused it:
-the development pin `ai@7.0.118` conflicts with eve 0.80.1's peer range (`ai ^7.0.137`). The development pin is now
+Fixes installing 0.2.0 from git. Installing it from git runs `npm install` in the package, which then runs its
+`prepare` build, and npm refused the install: the development pin `ai@7.0.118` conflicts with eve 0.80.1's peer range
+(`ai ^7.0.137`). The development pin is now
 `ai@7.0.141`. There is no change to the package's behaviour or API; use 0.2.1 rather than 0.2.0.
 
 ## 0.2.0
