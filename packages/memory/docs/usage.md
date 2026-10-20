@@ -109,8 +109,9 @@ If a scheduled run, delegated task or another principal replaces a value from th
 ```ts
 import { MemoryGraph } from "@eve-plus/memory";
 
-// With the agent stopped, open the scope's store and revert by any recorded origin field.
-const graph = await MemoryGraph.create({ dir: "<dir>/<scope key>" });
+// With the agent stopped, open the scope's store (its key with characters outside a-zA-Z0-9._- replaced by _)
+// and revert by any recorded origin field.
+const graph = await MemoryGraph.create({ dir: "<dir>/<slugged scope key>" });
 await graph.revertBatch({ who: "scheduled", sessionId: "<the run's session>" });
 graph.close();
 ```

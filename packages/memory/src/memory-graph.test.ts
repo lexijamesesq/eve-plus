@@ -443,6 +443,8 @@ describe("the one control-plane rule: the owner's types and record types change 
       const gone = g.describe("ann") === null;
       const named = await g.remember({ id: "ann", label: "Ann" }, by("scheduled"));
       expect(named.ok).toBe(!gone);
+      if (gone)
+        expect(named.ok ? "" : named.problems[0]?.message).toContain("save it with type `Contact`");
       expect(g.describe("ann")?.type ?? "untyped").not.toBe("Evil");
       // Restating the owner's type is not a re-type.
       expect((await g.remember({ id: "ann", type: "Contact" }, by("scheduled"))).ok).toBe(true);

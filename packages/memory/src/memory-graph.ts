@@ -880,7 +880,7 @@ export class MemoryGraph {
         stage: "owner-type",
         problems: [
           {
-            message: `${before.label ?? id} was typed \`${ownerType}\` in the memory owner's own conversation, so only the memory owner's own conversation can change its type. Save the other details without a type, or ask the memory owner.`,
+            message: `${before.label ?? id} was typed \`${ownerType}\` in the memory owner's own conversation, so only the memory owner's own conversation can change its type. ${fact.type ? "Save the other details without a type, or ask the memory owner." : `The record was forgotten, and saving it again would type it \`Thing\`: save it with type \`${ownerType}\`, or ask the memory owner.`}`,
           },
         ],
       };
