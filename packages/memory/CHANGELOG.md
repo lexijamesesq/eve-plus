@@ -41,10 +41,11 @@ of ranking.
 No migration step: stores open as they are, and the schema log is unchanged.
 
 - **From 0.2.x:** values written as `"user"` in the owner's live turn read as the owner's, and scheduled or
-  delegated writes read as such. Other 0.2.x content values read as `legacy` (unmarked). Types the user created under
-  0.2.x keep the new rule's protection.
+  delegated writes read as such. Other 0.2.x content values read as `legacy` (unmarked). Types and record types any
+  0.2.x write set count as the owner's, except those 0.2.x recorded as scheduled or delegated.
 - **From 0.1.0:** values read as `legacy` and are open to every writer. Types and record types count as the owner's,
-  since they came from the owner's conversations, as do types a raw shape names.
+  since they came from the owner's conversations, as do types a raw shape names. 0.1.0 recorded no way to tell the
+  owner's writes from others', so this errs toward protecting the type; the owner can still change any of them.
 - **Behaviour you'll see:** writes that 0.2.x kept back now land. If you relied on that to protect values, use
   attribution to find and revert what you don't want, and `maxWritesPerSession` to bound a run.
 

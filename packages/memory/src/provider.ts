@@ -240,7 +240,6 @@ function originOf(
 }
 
 /**
- * An eve memory provider/**
  * An eve memory provider backed by a SHACL ontology over an embedded SQLite graph. The agent shapes
  * its own knowledge — entities, attributes, connections, and new kinds — and the only gate is whether it lints.
  * Register it like `fileMemory`:

@@ -508,7 +508,19 @@ describe("upgrading older stores", () => {
         true,
       );
       expect(g.describe("den")?.attributes.size).toBe("small");
-      // Its types and record types came from the owner's conversations: the owner's.
+      // Its types and record types came from the owner's conversations: the owner's. That includes records the 0.1.0
+      // provider wrote, whose origins carry its model-labelled provenance and no `who`.
+      for (const provenance of ["user", "content", "content-approved"]) {
+        const v010 = JSON.stringify({
+          scope: "principal",
+          provenance,
+          sessionId: "s",
+          callId: "c",
+        });
+        await g.remember({ id: `r-${provenance}`, label: "R", type: "Client" }, v010);
+        const r = await g.remember({ id: `r-${provenance}`, type: "Vendor" }, scheduled);
+        expect(r.ok || r.stage).toBe("owner-type");
+      }
       const room = await g.extendSchema({ class: "Room", requires: [{ slot: "x" }] }, scheduled);
       expect(room.ok || room.stage).toBe("owner-type");
       const retype = await g.remember({ id: "den", type: "Hall" }, scheduled);
@@ -570,6 +582,15 @@ describe("upgrading older stores", () => {
       d: "legacy",
     });
     expect(g.describe("v")?.recordedName?.who).toBe("owner");
+    // A record type a 0.2.x scheduled or delegated write set stays open; one any other 0.2.x write set is the owner's.
+    await g.remember({ id: "s", label: "S", type: "Org" }, v02.scheduled);
+    await g.remember({ id: "d", label: "D", type: "Org" }, v02.delegated);
+    await g.remember({ id: "c", label: "C", type: "Org" }, v02.content);
+    const other = JSON.stringify({ who: "other" });
+    expect((await g.remember({ id: "s", type: "Vendor" }, other)).ok).toBe(true);
+    expect((await g.remember({ id: "d", type: "Vendor" }, other)).ok).toBe(true);
+    const c = await g.remember({ id: "c", type: "Vendor" }, other);
+    expect(c.ok || c.stage).toBe("owner-type");
     // 0.2.x's "user" writes are the owner's: the rule holds for them.
     const scheduled = JSON.stringify({ who: "scheduled" });
     expect(

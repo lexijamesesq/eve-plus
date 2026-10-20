@@ -345,9 +345,12 @@ export function whoOf(origin: string | null): Who {
   return "legacy";
 }
 // Whether a row puts a type or a record's type under the owner's control: written in the owner's own conversation, or
-// carried over from a 0.1.0 store, whose types and record types came from the owner's conversations.
-const ownerControlled = (origin: string | null): boolean =>
-  origin === null || whoOf(origin) === "owner" || parseOrigin(origin)?.source === "legacy";
+// written before 0.3.0 (no recorded `who`) by anything but a scheduled run or delegated task. Older stores' types came
+// from the owner's conversations, and only 0.2.x recorded which writes were scheduled or delegated.
+const ownerControlled = (origin: string | null): boolean => {
+  const who = whoOf(origin);
+  return who === "owner" || (parseOrigin(origin)?.who === undefined && who === "legacy");
+};
 const onOf = (writtenAt: string | null) => (writtenAt ? writtenAt.slice(0, 10) : null);
 const stripUndefined = <T extends object>(o: T): Partial<T> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
