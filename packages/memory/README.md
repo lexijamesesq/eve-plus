@@ -75,6 +75,10 @@ Handing an agent open-ended memory raises an obvious question: what happens when
 
 **The named residual.** Content the user pastes or forwards arrives in their own authenticated message, and no channel signal separates their words from it. If the model labels such content `"user"` in that turn, it's recorded as the user's. What covers that is detection and recovery, not a prompt: the write is attributed to its session, turn and call, `history` keeps what it replaced, and `revertBatch` undoes it.
 
+## Changes
+
+See [CHANGELOG.md](./CHANGELOG.md). 0.2.0 removes the approval gates and changes how writes are ranked; read it before upgrading from 0.1.0.
+
 ## Testing this package
 
 - `npm test` — unit + integration suite (`test:unit` runs in-memory; `test:integration` runs on-disk stores through the memory contract).

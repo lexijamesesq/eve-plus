@@ -101,9 +101,8 @@ export type ForgetResult =
     }
   | { ok: false; reason: string };
 export type ExtendResult =
-  | Ok<{ class: string; merged?: boolean; rule?: string }>
-  | Fail
-  | { ok: false; kept: string };
+  | Ok<{ class: string; merged?: boolean; rule?: string; kept?: boolean }>
+  | Fail;
 export interface Description {
   id: string;
   label?: string;
@@ -557,14 +556,10 @@ export class MemoryGraph {
           ? { defs: JSON.parse(savedDefs) as SchemaDefs, rawTtl: meta("raw_ttl") ?? "" }
           : deriveDefs(await parseTurtle(legacyTtl), legacyTtl);
       const legacy = JSON.stringify({ source: "legacy" });
-      const at = new Date().toISOString();
-      const log = mg.db.prepare(
-        "INSERT INTO schema_log(class, def, raw, written_at, origin) VALUES (?, ?, ?, ?, ?)",
-      );
       mg.db.transaction(() => {
         for (const [cls, def] of Object.entries(defs))
-          log.run(cls, JSON.stringify({ base: def }), null, at, legacy);
-        if (rawTtl.trim()) log.run(null, null, rawTtl, at, legacy);
+          mg.#logSchema(cls, { base: def }, null, legacy);
+        if (rawTtl.trim()) mg.#logSchema(null, null, rawTtl, legacy);
         mg.db
           .prepare("INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_log_seeded','1')")
           .run();
@@ -801,7 +796,7 @@ export class MemoryGraph {
         cls,
         "which a raw shape of the user's covers",
       );
-      return { ok: false, kept: cls };
+      return { ok: true, class: cls, kept: true };
     }
     if (isContent(origin) && cls in this.#schemaDefs) {
       // A type the user defined or extended at any point is the user's: content can't add to it.
@@ -810,7 +805,7 @@ export class MemoryGraph {
       }[];
       if (changes.some((c) => outranksContent(c.origin))) {
         dlog("extend_schema KEPT: content asked to change", cls, "which the user defined");
-        return { ok: false, kept: cls };
+        return { ok: true, class: cls, kept: true };
       }
     }
     const merged = mergeDef(this.#schemaDefs[cls], def);
@@ -879,33 +874,41 @@ export class MemoryGraph {
     const s = `${E}${id}`;
     const before = this.#view(s);
     // Handed content naming a record the person already has is a second, competing record of the same thing (a
-    // "J. Lee" with a different phone): keep the person's record and write nothing.
-    if (isContent(origin) && !before.exists && fact.label && !held) {
-      const twin = this.#namesakes(String(fact.label)).find((sub) =>
-        this.#current.all(sub).some((r) => r.p === LABEL && outranksContent(r.origin)),
+    // "J. Lee" with a different phone), whether it's a new record or one of content's renamed: keep the person's
+    // record as the only one by that name.
+    let renameKept: Change | undefined;
+    if (isContent(origin) && fact.label && !held && String(fact.label) !== before.label) {
+      const twin = this.#namesakes(String(fact.label)).find(
+        (sub) =>
+          sub !== s &&
+          this.#current.all(sub).some((r) => r.p === LABEL && outranksContent(r.origin)),
       );
       if (twin) {
-        const kept = [
-          { key: "record", from: this.#view(twin).label ?? tail(twin), to: String(fact.label) },
-        ];
+        const kept = {
+          key: "record",
+          from: this.#view(twin).label ?? tail(twin),
+          to: String(fact.label),
+        };
         dlog(
           "remember KEPT: content named a second",
           JSON.stringify(fact.label),
           "→ twin of",
           tail(twin),
         );
-        return { ok: true, id: tail(twin), summary: "", superseded: [], kept };
+        if (!before.exists)
+          return { ok: true, id: tail(twin), summary: "", superseded: [], kept: [kept] };
+        renameKept = kept;
       }
     }
     let want: Triple[] = [];
     if (fact.type || !before.exists)
       want.push({ s, p: TYPE, o: `${C}${pascal(fact.type ?? "Thing")}`, ot: "iri", dt: null });
-    if (fact.label)
+    if (fact.label && !renameKept)
       want.push({ s, p: LABEL, o: String(fact.label), ot: "lit", dt: `${XSD}string` });
     for (const [k, v] of Object.entries(fact.attributes ?? {}))
       want.push({ s, p: `${P}${slug(k)}`, o: String(v), ot: "lit", dt: xsdOf(v) });
     // Handed content can't replace what the person stated: those keys keep their value and are reported back.
-    const kept: Change[] = [];
+    const kept: Change[] = renameKept ? [renameKept] : [];
     if (isContent(origin)) {
       const stated = new Map(
         this.#current

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 import { MemoryGraph } from "./memory-graph.js";
@@ -30,7 +31,7 @@ describe("extend_schema: the agent authors its ontology; the only gate is lint",
   sh:property [ sh:path p:size ; sh:nodeKind c:NotAKind ; sh:minCount "lots" ] .`,
     });
     expect(bad.ok).toBe(false);
-    if (bad.ok || "kept" in bad) throw new Error("expected a validation failure");
+    if (bad.ok) throw new Error("expected a validation failure");
     expect(bad.problems.length).toBeGreaterThan(0);
     for (const p of bad.problems) expect(p.message.length).toBeGreaterThan(3);
   });
@@ -319,6 +320,20 @@ describe("precedence: handed content can't replace or retract what the user stat
     expect(g.describe("jordan")?.filed).toHaveProperty("phone");
   });
 
+  it("content can't rename its own record onto the user's record's name", async () => {
+    const g = await person();
+    await g.remember(
+      { id: "c1", label: "Acme Billing", attributes: { phone: "555-0999" } },
+      content(),
+    );
+    const renamed = await g.remember(
+      { id: "c1", label: "Jordan Lee", attributes: { fax: "1" } },
+      content(),
+    );
+    expect(renamed).toMatchObject({ ok: true, kept: [{ key: "record", from: "Jordan Lee" }] });
+    expect(g.describe("c1")).toMatchObject({ label: "Acme Billing", attributes: { fax: "1" } });
+  });
+
   it("content naming a second record under the user's record's name writes nothing", async () => {
     const g = await person();
     const r = await g.remember(
@@ -387,7 +402,7 @@ describe("schema changes are attributed and revertable, with the same precedence
       { class: "ClientContact", requires: [{ slot: "always_cc", minCount: 1 }] },
       content("s-spec"),
     );
-    expect(r).toEqual({ ok: false, kept: "ClientContact" });
+    expect(r).toEqual({ ok: true, class: "ClientContact", kept: true });
     expect(
       g
         .shapeIndex()
@@ -402,7 +417,7 @@ describe("schema changes are attributed and revertable, with the same precedence
     await g.extendSchema({ class: "Gadget", requires: [{ slot: "weight" }] }, user);
     expect(
       await g.extendSchema({ class: "Gadget", requires: [{ slot: "color" }] }, content("s3")),
-    ).toEqual({ ok: false, kept: "Gadget" });
+    ).toEqual({ ok: true, class: "Gadget", kept: true });
   });
 
   it("a raw shape from content is refused: it could target the user's types", async () => {
@@ -439,7 +454,7 @@ describe("schema changes are attributed and revertable, with the same precedence
         { class: "Room", requires: [{ slot: "color", minCount: 1 }] },
         content("s-r"),
       ),
-    ).toEqual({ ok: false, kept: "Room" });
+    ).toEqual({ ok: true, class: "Room", kept: true });
   });
 
   it("content can't add to its own type once the user's raw shape covers it", async () => {
@@ -456,7 +471,7 @@ describe("schema changes are attributed and revertable, with the same precedence
         { class: "Mix", requires: [{ slot: "evil", minCount: 1 }] },
         content("m3"),
       ),
-    ).toEqual({ ok: false, kept: "Mix" });
+    ).toEqual({ ok: true, class: "Mix", kept: true });
   });
 
   it("a raw shape that is its own class target makes that type the user's", async () => {
@@ -470,7 +485,59 @@ describe("schema changes are attributed and revertable, with the same precedence
         { class: "Dd", requires: [{ slot: "evil", minCount: 1 }] },
         content("d1"),
       ),
-    ).toEqual({ ok: false, kept: "Dd" });
+    ).toEqual({ ok: true, class: "Dd", kept: true });
+  });
+
+  it("a 0.1.0 store upgrades with its types intact, as the user's", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "eve-plus-upgrade-"));
+    try {
+      // The store as 0.1.0 leaves it: definitions and raw shapes in meta rows, no schema log.
+      (await MemoryGraph.create({ dir })).close();
+      const db = new Database(join(dir, "graph.db"));
+      db.exec("DELETE FROM schema_log; DELETE FROM meta WHERE key = 'schema_log_seeded';");
+      const put = db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)");
+      put.run(
+        "schema_defs",
+        JSON.stringify({
+          Room: {
+            requires: { floor: { datatype: "integer", minCount: 1, name: "floor" } },
+            relations: {},
+          },
+        }),
+      );
+      put.run(
+        "raw_ttl",
+        "\nc:HallRule a sh:NodeShape ; sh:targetClass c:Hall ; sh:property [ sh:path p:size ; sh:minCount 1 ] .\n",
+      );
+      db.close();
+
+      const g = await MemoryGraph.create({ dir });
+      const rule = (cls: string) => g.shapeIndex().find((x) => x.class === cls)?.summary;
+      expect(rule("Room")).toBe("Room (requires floor)");
+      expect(rule("Hall")).toBe("Hall (requires size)");
+      const log = g.db.prepare("SELECT class, origin FROM schema_log ORDER BY seq").all();
+      expect(log).toEqual([
+        { class: "Room", origin: JSON.stringify({ source: "legacy" }) },
+        { class: null, origin: JSON.stringify({ source: "legacy" }) },
+      ]);
+      expect((await g.remember({ id: "r", label: "Den", type: "Room" })).ok).toBe(false);
+      const c = JSON.stringify({ provenance: "content" });
+      for (const cls of ["Room", "Hall"])
+        expect(
+          await g.extendSchema({ class: cls, requires: [{ slot: "evil", minCount: 1 }] }, c),
+        ).toEqual({
+          ok: true,
+          class: cls,
+          kept: true,
+        });
+      g.close();
+      // Seeded once: reopening doesn't add a second copy.
+      const again = await MemoryGraph.create({ dir });
+      expect(again.db.prepare("SELECT count(*) AS n FROM schema_log").get()).toEqual({ n: 2 });
+      again.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("reverting a schema change that isn't the latest removes only what it added", async () => {

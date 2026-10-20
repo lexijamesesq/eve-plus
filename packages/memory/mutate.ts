@@ -332,8 +332,9 @@ const mutations: Mutation[] = [
   {
     name: "a fresh id skips the second-record check",
     file: "src/memory-graph.ts",
-    find: "if (isContent(origin) && !before.exists && fact.label && !held) {",
-    replace: "if (isContent(origin) && !fact.id && fact.label && !held) {",
+    find: "if (isContent(origin) && fact.label && !held && String(fact.label) !== before.label) {",
+    replace:
+      "if (isContent(origin) && !fact.id && fact.label && !held && String(fact.label) !== before.label) {",
     expect: "a fresh id does not dodge the check",
   },
   {
@@ -438,6 +439,34 @@ const mutations: Mutation[] = [
     find: "remember: defineTool({",
     replace: 'remember: defineTool({ approval: () => "user-approval" as const,',
     expect: "no memory tool asks for approval",
+  },
+  {
+    name: "content renames its own record onto the user's record's name",
+    file: "src/memory-graph.ts",
+    find: "if (isContent(origin) && fact.label && !held && String(fact.label) !== before.label) {",
+    replace: "if (isContent(origin) && fact.label && !held && !before.exists) {",
+    expect: "content can't rename its own record onto the user's record's name",
+  },
+  {
+    name: "the upgrade drops a 0.1.0 store's raw shapes",
+    file: "src/memory-graph.ts",
+    find: "if (rawTtl.trim()) mg.#logSchema(null, null, rawTtl, legacy);",
+    replace: "",
+    expect: "a 0.1.0 store upgrades with its types intact",
+  },
+  {
+    name: "the upgrade seeds a 0.1.0 store's types as content",
+    file: "src/memory-graph.ts",
+    find: 'const legacy = JSON.stringify({ source: "legacy" });',
+    replace: 'const legacy = JSON.stringify({ provenance: "content" });',
+    expect: "a 0.1.0 store upgrades with its types intact",
+  },
+  {
+    name: "the upgrade seeds on every open",
+    file: "src/memory-graph.ts",
+    find: 'if (meta("schema_log_seeded") == null) {',
+    replace: "if (true) {",
+    expect: "a 0.1.0 store upgrades with its types intact",
   },
   {
     name: "content takes over a stated value by resending it as another datatype",
