@@ -450,6 +450,20 @@ const EDGE = `ot IN ('iri','tomb-edge') AND p LIKE '${P}%'`;
 const SINGLE_VALUED = `NOT (${EDGE})`;
 const isRelation = (p: string, ot: string) =>
   (ot === "iri" || ot === "tomb-edge") && p.startsWith(P);
+// The current view in SQL, shared with the read-only stats (stats.ts) so the two can't drift. A single-valued key's
+// latest write wins; an edge is current while its latest write isn't a tombstone.
+const LATEST_SINGLE = `seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED})`;
+const LATEST_EDGE = `seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND o=t.o AND ${EDGE})`;
+/** Every current literal value, one row each: what the search index should hold. */
+export const CURRENT_LITERALS_SQL = `SELECT s, o FROM triples t WHERE ot = 'lit' AND ${SINGLE_VALUED} AND ${LATEST_SINGLE}`;
+/** How many facts are current: single-valued details plus live edges. */
+export const CURRENT_FACTS_SQL = `SELECT (SELECT count(*) FROM triples t WHERE ${SINGLE_VALUED} AND ot != 'tomb' AND ${LATEST_SINGLE})
+                                      + (SELECT count(*) FROM triples t WHERE ${EDGE} AND ot = 'iri' AND ${LATEST_EDGE}) AS n`;
+/**
+ * The store's write high-water mark: the largest `seq` ever assigned. It only grows, even when `revertBatch` deletes
+ * the latest rows, so a mark lower than a previous reading means the store was lost or replaced.
+ */
+export const SEQ_HWM_SQL = "SELECT CAST(value AS INTEGER) AS n FROM meta WHERE key = 'seq_hwm'";
 const keyOf = (p: string) => (p === TYPE ? "type" : p === LABEL ? "label" : tail(p));
 // Forgetting appends a tombstone rather than deleting: 'tomb' retracts a single-valued key, 'tomb-edge' one edge.
 const toTtl = (rows: Triple[]) =>
@@ -475,7 +489,15 @@ export class MemoryGraph {
   // Classes a raw shape names. Raw shapes come only from the operator's own code (this API, or an older store), never
   // through the tools, so these types are the owner's.
   #rawClasses = new Set<string>();
-  #ins!: Database.Statement<[string, string, string, string, string | null, string, string]>;
+  #ins!: (
+    s: string,
+    p: string,
+    o: string,
+    ot: string,
+    dt: string | null,
+    at: string,
+    origin: string,
+  ) => void;
   #insF!: Database.Statement<[string, string]>;
   #delF!: Database.Statement<[string]>;
   #current!: Database.Statement<[string], StoredTriple>;
@@ -542,6 +564,14 @@ export class MemoryGraph {
         mg.db.pragma("user_version = 3");
       })();
     }
+    // v3 → v4: the write high-water mark is persisted, seeded from the highest seq on disk.
+    if (version < 4) {
+      mg.db.transaction(() => {
+        mg.db.exec(`INSERT OR IGNORE INTO meta(key, value)
+                    SELECT 'seq_hwm', CAST(ifnull(max(seq), 0) AS TEXT) FROM triples;`);
+        mg.db.pragma("user_version = 4");
+      })();
+    }
     mg.db.exec(`CREATE INDEX IF NOT EXISTS i_sps ON triples(s, p, seq);
                 CREATE INDEX IF NOT EXISTS i_seq ON triples(seq);
                 CREATE INDEX IF NOT EXISTS i_origin ON triples(origin);`);
@@ -588,8 +618,32 @@ export class MemoryGraph {
   }
 
   #prepare() {
-    this.#ins = this.db.prepare(`INSERT INTO triples(s,p,o,ot,dt,written_at,origin,seq)
-                                 VALUES (?,?,?,?,?,?,?,(SELECT ifnull(max(seq), 0) + 1 FROM triples))`);
+    // A new seq is past both the mark and the highest row, so a seq freed by revertBatch is never reused, and a row an
+    // older adapter wrote without moving the mark (a rollback) can't be collided with. The mark moves in the same
+    // transaction as the row.
+    const insert = this.db.prepare<
+      [string, string, string, string, string | null, string, string],
+      { seq: number }
+    >(`INSERT INTO triples(s,p,o,ot,dt,written_at,origin,seq)
+       VALUES (?,?,?,?,?,?,?,(SELECT max(ifnull(max(seq), 0), ifnull((${SEQ_HWM_SQL}), 0)) + 1 FROM triples))
+       RETURNING seq`);
+    const mark = this.db.prepare<[string]>(
+      "INSERT INTO meta(key, value) VALUES ('seq_hwm', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    );
+    this.#ins = this.db.transaction(
+      (
+        s: string,
+        p: string,
+        o: string,
+        ot: string,
+        dt: string | null,
+        at: string,
+        origin: string,
+      ) => {
+        const { seq } = insert.get(s, p, o, ot, dt, at, origin) as { seq: number };
+        mark.run(String(seq));
+      },
+    );
     this.#insF = this.db.prepare("INSERT INTO lit_fts(s,o) VALUES (?,?)");
     this.#delF = this.db.prepare("DELETE FROM lit_fts WHERE s=?");
     // Current view: type, label and attributes are one value per key and the latest write wins; relations are
@@ -597,10 +651,10 @@ export class MemoryGraph {
     // key are different facts and never shadow each other. Superseded rows stay in the log but never reach a read.
     this.#current =
       this.db.prepare(`SELECT s,p,o,ot,dt,origin,written_at FROM triples t WHERE s=? AND ${SINGLE_VALUED}
-                                     AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED}) AND ot != 'tomb'`);
+                                     AND ${LATEST_SINGLE} AND ot != 'tomb'`);
     this.#relations =
       this.db.prepare(`SELECT s,p,o,ot,dt,origin,written_at FROM triples t WHERE s=? AND ${EDGE}
-                                       AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND o=t.o AND ${EDGE}) AND ot = 'iri'`);
+                                       AND ${LATEST_EDGE} AND ot = 'iri'`);
     this.#currentOfType = this.db.prepare(`SELECT s FROM triples t WHERE p='${TYPE}' AND o=?
                                            AND seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p) LIMIT ?`);
   }
@@ -957,7 +1011,7 @@ export class MemoryGraph {
       const at = new Date().toISOString();
       this.db.transaction(() => {
         for (const r of [...changes, ...newRels])
-          this.#ins.run(r.s, r.p, r.o, r.ot, r.dt ?? null, at, origin);
+          this.#ins(r.s, r.p, r.o, r.ot, r.dt ?? null, at, origin);
         this.#reindex(s);
       })();
     }
@@ -1015,7 +1069,7 @@ export class MemoryGraph {
     const at = new Date().toISOString();
     this.db.transaction(() => {
       for (const r of rows)
-        this.#ins.run(
+        this.#ins(
           s,
           r.p,
           isRelation(r.p, r.ot) ? r.o : "",

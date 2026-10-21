@@ -1,6 +1,6 @@
 {
   "name": "@eve-plus/memory",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A memory provider for Vercel eve: a SHACL ontology over an embedded SQLite graph that the agent shapes and validates itself.",
   "license": "MIT",
   "keywords": [
@@ -26,10 +26,17 @@
     "dist",
     "bench"
   ],
+  "bin": {
+    "eve-memory-stats": "./dist/stats-cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/provider.d.ts",
       "import": "./dist/provider.js"
+    },
+    "./stats": {
+      "types": "./dist/stats.d.ts",
+      "import": "./dist/stats.js"
     }
   },
   "scripts": {
@@ -51,11 +58,11 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.0.0",
     "ai": "7.0.141",
-    "eve": "0.80.1",
+    "eve": "0.81.0",
     "typescript": "^5.0.0",
     "vitest": "4.1.10"
   },
   "peerDependencies": {
-    "eve": "^0.80.1"
+    "eve": "^0.80.1 || ^0.81.0"
   }
 }

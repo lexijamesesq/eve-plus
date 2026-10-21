@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.4.0
+
+Adds a way to tell, from the store itself, whether an agent's memory survived something done to it, such as a
+deploy, an upgrade or a host move. No API change: stores migrate on their next open.
+
+### Added: a write high-water mark and `eve-memory-stats`
+
+- **A persisted write high-water mark.** Each store keeps `seq_hwm` in its `meta` table: the largest write sequence
+  number it has ever assigned. It moves in the same transaction as every write, a `forget`'s tombstones included,
+  and never goes down, even when `revertBatch` deletes the latest rows. A reading lower than an earlier one means
+  the store was lost or replaced, which no row count can tell you, since counts fall legitimately.
+- **`eve-memory-stats <dir>`, a read-only command.** For `<dir>` and each direct subdirectory holding a `graph.db`,
+  it prints one line of facts. A symlinked scope directory counts, and one it can't look into is reported as
+  unreadable rather than skipped:
+  - `seq_hwm` and `max_seq`;
+  - SQLite's `quick_check`;
+  - `user_version`;
+  - current facts and tombstones;
+  - whether the search index holds exactly the current values (`search_index=<indexed>/<current>` with the
+    missing and extra counts);
+  - the owner and mode of `graph.db`, `-wal` and `-shm`.
+
+  It ends with `findings=`, the problems visible in that one snapshot: an unreadable store, a failed check, an
+  index out of step, rows past the mark, or a file whose owner differs from `graph.db`'s or the running user's.
+  Comparing snapshots (a lower mark, a vanished scope) is left to whoever reads two of them.
+- **`openReadOnly`, `scopeStats`, `scopesIn`, `findings` and `formatStats`** from `@eve-plus/memory/stats`, for
+  reading the same facts from code.
+
+### Read-only, precisely
+
+`eve-memory-stats` opens each store with `readonly: true`, never through `MemoryGraph.create` (which migrates and
+checkpoints). It never writes `graph.db` or the contents of its WAL. SQLite may create `graph.db-shm`, and an empty
+`graph.db-wal` when a cleanly closed store has none, owned by whoever runs the command, so run it as the agent's own
+user: as root it would leave root-owned files that lock the agent out. The directory has to be writable for that: a store in WAL mode
+can't be opened on a read-only mount. It exits 0 whenever it ran, including when a store or the directory is unreadable,
+which it reports. It exits 2 only on bad usage.
+
+### Changed: sequence numbers are never reused
+
+- **A write's sequence number is past both the mark and the highest row,** so 0.4.0 never reuses a number freed
+  by `revertBatch`. Write order is unchanged otherwise. An older adapter doesn't know the mark and can reuse one
+  (see Upgrading).
+
+### Fixed: eve 0.81 is a supported peer
+
+The `eve` peer range was `^0.80.1`, which under 0.x semver excludes eve 0.81. It's now `^0.80.1 || ^0.81.0`, and the
+development pin is eve 0.81.0, which the test suite runs against. Nothing in the memory provider changed for 0.81.
+
+### Upgrading to 0.4.0
+
+The first open by 0.4.0 migrates a store to `user_version` 4 and seeds the mark from its highest `seq`, or 0 for an
+empty store. Stores 0.4.0 hasn't opened yet report `seq_hwm=none`.
+
+0.3.0 still opens a 0.4.0 store, but its writes don't move the mark, and it numbers a write one past the highest
+row on disk. When that's past the mark, `eve-memory-stats` reports rows past it, until the next 0.4.0 write moves
+the mark beyond them. When it isn't (0.4.0's `revertBatch` removed the latest rows, so 0.3.0 reuses their numbers),
+nothing is reported: the mark can show that an older adapter wrote, not prove that one didn't.
+
 ## 0.3.0
 
 A breaking change for 0.2.x consumers. 0.2.x's precedence was a misstep, and it's removed. It ranked a write by the

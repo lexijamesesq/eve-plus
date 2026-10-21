@@ -848,3 +848,64 @@ describe("record-type definitions", () => {
     expect(text).toContain('`floor` must be a whole number (got "attic")');
   });
 });
+
+describe("the write high-water mark only grows", () => {
+  const hwm = (g: MemoryGraph) =>
+    Number(
+      (g.db.prepare("SELECT value FROM meta WHERE key = 'seq_hwm'").get() as { value: string })
+        .value,
+    );
+  const maxSeq = (g: MemoryGraph) =>
+    (g.db.prepare("SELECT max(seq) AS n FROM triples").get() as { n: number }).n;
+
+  it("starts at 0 and follows every write, a forget's tombstones included", async () => {
+    const g = await MemoryGraph.create();
+    expect(hwm(g)).toBe(0);
+    await g.remember({
+      id: "kettle",
+      label: "Kettle",
+      type: "Thing",
+      attributes: { colour: "red" },
+    });
+    expect(hwm(g)).toBe(maxSeq(g));
+    await g.forget({ id: "kettle", details: ["colour"] });
+    expect(hwm(g)).toBe(maxSeq(g));
+    expect(g.db.pragma("user_version", { simple: true })).toBe(4);
+  });
+
+  it("keeps its value when revertBatch deletes the latest rows, and the next write goes past it", async () => {
+    const g = await MemoryGraph.create();
+    await g.remember(
+      { id: "kettle", label: "Kettle", type: "Thing" },
+      JSON.stringify({ callId: "a" }),
+    );
+    await g.remember(
+      { id: "kettle", attributes: { colour: "red" } },
+      JSON.stringify({ callId: "b" }),
+    );
+    const before = hwm(g);
+    await g.revertBatch({ callId: "b" });
+    expect(maxSeq(g)).toBeLessThan(before);
+    expect(hwm(g)).toBe(before);
+    await g.remember(
+      { id: "kettle", attributes: { colour: "blue" } },
+      JSON.stringify({ callId: "c" }),
+    );
+    expect(maxSeq(g)).toBe(before + 1);
+    expect(hwm(g)).toBe(before + 1);
+  });
+
+  it("goes past a row an older adapter wrote without moving the mark", async () => {
+    const g = await MemoryGraph.create();
+    await g.remember({ id: "kettle", label: "Kettle", type: "Thing" });
+    const older = hwm(g) + 5;
+    g.db
+      .prepare(
+        "INSERT INTO triples(s,p,o,ot,dt,written_at,origin,seq) VALUES ('https://eve.local/mem/e/x','p','o','lit',NULL,'','{}',?)",
+      )
+      .run(older);
+    await g.remember({ id: "kettle", attributes: { colour: "red" } });
+    expect(maxSeq(g)).toBe(older + 1);
+    expect(hwm(g)).toBe(older + 1);
+  });
+});

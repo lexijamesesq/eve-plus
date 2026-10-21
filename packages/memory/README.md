@@ -59,6 +59,20 @@ Recall is **lexical** (full-text search over stored labels and values), not sema
 
 Records aren't currently enumerable by kind — you can ask "what do I know about Acme Corp" but not yet "list all my clients." A zero-hit search reports that a miss isn't proof of absence, rather than claiming nothing is stored; enumeration-by-kind is on the roadmap.
 
+## Checking a store
+
+`eve-memory-stats <dir>` prints read-only facts about every store under a memory directory, one line per scope:
+
+- the write high-water mark, which never goes down;
+- SQLite's integrity check;
+- whether the search index matches the current values;
+- who owns the files.
+
+Run it before and after something that could lose memory, such as a deploy, an upgrade or a volume move, and
+compare the two readings. A lower mark or a vanished scope means the store was lost or replaced. Run it as the
+agent's own user. It may create `graph.db-shm` (and an empty `graph.db-wal`), but it never writes the store or the contents of its WAL; run as root, those files would lock the agent out. See
+[CHANGELOG.md](./CHANGELOG.md) for each field.
+
 ## Security
 
 Memory is attributed and revertable. It is not a defense against poisoning, and nothing in it decides whether a fact is true.
@@ -85,7 +99,7 @@ Memory is attributed and revertable. It is not a defense against poisoning, and 
 
 ## Changes
 
-See [CHANGELOG.md](./CHANGELOG.md). 0.3.0 removes 0.2.x's precedence and the model's `source` field; read it before upgrading.
+See [CHANGELOG.md](./CHANGELOG.md). 0.4.0 adds the write high-water mark and `eve-memory-stats`. 0.3.0 removes 0.2.x's precedence and the model's `source` field; read it before upgrading from 0.2.x.
 
 ## Testing this package
 
