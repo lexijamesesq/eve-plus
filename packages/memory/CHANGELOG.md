@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.4.0
+
+Adds a way to tell, from the store itself, whether an agent's memory survived something done to it, such as a
+deploy, an upgrade or a host move. No API change: stores migrate on their next open.
+
+### Added: a write high-water mark and `eve-memory-stats`
+
+- **A persisted write high-water mark.** Each store keeps `seq_hwm` in its `meta` table: the largest write sequence
+  number it has ever assigned. It moves in the same transaction as every write, a `forget`'s tombstones included,
+  and never goes down, even when `revertBatch` deletes the latest rows. A reading lower than an earlier one means
+  the store was lost or replaced, which no row count can tell you, since counts fall legitimately.
+- **`eve-memory-stats <dir>`, a read-only command.** For `<dir>` and each direct subdirectory holding a `graph.db`,
+  it prints one line of facts:
+  - `seq_hwm` and `max_seq`;
+  - SQLite's `quick_check`;
+  - `user_version`;
+  - current facts and tombstones;
+  - whether the search index holds exactly the current values (`search_index=<indexed>/<current>` with the
+    missing and extra counts);
+  - the owner and mode of `graph.db`, `-wal` and `-shm`.
+
+  It ends with `findings=`, the problems visible in that one snapshot: an unreadable store, a failed check, an
+  index out of step, rows past the mark, or a file whose owner differs from `graph.db`'s or the running user's.
+  Comparing snapshots (a lower mark, a vanished scope) is left to whoever reads two of them.
+- **`openReadOnly`, `scopeStats`, `scopesIn`, `findings` and `formatStats`** in `dist/stats.js`, for reading the
+  same facts from code.
+
+### Read-only, precisely
+
+`eve-memory-stats` opens each store with `readonly: true`, never through `MemoryGraph.create` (which migrates and
+checkpoints). It never writes `graph.db` or its WAL. SQLite may create or touch `graph.db-shm`, owned by whoever runs
+the command, so run it as the agent's own user. The directory has to be writable for that: a store in WAL mode
+can't be opened on a read-only mount. It exits 0 whenever it ran, including when a store is unreadable, which it
+reports as a finding. It exits 2 only on bad usage.
+
+### Changed: sequence numbers are never reused
+
+- **A write's sequence number is past both the mark and the highest row,** so a number freed by `revertBatch` is
+  never reused. Write order is unchanged otherwise.
+
+### Upgrading to 0.4.0
+
+The first open by 0.4.0 migrates a store to `user_version` 4 and seeds the mark from its highest `seq`, or 0 for an
+empty store. 0.3.0 still opens a 0.4.0 store, but its writes don't move the mark. `eve-memory-stats` then reports
+rows past the mark, and the next 0.4.0 write moves the mark past them. Stores 0.4.0 hasn't opened yet report
+`seq_hwm=none`.
+
 ## 0.3.0
 
 A breaking change for 0.2.x consumers. 0.2.x's precedence was a misstep, and it's removed. It ranked a write by the

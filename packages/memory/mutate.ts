@@ -16,7 +16,7 @@ import {
 
 interface Mutation {
   name: string;
-  file: "src/memory-graph.ts" | "src/provider.ts";
+  file: "src/memory-graph.ts" | "src/provider.ts" | "src/stats.ts";
   find: string | RegExp;
   replace: string;
   /** Part of the title of the test that must fail. */
@@ -35,12 +35,14 @@ const scratch = `${mkdtempSync(`${here}.mut/run-`)}/`;
 const files = [
   "src/provider.ts",
   "src/memory-graph.ts",
+  "src/stats.ts",
   "src/shacl-shacl.data.ts",
   "vitest.unit.config.ts",
   "vitest.integration.config.ts",
   "src/memory-graph.test.ts",
   "src/memory-graph.integration.test.ts",
   "src/provider.integration.test.ts",
+  "src/stats.integration.test.ts",
 ];
 const vitest = `${here}node_modules/vitest/vitest.mjs`;
 
@@ -98,9 +100,9 @@ const mutations: Mutation[] = [
   {
     name: "first write wins on read (stale value served)",
     file: "src/memory-graph.ts",
-    find: "seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED}) AND ot != 'tomb'",
+    find: "const LATEST_SINGLE = `seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED})`",
     replace:
-      "seq = (SELECT min(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED}) AND ot != 'tomb'",
+      "const LATEST_SINGLE = `seq = (SELECT min(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED})`",
     expect: "an update wins on read",
   },
   {
@@ -170,7 +172,7 @@ const mutations: Mutation[] = [
   {
     name: "forget hard-deletes (no history, no revert)",
     file: "src/memory-graph.ts",
-    find: "for (const r of rows) this.#ins.run(s, r.p, isRelation(r.p, r.ot) ? r.o : '', isRelation(r.p, r.ot) ? 'tomb-edge' : 'tomb', null, at, origin)",
+    find: "for (const r of rows) this.#ins(s, r.p, isRelation(r.p, r.ot) ? r.o : '', isRelation(r.p, r.ot) ? 'tomb-edge' : 'tomb', null, at, origin)",
     replace:
       "for (const r of rows) this.db.prepare('DELETE FROM triples WHERE s=? AND p=?').run(s, r.p)",
     expect: "a forgotten thing has no current state, but what was forgotten stays in history",
@@ -201,16 +203,16 @@ const mutations: Mutation[] = [
   {
     name: "F2: a relation shadows text under the same key",
     file: "src/memory-graph.ts",
-    find: "seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED}) AND ot != 'tomb'",
-    replace: "seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p) AND ot != 'tomb'",
+    find: "const LATEST_SINGLE = `seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED})`",
+    replace: "const LATEST_SINGLE = `seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p)`",
     expect: "text then a relation under the same key",
   },
   {
     name: "F5: the current view orders by rowid, not seq",
     file: "src/memory-graph.ts",
-    find: "seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED}) AND ot != 'tomb'",
+    find: "const LATEST_SINGLE = `seq = (SELECT max(seq) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED})`",
     replace:
-      "rowid = (SELECT max(rowid) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED}) AND ot != 'tomb'",
+      "const LATEST_SINGLE = `rowid = (SELECT max(rowid) FROM triples WHERE s=t.s AND p=t.p AND ${SINGLE_VALUED})`",
     expect: "the current value follows seq, not rowid",
   },
   {
@@ -669,6 +671,48 @@ const mutations: Mutation[] = [
     find: "const ownedScope = isPrincipalKey(scope.value);",
     replace: "const ownedScope = false;",
     expect: "the owner's live turn is recorded as the owner's",
+  },
+  {
+    name: "a seq freed by revertBatch is reused",
+    file: "src/memory-graph.ts",
+    find: "(SELECT max(ifnull(max(seq), 0), ifnull((${SEQ_HWM_SQL}), 0)) + 1 FROM triples)",
+    replace: "(SELECT ifnull(max(seq), 0) + 1 FROM triples)",
+    expect: "keeps its value when revertBatch deletes the latest rows",
+  },
+  {
+    name: "the high-water mark doesn't move with a write",
+    file: "src/memory-graph.ts",
+    find: "mark.run(String(seq));",
+    replace: "",
+    expect: "starts at 0 and follows every write",
+  },
+  {
+    name: "a 0.3 store gets no high-water mark",
+    file: "src/memory-graph.ts",
+    find: "SELECT 'seq_hwm', CAST(ifnull(max(seq), 0) AS TEXT) FROM triples;",
+    replace: "SELECT 'seq_hwm', '0' WHERE 0;",
+    expect: "seeds seq_hwm from max(seq)",
+  },
+  {
+    name: "an emptied search index reads as matching",
+    file: "src/stats.ts",
+    find: "if (i && (i.missing > 0 || i.extra > 0))",
+    replace: "if (i && i.extra > 0)",
+    expect: "an emptied search index",
+  },
+  {
+    name: "ownership isn't compared",
+    file: "src/stats.ts",
+    find: "if (owner && (f.uid !== owner.uid || f.gid !== owner.gid))",
+    replace: "if (false)",
+    expect: "a file the agent's user doesn't own",
+  },
+  {
+    name: "the stats open the store writable",
+    file: "src/stats.ts",
+    find: "{ readonly: true, fileMustExist: true }",
+    replace: "{ fileMustExist: true }",
+    expect: "opens a store that refuses writes",
   },
 ];
 
