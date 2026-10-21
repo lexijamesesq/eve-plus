@@ -42,6 +42,11 @@ which it reports. It exits 2 only on bad usage.
 - **A write's sequence number is past both the mark and the highest row,** so a number freed by `revertBatch` is
   never reused. Write order is unchanged otherwise.
 
+### Fixed: eve 0.81 is a supported peer
+
+The `eve` peer range was `^0.80.1`, which under 0.x semver excludes eve 0.81. It's now `^0.80.1 || ^0.81.0`, and the
+package is developed and tested against eve 0.81.0. Nothing in the memory provider changed for 0.81.
+
 ### Upgrading to 0.4.0
 
 The first open by 0.4.0 migrates a store to `user_version` 4 and seeds the mark from its highest `seq`, or 0 for an
