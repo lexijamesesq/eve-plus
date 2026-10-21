@@ -82,7 +82,7 @@ repos:
     rev: v2.5.15
     hooks:
       - id: biome-check
-        additional_dependencies: ["@biomejs/biome@2.6.0"]
+        additional_dependencies: ["@biomejs/biome@2.6.2"]
         exclude: '\.(jsonc?|vue|svelte|astro)$'
         stages: [pre-commit]
 
