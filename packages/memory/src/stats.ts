@@ -1,8 +1,9 @@
 // Read-only facts about memory stores on disk, for telling whether a store survived a deploy. It opens each store
 // with `readonly: true`, never through MemoryGraph.create (which migrates and writes), so it never writes graph.db
-// or its WAL. SQLite may create or touch the -shm file, owned by whoever runs this.
+// or the contents of its WAL. SQLite may create graph.db-shm, and an empty graph.db-wal when a cleanly closed store
+// has none, owned by whoever runs this.
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 
@@ -47,19 +48,40 @@ export interface StatsOptions {
   uid?: number;
 }
 
-const realStat = (path: string): FileStat | undefined => {
-  if (!existsSync(path)) return undefined;
-  const { uid, gid, mode } = statSync(path);
-  return { file: path, uid, gid, mode: mode & 0o7777 };
+// Only a file that isn't there is absent. Any other error (a directory the user can't enter) is thrown, so it's
+// reported rather than mistaken for a missing store.
+const statOrAbsent = (path: string) => {
+  try {
+    return statSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 };
 
-/** Every store under `dir`: `dir` itself if it holds graph.db, then each direct subdirectory that does. */
+const realStat = (path: string): FileStat | undefined => {
+  const s = statOrAbsent(path);
+  return s && { file: path, uid: s.uid, gid: s.gid, mode: s.mode & 0o7777 };
+};
+
+/**
+ * Every store under `dir`: `dir` itself if it holds graph.db, then each direct subdirectory (or link to one) that
+ * does, or that can't be looked into, which scopeStats then reports as unreadable.
+ */
 export function scopesIn(dir: string): string[] {
-  const scopes = existsSync(join(dir, STORE)) ? ["."] : [];
+  const holds = (at: string) => {
+    try {
+      return statOrAbsent(join(at, STORE)) !== undefined;
+    } catch {
+      return true;
+    }
+  };
+  const scopes = holds(dir) ? ["."] : [];
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
     a.name.localeCompare(b.name),
   ))
-    if (entry.isDirectory() && existsSync(join(dir, entry.name, STORE))) scopes.push(entry.name);
+    if ((entry.isDirectory() || entry.isSymbolicLink()) && holds(join(dir, entry.name)))
+      scopes.push(entry.name);
   return scopes;
 }
 
@@ -97,8 +119,14 @@ export function scopeStats(dir: string, scope: string, options: StatsOptions = {
   }
   // After the open, so a -shm this run created is what's reported.
   for (const file of FILES) {
-    const s = stat(join(at, file));
-    if (s) stats.files.push({ ...s, file });
+    try {
+      const s = stat(join(at, file));
+      if (s) stats.files.push({ ...s, file });
+    } catch (error) {
+      stats.ownership.push(
+        `${file} can't be examined (${(error as NodeJS.ErrnoException).code ?? error})`,
+      );
+    }
   }
   const owner = stats.files.find((f) => f.file === STORE);
   for (const f of stats.files) {

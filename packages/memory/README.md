@@ -70,7 +70,7 @@ Records aren't currently enumerable by kind — you can ask "what do I know abou
 
 Run it before and after something that could lose memory, such as a deploy, an upgrade or a volume move, and
 compare the two readings. A lower mark or a vanished scope means the store was lost or replaced. Run it as the
-agent's own user. It may create `graph.db-shm`, but it never writes the store or its WAL. See
+agent's own user. It may create `graph.db-shm` (and an empty `graph.db-wal`), but it never writes the store or the contents of its WAL; run as root, those files would lock the agent out. See
 [CHANGELOG.md](./CHANGELOG.md) for each field.
 
 ## Security

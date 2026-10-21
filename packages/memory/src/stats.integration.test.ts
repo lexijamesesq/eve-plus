@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -136,6 +145,30 @@ describe("it can fail: each known-bad store is reported", () => {
     );
   });
 
+  it("a scope directory that can't be entered is reported as unreadable, not taken for a removed scope", async () => {
+    const { dir, g } = await memoryDir();
+    g.close();
+    chmodSync(join(dir, "memscope1_alice"), 0o000);
+    try {
+      expect(scopesIn(dir)).toEqual(["memscope1_alice"]);
+      const s = scopeStats(dir, "memscope1_alice");
+      expect(findings(s)[0]).toMatch(/^unreadable: /);
+      expect(s.ownership.join()).toContain("can't be examined (EACCES)");
+    } finally {
+      chmodSync(join(dir, "memscope1_alice"), 0o755);
+    }
+  });
+
+  it("a symlinked scope directory counts as a scope", async () => {
+    const { dir, g } = await memoryDir();
+    g.close();
+    const elsewhere = tempDir();
+    cpSync(join(dir, "memscope1_alice"), join(elsewhere, "real"), { recursive: true });
+    symlinkSync(join(elsewhere, "real"), join(dir, "linked"));
+    expect(scopesIn(dir)).toEqual(["linked", "memscope1_alice"]);
+    expect(findings(scopeStats(dir, "linked"))).toEqual([]);
+  });
+
   it("a store that isn't a database is unreadable, not skipped", async () => {
     const dir = tempDir();
     mkdirSync(join(dir, "broken"));
@@ -172,6 +205,17 @@ describe("read-only: it never writes the store or its WAL, even with a live writ
     // The writer still works afterwards.
     await g.remember({ id: "teapot", label: "Teapot", type: "Thing" });
     g.close();
+  });
+
+  it("leaves a cleanly closed store's graph.db byte-identical, with at most an empty WAL beside it", async () => {
+    const { dir, g } = await memoryDir();
+    g.close();
+    const db = join(dir, "memscope1_alice", "graph.db");
+    expect(existsSync(`${db}-wal`)).toBe(false);
+    const before = hash(db);
+    expect(scopeStats(dir, "memscope1_alice").quickCheck).toBe("ok");
+    expect(hash(db)).toBe(before);
+    if (existsSync(`${db}-wal`)) expect(readFileSync(`${db}-wal`).length).toBe(0);
   });
 
   it("doesn't migrate an older store: its user_version and missing mark stay as they were", async () => {

@@ -12,7 +12,8 @@ deploy, an upgrade or a host move. No API change: stores migrate on their next o
   and never goes down, even when `revertBatch` deletes the latest rows. A reading lower than an earlier one means
   the store was lost or replaced, which no row count can tell you, since counts fall legitimately.
 - **`eve-memory-stats <dir>`, a read-only command.** For `<dir>` and each direct subdirectory holding a `graph.db`,
-  it prints one line of facts:
+  it prints one line of facts. A symlinked scope directory counts, and one it can't look into is reported as
+  unreadable rather than skipped:
   - `seq_hwm` and `max_seq`;
   - SQLite's `quick_check`;
   - `user_version`;
@@ -24,16 +25,17 @@ deploy, an upgrade or a host move. No API change: stores migrate on their next o
   It ends with `findings=`, the problems visible in that one snapshot: an unreadable store, a failed check, an
   index out of step, rows past the mark, or a file whose owner differs from `graph.db`'s or the running user's.
   Comparing snapshots (a lower mark, a vanished scope) is left to whoever reads two of them.
-- **`openReadOnly`, `scopeStats`, `scopesIn`, `findings` and `formatStats`** in `dist/stats.js`, for reading the
-  same facts from code.
+- **`openReadOnly`, `scopeStats`, `scopesIn`, `findings` and `formatStats`** from `@eve-plus/memory/stats`, for
+  reading the same facts from code.
 
 ### Read-only, precisely
 
 `eve-memory-stats` opens each store with `readonly: true`, never through `MemoryGraph.create` (which migrates and
-checkpoints). It never writes `graph.db` or its WAL. SQLite may create or touch `graph.db-shm`, owned by whoever runs
-the command, so run it as the agent's own user. The directory has to be writable for that: a store in WAL mode
-can't be opened on a read-only mount. It exits 0 whenever it ran, including when a store is unreadable, which it
-reports as a finding. It exits 2 only on bad usage.
+checkpoints). It never writes `graph.db` or the contents of its WAL. SQLite may create `graph.db-shm`, and an empty
+`graph.db-wal` when a cleanly closed store has none, owned by whoever runs the command, so run it as the agent's own
+user: as root it would leave root-owned files that lock the agent out. The directory has to be writable for that: a store in WAL mode
+can't be opened on a read-only mount. It exits 0 whenever it ran, including when a store or the directory is unreadable,
+which it reports. It exits 2 only on bad usage.
 
 ### Changed: sequence numbers are never reused
 

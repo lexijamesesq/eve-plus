@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // eve-memory-stats <dir>: read-only facts about every memory store under <dir>, one line each. It reports and never
-// judges a deploy: it exits 0 whenever it ran, including when a store is unreadable, and 2 only on bad usage.
+// judges a deploy: it exits 0 whenever it ran, including when a store or the directory is unreadable, and 2 only on
+// bad usage.
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 
@@ -18,16 +19,23 @@ const { version } = JSON.parse(
 ) as {
   version: string;
 };
-if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+const header = `eve-memory-stats ${version} dir=${JSON.stringify(dir)}`;
+try {
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+    process.stdout.write(`${header} scopes=0 error="no such directory"\n`);
+  } else {
+    process.stdout.write(
+      `${formatStats(
+        dir,
+        scopesIn(dir).map((s) => scopeStats(dir, s)),
+        version,
+      )}\n`,
+    );
+  }
+} catch (error) {
+  // A directory that can't be listed is a finding about the store, reported like the rest, never a crash.
+  const reason = (error as NodeJS.ErrnoException).code ?? String(error);
   process.stdout.write(
-    `eve-memory-stats ${version} dir=${JSON.stringify(dir)} scopes=0 error="no such directory"\n`,
-  );
-} else {
-  process.stdout.write(
-    `${formatStats(
-      dir,
-      scopesIn(dir).map((s) => scopeStats(dir, s)),
-      version,
-    )}\n`,
+    `${header} scopes=0 error=${JSON.stringify(`can't read the directory (${reason})`)}\n`,
   );
 }

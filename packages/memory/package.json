@@ -33,6 +33,10 @@
     ".": {
       "types": "./dist/provider.d.ts",
       "import": "./dist/provider.js"
+    },
+    "./stats": {
+      "types": "./dist/stats.d.ts",
+      "import": "./dist/stats.js"
     }
   },
   "scripts": {

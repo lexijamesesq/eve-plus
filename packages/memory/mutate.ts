@@ -714,6 +714,13 @@ const mutations: Mutation[] = [
     replace: "{ fileMustExist: true }",
     expect: "opens a store that refuses writes",
   },
+  {
+    name: "a scope that can't be entered is skipped as if removed",
+    file: "src/stats.ts",
+    find: "    } catch {\n      return true;\n    }",
+    replace: "    } catch {\n      return false;\n    }",
+    expect: "a scope directory that can't be entered is reported as unreadable",
+  },
 ];
 
 // Anchors survive the formatter: whitespace, line breaks around brackets, trailing commas and quote style are not part
