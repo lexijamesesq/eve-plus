@@ -145,19 +145,23 @@ describe("it can fail: each known-bad store is reported", () => {
     );
   });
 
-  it("a scope directory that can't be entered is reported as unreadable, not taken for a removed scope", async () => {
-    const { dir, g } = await memoryDir();
-    g.close();
-    chmodSync(join(dir, "memscope1_alice"), 0o000);
-    try {
-      expect(scopesIn(dir)).toEqual(["memscope1_alice"]);
-      const s = scopeStats(dir, "memscope1_alice");
-      expect(findings(s)[0]).toMatch(/^unreadable: /);
-      expect(s.ownership.join()).toContain("can't be examined (EACCES)");
-    } finally {
-      chmodSync(join(dir, "memscope1_alice"), 0o755);
-    }
-  });
+  // Root enters any directory whatever its mode, so the case only exists for an ordinary user.
+  it.skipIf(process.getuid?.() === 0)(
+    "a scope directory that can't be entered is reported as unreadable, not taken for a removed scope",
+    async () => {
+      const { dir, g } = await memoryDir();
+      g.close();
+      chmodSync(join(dir, "memscope1_alice"), 0o000);
+      try {
+        expect(scopesIn(dir)).toEqual(["memscope1_alice"]);
+        const s = scopeStats(dir, "memscope1_alice");
+        expect(findings(s)[0]).toMatch(/^unreadable: /);
+        expect(s.ownership.join()).toContain("can't be examined (EACCES)");
+      } finally {
+        chmodSync(join(dir, "memscope1_alice"), 0o755);
+      }
+    },
+  );
 
   it("a symlinked scope directory counts as a scope", async () => {
     const { dir, g } = await memoryDir();
