@@ -173,6 +173,48 @@ describe("it can fail: each known-bad store is reported", () => {
     expect(findings(scopeStats(dir, "linked"))).toEqual([]);
   });
 
+  it("rows an older adapter wrote past the mark", async () => {
+    const { dir, g } = await memoryDir();
+    const past =
+      Number(
+        (g.db.prepare("SELECT value FROM meta WHERE key = 'seq_hwm'").get() as { value: string })
+          .value,
+      ) + 3;
+    g.db
+      .prepare(
+        "INSERT INTO triples(s,p,o,ot,dt,written_at,origin,seq) VALUES ('https://eve.local/mem/e/x','p','o','lit',NULL,'','{}',?)",
+      )
+      .run(past);
+    g.close();
+    expect(findings(scopeStats(dir, "memscope1_alice")).join()).toContain(
+      `rows past the high-water mark (max seq ${past} >`,
+    );
+  });
+
+  it("files owned by someone other than the running user", async () => {
+    const { dir, g } = await memoryDir();
+    g.close();
+    const s = scopeStats(dir, "memscope1_alice", {
+      uid: 1000,
+      stat: (file) => ({ file, uid: 0, gid: 0, mode: 0o644 }),
+    });
+    expect(findings(s).join("\n")).toContain(
+      "ownership: graph.db owned by 0, not the running user 1000",
+    );
+  });
+
+  it("a file its owner can't read and write", async () => {
+    const { dir, g } = await memoryDir();
+    g.close();
+    const s = scopeStats(dir, "memscope1_alice", {
+      uid: 1000,
+      stat: (file) => ({ file, uid: 1000, gid: 1000, mode: file.endsWith("-wal") ? 0o444 : 0o644 }),
+    });
+    expect(findings(s).join("\n")).toContain(
+      "ownership: graph.db-wal mode 444 doesn't let its owner read and write it",
+    );
+  });
+
   it("a store that isn't a database is unreadable, not skipped", async () => {
     const dir = tempDir();
     mkdirSync(join(dir, "broken"));

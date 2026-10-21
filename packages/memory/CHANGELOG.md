@@ -39,20 +39,24 @@ which it reports. It exits 2 only on bad usage.
 
 ### Changed: sequence numbers are never reused
 
-- **A write's sequence number is past both the mark and the highest row,** so a number freed by `revertBatch` is
-  never reused. Write order is unchanged otherwise.
+- **A write's sequence number is past both the mark and the highest row,** so 0.4.0 never reuses a number freed
+  by `revertBatch`. Write order is unchanged otherwise. An older adapter doesn't know the mark and can reuse one
+  (see Upgrading).
 
 ### Fixed: eve 0.81 is a supported peer
 
 The `eve` peer range was `^0.80.1`, which under 0.x semver excludes eve 0.81. It's now `^0.80.1 || ^0.81.0`, and the
-package is developed and tested against eve 0.81.0. Nothing in the memory provider changed for 0.81.
+development pin is eve 0.81.0, which the test suite runs against. Nothing in the memory provider changed for 0.81.
 
 ### Upgrading to 0.4.0
 
 The first open by 0.4.0 migrates a store to `user_version` 4 and seeds the mark from its highest `seq`, or 0 for an
-empty store. 0.3.0 still opens a 0.4.0 store, but its writes don't move the mark. `eve-memory-stats` then reports
-rows past the mark, and the next 0.4.0 write moves the mark past them. Stores 0.4.0 hasn't opened yet report
-`seq_hwm=none`.
+empty store. Stores 0.4.0 hasn't opened yet report `seq_hwm=none`.
+
+0.3.0 still opens a 0.4.0 store, but its writes don't move the mark, and it numbers a write one past the highest
+row on disk. When that's past the mark, `eve-memory-stats` reports rows past it, until the next 0.4.0 write moves
+the mark beyond them. When it isn't (0.4.0's `revertBatch` removed the latest rows, so 0.3.0 reuses their numbers),
+nothing is reported: the mark can show that an older adapter wrote, not prove that one didn't.
 
 ## 0.3.0
 

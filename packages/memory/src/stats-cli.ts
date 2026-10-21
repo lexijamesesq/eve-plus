@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 
-import { formatStats, scopeStats, scopesIn } from "./stats.js";
+import { formatStats, scopeStats, scopesIn, statsHeader } from "./stats.js";
 
 const dir = process.argv[2];
 if (dir === undefined || process.argv.length > 3) {
@@ -19,10 +19,9 @@ const { version } = JSON.parse(
 ) as {
   version: string;
 };
-const header = `eve-memory-stats ${version} dir=${JSON.stringify(dir)}`;
 try {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) {
-    process.stdout.write(`${header} scopes=0 error="no such directory"\n`);
+    process.stdout.write(`${statsHeader(dir, version, 0, "no such directory")}\n`);
   } else {
     process.stdout.write(
       `${formatStats(
@@ -35,7 +34,5 @@ try {
 } catch (error) {
   // A directory that can't be listed is a finding about the store, reported like the rest, never a crash.
   const reason = (error as NodeJS.ErrnoException).code ?? String(error);
-  process.stdout.write(
-    `${header} scopes=0 error=${JSON.stringify(`can't read the directory (${reason})`)}\n`,
-  );
+  process.stdout.write(`${statsHeader(dir, version, 0, `can't read the directory (${reason})`)}\n`);
 }

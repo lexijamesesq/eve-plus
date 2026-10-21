@@ -721,6 +721,27 @@ const mutations: Mutation[] = [
     replace: "    } catch {\n      return false;\n    }",
     expect: "a scope directory that can't be entered is reported as unreadable",
   },
+  {
+    name: "rows past the mark go unreported",
+    file: "src/stats.ts",
+    find: "if (s.seqHwm != null && s.maxSeq !== undefined && s.maxSeq > s.seqHwm)",
+    replace: "if (false)",
+    expect: "rows an older adapter wrote past the mark",
+  },
+  {
+    name: "the running user isn't compared",
+    file: "src/stats.ts",
+    find: "if (uid !== undefined && f.uid !== uid)",
+    replace: "if (false)",
+    expect: "files owned by someone other than the running user",
+  },
+  {
+    name: "the owner's read and write mode isn't checked",
+    file: "src/stats.ts",
+    find: "if ((f.mode & 0o600) !== 0o600)",
+    replace: "if (false)",
+    expect: "a file its owner can't read and write",
+  },
 ];
 
 // Anchors survive the formatter: whitespace, line breaks around brackets, trailing commas and quote style are not part

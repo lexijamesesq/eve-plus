@@ -191,9 +191,14 @@ export function findings(s: ScopeStats): string[] {
 
 const q = (v: string) => JSON.stringify(v);
 
+/** The report's first line, for a full report or one that stops at the directory (`error`). */
+export function statsHeader(dir: string, version: string, scopes: number, error?: string): string {
+  return `eve-memory-stats ${version} dir=${q(dir)} scopes=${scopes}${error === undefined ? "" : ` error=${q(error)}`}`;
+}
+
 /** One line per scope, `key=value`, for a deploy log. */
 export function formatStats(dir: string, all: ScopeStats[], version: string): string {
-  const lines = [`eve-memory-stats ${version} dir=${q(dir)} scopes=${all.length}`];
+  const lines = [statsHeader(dir, version, all.length)];
   for (const s of all) {
     const fields = [`scope=${q(s.scope)}`];
     if (s.error === undefined) {
