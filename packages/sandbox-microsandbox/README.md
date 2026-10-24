@@ -46,7 +46,7 @@ Environment options:
 ## How it works
 
 - **`prepare`** (at `eve build`) boots a template VM from the image, fails clearly if the image lacks bash, creates `/workspace` as root (as eve's Docker provider does), and runs `ctx.populate()`, which seeds workspace and skill files and runs your `prepare`. It then stops the VM and captures a disk snapshot named for the template key, which hashes the image, the microsandbox version, and eve's workspace, skill and sandbox-file inputs. An unchanged template is reused. The template build runs `allow-all`, so your `prepare` can install packages. A failed build removes its VM and any snapshot it captured.
-- **`start`** finds the session's VM by a name derived from the session id and the app's sandbox storage path. It connects to a running VM, boots a stopped one, or restores a new one from the template snapshot under the session's network policy, always detached. Concurrent and cross-process starts converge on one VM. A missing template snapshot throws eve's `SandboxTemplateNotProvisionedError`.
+- **`start`** finds the session's VM by a name derived from the session id and the app's sandbox storage path. It connects to a running VM, boots a stopped one, or restores a new one from the template snapshot under the session's network policy, always detached. Concurrent and cross-process starts converge on one VM. A missing template snapshot throws eve's `SandboxTemplateNotProvisionedError`, and a policy that would weaken the existing VM's throws `NetworkPolicyConflictError` (see below).
 - **`resume`** reconnects to the recorded VM, booting it if it's stopped, or throws `SandboxSessionGoneError` if it no longer exists.
 - **`onSessionEnd`** deletes the VM. It's idempotent and succeeds when nothing exists.
 - **Commands** run as `bash -lc` with eve's `SANDBOX_AGENT_ENV` beneath the per-call environment, because a VM restored from a snapshot doesn't keep the template's environment. Aborting a command kills its whole process tree, including backgrounded children.
@@ -59,7 +59,9 @@ The recorded session state is `{ sandboxName, msbVersion }` under `stateProtocol
 
 The provider enforces exactly two policies, set once when a session's sandbox is created. Every other shape rejects with `UnsupportedNetworkPolicyError` rather than being weakened: microsandbox can't inject the headers eve's `transform` rules add, and can't change a live sandbox's policy.
 
-An absent policy means `deny-all`. eve's Docker provider defaults to `allow-all`; this one doesn't. A later `open()` with a different policy reconnects to the existing sandbox unchanged.
+An absent policy means `deny-all`. eve's Docker provider defaults to `allow-all`; this one doesn't.
+
+A sandbox keeps the policy it was created with. A later `open()` asking for `deny-all` when the session's sandbox was created `allow-all` throws `NetworkPolicyConflictError` instead of quietly handing back network access; delete the session's sandbox (`sandbox.delete()`) to start a fresh one. A later `open()` asking for `allow-all` when the sandbox is `deny-all` reconnects to it unchanged, since eve applies open options only when a sandbox is created.
 
 No TLS interception is configured, and the guest trusts only its image's own certificate store.
 

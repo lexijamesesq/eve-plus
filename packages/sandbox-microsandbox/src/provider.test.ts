@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import {
+  type SandboxPrepareContext,
   type SandboxSessionContext,
   SandboxSessionGoneError,
   SandboxTemplateNotProvisionedError,
@@ -9,6 +10,7 @@ import { UnsupportedNetworkPolicyError } from "./network-policy.js";
 import {
   createImplementation,
   type MicrosandboxArtifact,
+  NetworkPolicyConflictError,
   PROVIDER_NAME,
   STATE_PROTOCOL_VERSION,
 } from "./provider.js";
@@ -19,9 +21,13 @@ import { MICROSANDBOX_VERSION, MicrosandboxRuntimeMismatchError } from "./runtim
 const msb = vi.hoisted(() => ({
   calls: [] as string[],
   raceOnRestore: false,
+  raceWinnerEgress: undefined as "deny" | "allow" | undefined,
   restored: [] as { name?: string; cpus?: number; memory?: number; policy?: string }[],
+  failDestroy: false,
+  removedSnapshots: [] as string[],
   runtime: { origin: "sdk_package", msbPath: "/pkg/msb", libkrunfwPath: "/pkg/fw" },
-  sandboxes: new Set<string>(),
+  // Each sandbox's default egress, as microsandbox records it in the sandbox's config.
+  sandboxes: new Map<string, "deny" | "allow">(),
   snapshots: [] as { name: string; digest: string }[],
   version: "0.7.10" as string | null,
 }));
@@ -29,7 +35,12 @@ const msb = vi.hoisted(() => ({
 vi.mock("microsandbox", () => {
   class SandboxNotFoundError extends Error {}
   class SandboxAlreadyExistsError extends Error {}
-  const sandbox = (name: string) => ({ name, fs: () => ({}), stop: async () => {} });
+  const sandbox = (name: string) => ({
+    name,
+    fs: () => ({}),
+    stop: async () => {},
+    execWith: async () => ({ code: 0, stderr: () => "" }),
+  });
   const policyBuilder = () => {
     const builder = {
       kind: "unset",
@@ -50,16 +61,46 @@ vi.mock("microsandbox", () => {
     SandboxNotFoundError,
     resolveRuntime: () => msb.runtime,
     resolveRuntimeVersion: async () => msb.version,
-    Snapshot: { list: async () => msb.snapshots },
+    Snapshot: {
+      list: async () => msb.snapshots,
+      remove: async (digest: string) => {
+        msb.removedSnapshots.push(digest);
+      },
+    },
     Sandbox: {
+      builder(name: string) {
+        const builder = {
+          image: () => builder,
+          cpus: () => builder,
+          memory: () => builder,
+          network: () => builder,
+          async create() {
+            msb.sandboxes.set(name, "allow");
+            return sandbox(name);
+          },
+        };
+        return builder;
+      },
       async get(name: string) {
         msb.calls.push(`get ${name}`);
-        if (!msb.sandboxes.has(name)) throw new SandboxNotFoundError(name);
+        const egress = msb.sandboxes.get(name);
+        if (egress === undefined) throw new SandboxNotFoundError(name);
         return {
+          configJson: JSON.stringify({ network: { policy: { default_egress: egress } } }),
           connectOrStart: async () => sandbox(name),
           destroy: async () => {
             msb.calls.push(`destroy ${name}`);
+            if (msb.failDestroy) throw new Error("destroy failed");
             msb.sandboxes.delete(name);
+          },
+          snapshot: async (snapshotName: string) => {
+            const snapshot = {
+              digest: `sha256:${snapshotName}`,
+              reference: `/s/${snapshotName}`,
+              referenceKind: "path",
+            };
+            msb.snapshots.push({ name: snapshotName, digest: snapshot.digest });
+            return snapshot;
           },
         };
       },
@@ -85,8 +126,11 @@ vi.mock("microsandbox", () => {
           async restore() {
             const name = record.name as string;
             msb.calls.push(`restore ${name}`);
-            msb.sandboxes.add(name);
-            if (msb.raceOnRestore) throw new SandboxAlreadyExistsError(name);
+            msb.sandboxes.set(name, record.policy === "allow-all" ? "allow" : "deny");
+            if (msb.raceOnRestore) {
+              if (msb.raceWinnerEgress !== undefined) msb.sandboxes.set(name, msb.raceWinnerEgress);
+              throw new SandboxAlreadyExistsError(name);
+            }
             msb.restored.push(record);
             return sandbox(name);
           },
@@ -112,10 +156,13 @@ const ctx = {
 
 beforeEach(() => {
   msb.calls = [];
+  msb.failDestroy = false;
   msb.raceOnRestore = false;
+  msb.raceWinnerEgress = undefined;
+  msb.removedSnapshots = [];
   msb.restored = [];
   msb.runtime = { origin: "sdk_package", msbPath: "/pkg/msb", libkrunfwPath: "/pkg/fw" };
-  msb.sandboxes = new Set();
+  msb.sandboxes = new Map();
   msb.snapshots = [{ name: "eve-plus-tpl-key", digest: "sha256:tpl" }];
   msb.version = MICROSANDBOX_VERSION;
 });
@@ -154,13 +201,56 @@ describe("start", () => {
     expect(msb.restored).toHaveLength(1);
   });
 
-  it("names the sandbox from the session id and storage path only", async () => {
+  describe("names the sandbox from the session id and storage path only", () => {
+    const nameFor = async (context: SandboxSessionContext, open?: { networkPolicy: "allow-all" }) =>
+      (await createImplementation({}).start(context, open, artifact)).state.sandboxName;
+
+    it("has a bounded, provider-prefixed form", async () => {
+      expect(await nameFor(ctx)).toMatch(/^eve-plus-sbx-[0-9a-f]{32}$/);
+    });
+
+    it("changes with the session id", async () => {
+      const other = { ...ctx, session: { id: "session-2" } } as SandboxSessionContext;
+      expect(await nameFor(other)).not.toBe(await nameFor(ctx));
+    });
+
+    it("changes with the storage path", async () => {
+      const other = { ...ctx, storagePath: "/other-app/.eve/sandbox" } as SandboxSessionContext;
+      expect(await nameFor(other)).not.toBe(await nameFor(ctx));
+    });
+
+    it("ignores the open options and the artifact", async () => {
+      const first = await nameFor(ctx, { networkPolicy: "allow-all" });
+      msb.sandboxes.clear();
+      const otherArtifact = { ...artifact, templateKey: "other-key" };
+      const second = (await createImplementation({}).start(ctx, undefined, otherArtifact)).state
+        .sandboxName;
+      expect(second).toBe(first);
+    });
+  });
+
+  it("refuses deny-all for a sandbox created allow-all, before booting it", async () => {
     const implementation = createImplementation({});
-    const a = await implementation.start(ctx, undefined, artifact);
-    const other = { ...ctx, session: { id: "session-2" } } as SandboxSessionContext;
-    const b = await implementation.start(other, { networkPolicy: "allow-all" }, artifact);
-    expect(a.state.sandboxName).toMatch(/^eve-plus-sbx-[0-9a-f]{32}$/);
-    expect(b.state.sandboxName).not.toBe(a.state.sandboxName);
+    await implementation.start(ctx, { networkPolicy: "allow-all" }, artifact);
+    await expect(implementation.start(ctx, undefined, artifact)).rejects.toThrow(
+      NetworkPolicyConflictError,
+    );
+  });
+
+  it("keeps a deny-all sandbox's policy when allow-all is asked later", async () => {
+    const implementation = createImplementation({});
+    const first = await implementation.start(ctx, undefined, artifact);
+    const again = await implementation.start(ctx, { networkPolicy: "allow-all" }, artifact);
+    expect(again.state).toEqual(first.state);
+    expect(msb.sandboxes.get(first.state.sandboxName)).toBe("deny");
+  });
+
+  it("applies the policy check to the sandbox a racing caller created", async () => {
+    msb.raceOnRestore = true;
+    msb.raceWinnerEgress = "allow";
+    await expect(createImplementation({}).start(ctx, undefined, artifact)).rejects.toThrow(
+      NetworkPolicyConflictError,
+    );
   });
 
   it("connects to the winner when another caller restores first", async () => {
@@ -192,6 +282,34 @@ describe("start", () => {
     await expect(createImplementation({}).start(ctx, undefined, artifact)).rejects.toThrow(
       MicrosandboxRuntimeMismatchError,
     );
+  });
+});
+
+describe("prepare", () => {
+  const prepareCtx = {
+    files: {},
+    isEmpty: false,
+    log: () => {},
+    populate: async () => {},
+    resolveProjectPath: (path: string) => path,
+    resourcesDirectory: async () => undefined,
+    storagePath: "/app/.eve/sandbox",
+    templateKey: () => "a".repeat(64),
+  } as unknown as SandboxPrepareContext;
+
+  it("captures a snapshot and removes its build sandbox", async () => {
+    msb.snapshots = [];
+    const result = await createImplementation({}).prepare(prepareCtx);
+    expect(result.templateKey).toBe("a".repeat(64));
+    expect(result.snapshot.digest).toBe(`sha256:eve-plus-tpl-${"a".repeat(64)}`);
+    expect(msb.sandboxes.size).toBe(0);
+  });
+
+  it("removes the captured snapshot when removing the build sandbox fails", async () => {
+    msb.snapshots = [];
+    msb.failDestroy = true;
+    await expect(createImplementation({}).prepare(prepareCtx)).rejects.toThrow("destroy failed");
+    expect(msb.removedSnapshots).toEqual([`sha256:eve-plus-tpl-${"a".repeat(64)}`]);
   });
 });
 

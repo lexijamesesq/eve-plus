@@ -21,6 +21,19 @@ import { type MicrosandboxNetworkPolicy, resolveNetworkPolicy } from "./network-
 import { assertPinnedRuntime, MICROSANDBOX_VERSION } from "./runtime.js";
 
 export const PROVIDER_NAME = "eve-plus-microsandbox";
+
+/** Thrown when a session asks for deny-all but its sandbox was created with network access. */
+export class NetworkPolicyConflictError extends Error {
+  override readonly name = "NetworkPolicyConflictError";
+
+  constructor(sandboxName: string) {
+    super(
+      `The session's sandbox "${sandboxName}" was created with network access, and its policy ` +
+        `can't change, so it can't be opened as "deny-all". Delete the session's sandbox ` +
+        `(sandbox.delete()) to start a fresh one under "deny-all".`,
+    );
+  }
+}
 /** Raise when MicrosandboxState changes incompatibly; eve then starts recorded sessions fresh. */
 export const STATE_PROTOCOL_VERSION = 1;
 
@@ -126,13 +139,13 @@ export function createImplementation(
         await sandbox.stop();
         ctx.log(`capturing template snapshot "${snapshotName}"`);
         snapshot = await (await Sandbox.get(buildName)).snapshot(snapshotName);
-        return artifactFor(snapshot, templateKey);
+        await removeSandbox(buildName);
       } catch (error) {
+        await removeSandbox(buildName).catch(() => {});
         if (snapshot !== undefined) await Snapshot.remove(snapshot.digest).catch(() => {});
         throw error;
-      } finally {
-        await removeSandbox(buildName);
       }
+      return artifactFor(snapshot, templateKey);
     },
 
     async start(ctx, open: MicrosandboxOpenOptions | undefined, artifact: MicrosandboxArtifact) {
@@ -194,7 +207,7 @@ async function openOrRestore(
   artifact: MicrosandboxArtifact,
   config: { cpus: number; memoryMib: number; policy: MicrosandboxNetworkPolicy },
 ): Promise<Sandbox> {
-  const existing = await connectIfExists(sandboxName);
+  const existing = await connectIfExists(sandboxName, config.policy);
   if (existing !== undefined) return existing;
 
   const templates = await Snapshot.list();
@@ -222,19 +235,37 @@ async function openOrRestore(
   } catch (error) {
     // Another caller created it first; theirs is the session's sandbox.
     if (!(error instanceof SandboxAlreadyExistsError)) throw error;
-    const raced = await connectIfExists(sandboxName);
+    const raced = await connectIfExists(sandboxName, config.policy);
     if (raced === undefined) throw error;
     return raced;
   }
 }
 
-async function connectIfExists(sandboxName: string): Promise<Sandbox | undefined> {
+/**
+ * Connects to the session's existing VM, booting it if stopped. Its policy was fixed when it was
+ * created and can't change, so a deny-all request for a VM created allow-all is refused rather
+ * than silently weakened. The reverse, an allow-all request for a deny-all VM, keeps the
+ * stricter policy, as eve applies open options only when a sandbox is created.
+ */
+async function connectIfExists(
+  sandboxName: string,
+  requested: MicrosandboxNetworkPolicy,
+): Promise<Sandbox | undefined> {
+  let handle: Awaited<ReturnType<typeof Sandbox.get>>;
   try {
-    return await (await Sandbox.get(sandboxName)).connectOrStart({ detached: true });
+    handle = await Sandbox.get(sandboxName);
   } catch (error) {
     if (error instanceof SandboxNotFoundError) return undefined;
     throw error;
   }
+  if (requested === "deny-all" && existingEgress(handle) !== "deny") {
+    throw new NetworkPolicyConflictError(sandboxName);
+  }
+  return await handle.connectOrStart({ detached: true });
+}
+
+function existingEgress(handle: { readonly configJson: string }): string | undefined {
+  return JSON.parse(handle.configJson)?.network?.policy?.default_egress;
 }
 
 async function removeSandbox(sandboxName: string): Promise<void> {

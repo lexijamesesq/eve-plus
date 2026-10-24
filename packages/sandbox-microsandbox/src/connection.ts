@@ -18,9 +18,10 @@ export function createConnection(sandbox: Sandbox): SandboxConnection {
           .envs({ ...SANDBOX_AGENT_ENV, ...env }),
       );
       const process = adaptExecToSandboxProcess(handle);
-      abortSignal?.addEventListener("abort", () => void process.kill().catch(() => {}), {
-        once: true,
-      });
+      const kill = () => void process.kill().catch(() => {});
+      abortSignal?.addEventListener("abort", kill, { once: true });
+      // An abort during the exec await above fired before the listener existed.
+      if (abortSignal?.aborted) kill();
       return process;
     },
 

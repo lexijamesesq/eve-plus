@@ -3,7 +3,8 @@
 //
 // Derived from eve's microsandbox provider (packages/eve/src/execution/sandbox/bindings/
 // microsandbox-process.ts at vercel/eve a2c6d64e). Modified: typed through eve's public
-// SandboxConnection, and kill is idempotent. See LICENSE-APACHE and NOTICE.
+// SandboxConnection, kill is idempotent, and a stream error after exit no longer closes errored
+// streams. See LICENSE-APACHE and NOTICE.
 
 import type { SandboxConnection } from "eve/sandbox/provider";
 import type { ExecEvent, ExecHandle } from "microsandbox";
@@ -24,6 +25,8 @@ export function adaptExecToSandboxProcess(command: ExecHandle): SandboxProcess {
     resolveFinished = resolve;
     rejectFinished = reject;
   });
+  // wait() still sees a failure; a caller that never waits mustn't crash the process with it.
+  finished.catch(() => {});
 
   const stdout = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -35,6 +38,12 @@ export function adaptExecToSandboxProcess(command: ExecHandle): SandboxProcess {
       stderrController = controller;
     },
   });
+
+  const fail = (error: unknown) => {
+    stdoutController?.error(error);
+    stderrController?.error(error);
+    rejectFinished?.(error);
+  };
 
   void (async () => {
     const iterator = command[Symbol.asyncIterator]();
@@ -52,22 +61,19 @@ export function adaptExecToSandboxProcess(command: ExecHandle): SandboxProcess {
         else if (event.kind === "exited") exitCode = event.code;
       }
     } catch (error) {
-      stdoutController?.error(error);
-      stderrController?.error(error);
-      rejectFinished?.(error);
+      // Settle once: closing the streams after erroring them would throw out of this task.
+      fail(error);
+      return;
     } finally {
       void iterator.return?.().catch(() => {});
-      if (exitCode === undefined) {
-        const error = new Error("The microsandbox command ended without an exit event.");
-        stdoutController?.error(error);
-        stderrController?.error(error);
-        rejectFinished?.(error);
-      } else {
-        stdoutController?.close();
-        stderrController?.close();
-        resolveFinished?.();
-      }
     }
+    if (exitCode === undefined) {
+      fail(new Error("The microsandbox command ended without an exit event."));
+      return;
+    }
+    stdoutController?.close();
+    stderrController?.close();
+    resolveFinished?.();
   })();
 
   return {

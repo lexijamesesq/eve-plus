@@ -9,7 +9,7 @@ import { SandboxSessionGoneError, SandboxTemplateNotProvisionedError } from "eve
 import { Sandbox, Snapshot } from "microsandbox";
 
 const pkg = "./node_modules/@eve-plus/sandbox-microsandbox/dist";
-const { createImplementation } = await import(`${pkg}/provider.js`);
+const { createImplementation, NetworkPolicyConflictError } = await import(`${pkg}/provider.js`);
 const { UnsupportedNetworkPolicyError } = await import(`${pkg}/network-policy.js`);
 
 const ALPINE =
@@ -295,6 +295,17 @@ if (phase === "a") {
     const count = (await sandboxNames()).filter((name) => name === lines[0]).length;
     const ok = one.code === 0 && two.code === 0 && lines[0] === lines[1] && count === 1;
     return [ok, `exit ${one.code}/${two.code}; ${lines.join(" ")}; ${count} sandbox(es)`];
+  });
+
+  await probe("deny-all-open-of-an-allow-all-sandbox-is-refused", async () => {
+    const conflictCtx = sessionCtx("policy-conflict");
+    const open = await provider.start(conflictCtx, { networkPolicy: "allow-all" }, artifact);
+    const [refused, detail] = await rejectsWith(
+      provider.start(conflictCtx, undefined, artifact),
+      NetworkPolicyConflictError,
+    );
+    await provider.onSessionEnd(conflictCtx, open.state, { reason: "completed" });
+    return [refused, detail];
   });
 
   // allow-all
