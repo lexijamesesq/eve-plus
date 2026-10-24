@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * Unit tests: pure logic, no VM. The real-VM proof runs by hand on a KVM host (see the README).
+ * Unit tests: pure logic, no VM. The real-VM proof runs by hand on a KVM host, not in CI.
  */
 export default defineConfig({
   test: {
