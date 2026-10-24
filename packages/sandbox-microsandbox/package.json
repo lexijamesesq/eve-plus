@@ -1,0 +1,48 @@
+{
+  "name": "@eve-plus/sandbox-microsandbox",
+  "version": "0.1.0",
+  "description": "A microsandbox sandbox provider for Vercel eve: one microVM per session, deny-all by default, on eve's public provider seam.",
+  "license": "MIT",
+  "keywords": [
+    "eve",
+    "sandbox",
+    "sandbox-provider",
+    "microsandbox",
+    "microvm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lexijamesesq/eve-plus.git",
+    "directory": "packages/sandbox-microsandbox"
+  },
+  "homepage": "https://github.com/lexijamesesq/eve-plus/tree/main/packages/sandbox-microsandbox#readme",
+  "bugs": {
+    "url": "https://github.com/lexijamesesq/eve-plus/issues"
+  },
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.check.json && tsc -p tsconfig.build.json",
+    "test": "vitest run --config vitest.unit.config.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "ai": "7.0.141",
+    "eve": "0.83.2",
+    "typescript": "^5.0.0",
+    "vitest": "4.1.10"
+  },
+  "peerDependencies": {
+    "eve": "^0.83.2"
+  }
+}
