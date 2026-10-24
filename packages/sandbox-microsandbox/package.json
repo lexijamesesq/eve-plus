@@ -2,7 +2,7 @@
   "name": "@eve-plus/sandbox-microsandbox",
   "version": "0.1.0",
   "description": "A microsandbox sandbox provider for Vercel eve: one microVM per session, deny-all by default, on eve's public provider seam.",
-  "license": "MIT",
+  "license": "MIT AND Apache-2.0",
   "keywords": [
     "eve",
     "sandbox",
@@ -21,7 +21,9 @@
   },
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE-APACHE",
+    "NOTICE"
   ],
   "exports": {
     ".": {
@@ -34,6 +36,9 @@
     "prepare": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.check.json && tsc -p tsconfig.build.json",
     "test": "vitest run --config vitest.unit.config.ts"
+  },
+  "dependencies": {
+    "microsandbox": "0.7.10"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

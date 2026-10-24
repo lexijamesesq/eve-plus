@@ -1,14 +1,67 @@
 # Eve-Plus Sandbox: microsandbox
 
-A sandbox provider for [eve](https://github.com/vercel/eve) that runs each session in its own [microsandbox](https://github.com/superradcompany/microsandbox) microVM, deny-all by default. It's built on eve's public `defineSandboxProvider` seam (`eve/sandbox/provider`), so it uses no eve internals.
+A sandbox provider for [eve](https://github.com/vercel/eve) that runs each session in its own [microsandbox](https://github.com/superradcompany/microsandbox) microVM, deny-all by default. It's built on eve's public `defineSandboxProvider` seam (`eve/sandbox/provider`) and uses no eve internals, so an eve release that keeps that seam can't break it.
 
-> Work in progress: this release carries the network-policy contract. The provider itself lands next.
+## Install
+
+Install it from a release tag as a git dependency, next to eve 0.83.2 or later within 0.83:
+
+```json
+{
+  "dependencies": {
+    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.1.0&path:packages/sandbox-microsandbox",
+    "eve": "0.83.2"
+  }
+}
+```
+
+The host needs `/dev/kvm`, with the process in its group. In a container, pass only `--device /dev/kvm`, set `MSB_HOME` to a writable directory, and mount the host's CA bundle read-only: the host-side `msb` runtime pulls images over HTTPS and panics with "No CA certificates were loaded from the system" without it.
+
+## Use
+
+```ts title="agent/sandbox.ts"
+import { defineSandbox } from "eve/sandbox";
+import { MicrosandboxSandbox } from "@eve-plus/sandbox-microsandbox";
+
+export const environment = MicrosandboxSandbox.environment({
+  prepare: async (sandbox) => {
+    await sandbox.run({ command: "apt-get update && apt-get install -y ripgrep" });
+  },
+});
+
+export default defineSandbox(() => environment.open());
+```
+
+Environment options:
+
+| Option      | Default                                | Meaning                                                               |
+| ----------- | -------------------------------------- | --------------------------------------------------------------------- |
+| `image`     | `debian:trixie-slim`, pinned by digest | Base OCI image. It must be pinned (`name@sha256:…`) and provide bash. |
+| `cpus`      | `1`                                    | vCPUs per sandbox.                                                    |
+| `memoryMib` | `1024`                                 | Memory per sandbox, in MiB.                                           |
+| `prepare`   | none                                   | eve's standard template setup, run once per template.                 |
+
+`open()` takes `{ networkPolicy }`, described below. There's no idle or maximum-duration auto-stop: a sandbox runs until eve stops it or the session ends.
+
+## How it works
+
+- **`prepare`** (at `eve build`) boots a template VM from the image, fails clearly if the image lacks bash, creates `/workspace` as root (as eve's Docker provider does), and runs `ctx.populate()`, which seeds workspace and skill files and runs your `prepare`. It then stops the VM and captures a disk snapshot named for the template key, which hashes the image, the microsandbox version, and eve's workspace, skill and sandbox-file inputs. An unchanged template is reused. The template build runs `allow-all`, so your `prepare` can install packages. A failed build removes its VM and any snapshot it captured.
+- **`start`** finds the session's VM by a name derived from the session id and the app's sandbox storage path. It connects to a running VM, boots a stopped one, or restores a new one from the template snapshot under the session's network policy, always detached. Concurrent and cross-process starts converge on one VM. A missing template snapshot throws eve's `SandboxTemplateNotProvisionedError`.
+- **`resume`** reconnects to the recorded VM, booting it if it's stopped, or throws `SandboxSessionGoneError` if it no longer exists.
+- **`onSessionEnd`** deletes the VM. It's idempotent and succeeds when nothing exists.
+- **Commands** run as `bash -lc` with eve's `SANDBOX_AGENT_ENV` beneath the per-call environment, because a VM restored from a snapshot doesn't keep the template's environment. Aborting a command kills its whole process tree, including backgrounded children.
+
+The recorded session state is `{ sandboxName, msbVersion }` under `stateProtocolVersion` 1, and the provider's name is `eve-plus-microsandbox`. eve discards state recorded under the name `microsandbox`, which belonged to the provider eve 0.83 removed.
+
+`toolSessions` is omitted: a keyed `invokeTool` call that requests a sandbox fails, because nothing would bound how long its VM lives.
 
 ## Network policy
 
-The provider enforces exactly two policies, set once when a session's sandbox starts. Every other shape rejects with `UnsupportedNetworkPolicyError` rather than being weakened: microsandbox can't inject the headers eve's `transform` rules add, and can't change a live sandbox's policy.
+The provider enforces exactly two policies, set once when a session's sandbox is created. Every other shape rejects with `UnsupportedNetworkPolicyError` rather than being weakened: microsandbox can't inject the headers eve's `transform` rules add, and can't change a live sandbox's policy.
 
-An absent policy means `deny-all`. eve's Docker provider defaults to `allow-all`; this one doesn't.
+An absent policy means `deny-all`. eve's Docker provider defaults to `allow-all`; this one doesn't. A later `open()` with a different policy reconnects to the existing sandbox unchanged.
+
+No TLS interception is configured, and the guest trusts only its image's own certificate store.
 
 The table below is checked by the package's unit tests: each row's shape is parsed as JSON and must produce its result.
 
@@ -28,3 +81,55 @@ The table below is checked by the package's unit tests: each row's shape is pars
 | `{"subnets": {"deny": ["10.0.0.0/8"]}}`                                                  | rejects     |
 | `"DENY-ALL"`                                                                             | rejects     |
 | `null`                                                                                   | rejects     |
+
+### No live policy changes
+
+The session has no `setNetworkPolicy()`. Two eve features look for it and stop at their own check, before doing any work, when it's absent:
+
+- **The GitHub channel's default checkout** fails with "GitHub checkout requires a sandbox provider with mutable network policy." The remedy is a host-side checkout: override the channel's default `turn.started` handler and fetch what the agent needs outside the sandbox.
+- **eve-code's firewall credential delivery** fails without it. The remedy is `vercel.delivery: "command"`.
+
+## Runtime pinning
+
+`microsandbox` is pinned exactly, and its platform package (which carries the `msb` VM runtime) is pinned by microsandbox itself. Before any VM work, the provider checks that `msb` resolved from that platform package (`origin: sdk_package`) at the pinned version, and throws `MicrosandboxRuntimeMismatchError` otherwise, for example when `MSB_PATH` selects another runtime.
+
+To move to a new microsandbox release:
+
+1. Read its changelog and security advisories.
+2. Change the exact `microsandbox` version in `package.json` and `MICROSANDBOX_VERSION` in `src/runtime.ts` together. A unit test fails if they differ.
+3. Run the real-VM proof below on a KVM host, and keep its output with the change.
+4. Bump this package's version, so the merge cuts a new release tag.
+
+Because the microsandbox version is part of the template key, the next `eve build` builds a fresh template.
+
+## Pruning templates
+
+Each distinct template key leaves one snapshot named `eve-plus-tpl-<key>` in `MSB_HOME`, and nothing removes old ones automatically. A session never depends on its template after its VM is restored, so removing a snapshot can't break a live or stopped session. Removing the snapshot that the current deployment's artifact names makes new sessions fail with `SandboxTemplateNotProvisionedError` until the next `eve build`.
+
+To prune, remove snapshots whose key isn't the current deployment's, by digest, without `force`:
+
+```ts
+import { Snapshot } from "microsandbox";
+
+const current = "eve-plus-tpl-<current template key>";
+for (const snapshot of await Snapshot.list()) {
+  if (snapshot.name?.startsWith("eve-plus-tpl-") && snapshot.name !== current) {
+    await Snapshot.remove(snapshot.digest);
+  }
+}
+```
+
+## Testing
+
+- **Unit tests** (`npm test`, and in CI) cover the policy table, the lifecycle against an in-memory microsandbox, the version pin, and a rule that shipped `src/` imports only eve's public package exports. One test is exempt from that rule: the state round-trip test imports eve's internal persisted-state resolution (`dist/src/sandbox/state.js`), because no public export reaches it, and it proves eve resumes this provider's recorded state.
+- **The real-VM proof** (`integration/`) needs a KVM host with Docker. It runs every lifecycle, connection, network, rejection, runtime and persistence probe against a real microVM, in a throwaway container with an eve agent's posture, and prints one PASS or FAIL line per probe:
+
+  ```sh
+  npm pack --pack-destination /tmp/proof && cp integration/* /tmp/proof/
+  # copy /tmp/proof to the KVM host, then on it:
+  bash /tmp/proof/run.sh /tmp/proof
+  ```
+
+## License
+
+MIT, except `src/process.ts`, which is derived from eve's Apache-2.0 microsandbox provider. See `LICENSE-APACHE` and `NOTICE`.
