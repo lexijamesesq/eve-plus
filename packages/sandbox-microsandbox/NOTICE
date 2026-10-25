@@ -1,0 +1,13 @@
+@eve-plus/sandbox-microsandbox
+Copyright 2026 lexijamesesq
+
+This package includes software derived from eve (https://github.com/vercel/eve),
+at commit a2c6d64ed3c390eb0f04e21e06f24bf30eb55a81, licensed under the Apache
+License, Version 2.0 (see LICENSE-APACHE). The derived file is src/process.ts.
+Its notice follows.
+
+eve
+Copyright 2026 Vercel, Inc. and contributors
+
+This product includes software developed at Vercel, Inc.
+(https://vercel.com/).

@@ -53,4 +53,5 @@ jobs:
           set -uo pipefail
           FAILED=0
           bash .github/scripts/tag-package-release.sh packages/memory memory || FAILED=1
+          bash .github/scripts/tag-package-release.sh packages/sandbox-microsandbox sandbox-microsandbox || FAILED=1
           exit "$FAILED"

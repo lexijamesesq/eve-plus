@@ -17,6 +17,10 @@ repos:
         alias: memory-version
         args: [package, packages/memory, memory]
         stages: [pre-push]
+      - id: release-version
+        alias: sandbox-microsandbox-version
+        args: [package, packages/sandbox-microsandbox, sandbox-microsandbox]
+        stages: [pre-push]
       - id: house-code
         stages: [pre-commit]
       - id: vale-self-narration
