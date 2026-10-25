@@ -9,7 +9,7 @@ Install it from a release tag as a git dependency, next to eve 0.83.2 or later w
 ```json
 {
   "dependencies": {
-    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.1.0&path:packages/sandbox-microsandbox",
+    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.1.3&path:packages/sandbox-microsandbox",
     "eve": "0.83.2"
   }
 }
