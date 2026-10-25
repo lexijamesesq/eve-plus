@@ -3,15 +3,20 @@
   "vcs": { "enabled": false },
   "files": {
     "includes": [
-      "**",
+      "**/*.js",
+      "**/*.jsx",
+      "**/*.cjs",
+      "**/*.mjs",
+      "**/*.ts",
+      "**/*.tsx",
+      "**/*.cts",
+      "**/*.mts",
+      "**/*.css",
+      "**/*.graphql",
+      "**/*.gql",
       "!**/dist",
       "!**/build",
-      "!**/coverage",
-      "!**/*.json",
-      "!**/*.jsonc",
-      "!**/*.vue",
-      "!**/*.svelte",
-      "!**/*.astro"
+      "!**/coverage"
     ]
   },
   "formatter": {
