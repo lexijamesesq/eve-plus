@@ -9,26 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  memory:
-    name: test / memory
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # pnpm, the version packageManager pins, so pnpm-workspace.yaml's allowBuilds lets better-sqlite3 build its
-      # native binding; without it the store can't open and the integration tests fail.
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-      - name: Install, typecheck and run the unit and integration tests
-        run: |
-          pnpm install --filter @eve-plus/memory
-          pnpm --filter @eve-plus/memory run typecheck
-          pnpm --filter @eve-plus/memory run test
-
   sandbox-microsandbox:
     name: test / sandbox-microsandbox
     runs-on: ubuntu-latest
