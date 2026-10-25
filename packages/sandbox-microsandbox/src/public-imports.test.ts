@@ -25,8 +25,10 @@ function eveSpecifiers(source: string): string[] {
 }
 
 describe("shipped src/ imports only eve's public exports", () => {
-  it("finds shipped files to check", () => {
+  it("finds shipped files to check, and the eve imports in them", () => {
     expect(shipped).toContain("index.ts");
+    const provider = readFileSync(new URL("provider.ts", srcDir), "utf8");
+    expect(eveSpecifiers(provider)).toContain("eve/sandbox/provider");
   });
 
   for (const file of shipped) {

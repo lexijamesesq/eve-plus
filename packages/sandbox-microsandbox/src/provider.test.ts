@@ -257,8 +257,8 @@ describe("start", () => {
     msb.raceOnRestore = true;
     const { connection, state } = await createImplementation({}).start(ctx, undefined, artifact);
     expect(connection).toBeDefined();
-    expect(state).toBeDefined();
-    expect(msb.restored).toEqual([]);
+    expect(msb.sandboxes.size).toBe(1);
+    expect(msb.sandboxes.has(state.sandboxName)).toBe(true);
   });
 
   it("reports a missing template snapshot", async () => {
