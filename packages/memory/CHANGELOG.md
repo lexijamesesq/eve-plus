@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+Installs alongside eve 0.83. The peer range is now `^0.80.1 || ^0.81.0 || ^0.83.2`, and the package is built and
+tested against eve 0.83.2. Every eve API it uses is unchanged in 0.83.2, so there is no change to its behaviour, its
+API or its stored data.
+
 ## 0.4.0
 
 Adds a way to tell, from the store itself, whether an agent's memory survived something done to it, such as a
