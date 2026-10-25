@@ -9,7 +9,7 @@ Install it from a release tag as a git dependency, next to eve 0.83.2 or later w
 ```json
 {
   "dependencies": {
-    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.1.0&path:packages/sandbox-microsandbox",
+    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.1.3&path:packages/sandbox-microsandbox",
     "eve": "0.83.2"
   }
 }
@@ -31,6 +31,16 @@ export const environment = MicrosandboxSandbox.environment({
 
 export default defineSandbox(() => environment.open());
 ```
+
+Keep the package external. microsandbox loads its native addon from its own package tree at runtime, so it has to keep its normal layout. Add this `build` property inside your existing `defineAgent({ ... })` in `agent/agent.ts`:
+
+```ts
+build: {
+  externalDependencies: ["@eve-plus/sandbox-microsandbox"],
+},
+```
+
+Without it, `eve build` bundles the package, separating microsandbox's `dist/` from its `native/` addon, and the build fails with `Cannot find module '../../native/index.cjs'`.
 
 Environment options:
 
