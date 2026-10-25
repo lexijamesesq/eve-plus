@@ -299,8 +299,8 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
       const query = latestUserText(turnInput ?? context.messages);
       // Resuming after a tool approval: inject nothing. eve appends recalled messages after the history's tail, and the AI
       // SDK reads approvals only from the tail tool message, so anything injected here makes it skip the approved tool and
-      // the run fails with "No tool output found for function call". eve guards this for task state and skills (#2919),
-      // not for memory recall. The check is the one eve uses: the history ends in a tool-approval-response.
+      // the run fails with "No tool output found for function call". eve's createCurrentMessages add() appends with no
+      // tail check from 0.81 on, so this guard is memory's own: the history ends in a tool-approval-response.
       if (endsInApprovalResponse(context.messages)) return null;
       const mg = await get(context.memory.scope.key);
       const rules = mg.shapeIndex();
