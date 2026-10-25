@@ -5,3 +5,6 @@ packages:
 # download or compile) or the store cannot open. Allow it to build.
 allowBuilds:
   better-sqlite3: true
+
+# No release-age gate: whether a new release has settled is decided when it's adopted, not by a blanket delay.
+minimumReleaseAge: 0
