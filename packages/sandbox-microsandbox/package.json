@@ -1,6 +1,6 @@
 {
   "name": "@eve-plus/sandbox-microsandbox",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A microsandbox sandbox provider for Vercel eve: one microVM per session, deny-all by default, on eve's public provider seam.",
   "license": "MIT AND Apache-2.0",
   "keywords": [

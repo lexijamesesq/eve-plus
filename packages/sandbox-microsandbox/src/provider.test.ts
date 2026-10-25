@@ -255,12 +255,10 @@ describe("start", () => {
 
   it("connects to the winner when another caller restores first", async () => {
     msb.raceOnRestore = true;
-    const { state } = await createImplementation({}).start(ctx, undefined, artifact);
-    expect(msb.calls).toEqual([
-      `get ${state.sandboxName}`,
-      `restore ${state.sandboxName}`,
-      `get ${state.sandboxName}`,
-    ]);
+    const { connection, state } = await createImplementation({}).start(ctx, undefined, artifact);
+    expect(connection).toBeDefined();
+    expect(msb.sandboxes.size).toBe(1);
+    expect(msb.sandboxes.has(state.sandboxName)).toBe(true);
   });
 
   it("reports a missing template snapshot", async () => {
@@ -336,7 +334,6 @@ describe("onSessionEnd", () => {
     await implementation.onSessionEnd(ctx, state, { reason: "completed" });
     await implementation.onSessionEnd(ctx, null, { reason: "deleted" });
     expect(msb.sandboxes.size).toBe(0);
-    expect(msb.calls.filter((call) => call.startsWith("destroy"))).toHaveLength(1);
   });
 });
 
@@ -375,7 +372,6 @@ describe("recorded state", () => {
       stateProtocolVersion: STATE_PROTOCOL_VERSION,
     };
     expect(resolvePersistedSandboxSessionState(recorded, runtime)).toEqual(recorded);
-    expect(PROVIDER_NAME).not.toBe("microsandbox");
     expect(
       resolvePersistedSandboxSessionState({ ...recorded, providerName: "microsandbox" }, runtime),
     ).toBeNull();

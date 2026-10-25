@@ -124,10 +124,10 @@ for (const snapshot of await Snapshot.list()) {
 ## Testing
 
 - **Unit tests** (`npm test`, and in CI) cover the policy table, the lifecycle against an in-memory microsandbox, the version pin, and a rule that shipped `src/` imports only eve's public package exports. One test is exempt from that rule: the state round-trip test imports eve's internal persisted-state resolution (`dist/src/sandbox/state.js`), because no public export reaches it, and it proves eve resumes this provider's recorded state.
-- **The real-VM proof** (`integration/`) needs a KVM host with Docker. It runs every lifecycle, connection, network, rejection, runtime and persistence probe against a real microVM, in a throwaway container with an eve agent's posture, and prints one PASS or FAIL line per probe:
+- **The real-VM proof** (`integration/`, run with `vitest.integration.config.ts`, never by `npm test`) needs a KVM host with Docker and a live network, by necessity: it pulls images and probes real hosts. It runs every lifecycle, connection, network, rejection, runtime and persistence probe against a real microVM, in a throwaway container with an eve agent's posture, as one vitest test per probe:
 
   ```sh
-  npm pack --pack-destination /tmp/proof && cp integration/* /tmp/proof/
+  npm pack --pack-destination /tmp/proof && cp integration/* vitest.integration.config.ts /tmp/proof/
   # copy /tmp/proof to the KVM host, then on it:
   bash /tmp/proof/run.sh /tmp/proof
   ```

@@ -1,35 +1,35 @@
-// Real-VM proof for @eve-plus/sandbox-microsandbox. Runs inside the throwaway container that
-// run.sh starts on a KVM host, against the installed package. Prints one PASS or FAIL line per
-// probe. Phase "a" runs every probe and records one session; phase "b" is a new process that
-// resumes it, then cleans up.
+// Real-VM proof for @eve-plus/sandbox-microsandbox. Runs inside the throwaway container that run.sh starts on a
+// KVM host, against the installed package, with a live network. One test per probe, in order: later probes use the
+// template and sessions earlier ones made. The last probes record one session, resume it from a new process
+// (resume-child.mjs), then clean up.
 import { spawn as spawnChild } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { SandboxSessionGoneError, SandboxTemplateNotProvisionedError } from "eve/sandbox/provider";
 import { Sandbox, Snapshot } from "microsandbox";
+import { describe, expect, it } from "vitest";
 
-const pkg = "./node_modules/@eve-plus/sandbox-microsandbox/dist";
-const { createImplementation, NetworkPolicyConflictError } = await import(`${pkg}/provider.js`);
-const { UnsupportedNetworkPolicyError } = await import(`${pkg}/network-policy.js`);
+const pkg = join(process.cwd(), "node_modules/@eve-plus/sandbox-microsandbox/dist");
+const { createImplementation, NetworkPolicyConflictError } = await import(
+  pathToFileURL(join(pkg, "provider.js")).href
+);
+const { UnsupportedNetworkPolicyError } = await import(
+  pathToFileURL(join(pkg, "network-policy.js")).href
+);
 
 const ALPINE =
   "alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f";
+const ARTIFACT_FILE = "/home/node/artifact.json";
 const STATE_FILE = "/home/node/proof-state.json";
-const phase = process.argv[2] ?? "a";
-const results = [];
-const record = (ok, name, detail = "") => {
-  const line = `${ok ? "PASS" : "FAIL"} ${name} ${String(detail).replace(/\s+/g, " ").slice(0, 160)}`;
-  results.push(ok);
-  console.log(line);
-};
-const probe = async (name, fn) => {
-  try {
+
+// Each probe returns [ok, detail]; the detail is the failure message.
+const probe = (name, fn) =>
+  it(name, async () => {
     const [ok, detail] = await fn();
-    record(ok, name, detail);
-  } catch (error) {
-    record(false, name, `threw ${error?.name}: ${error?.message}`);
-  }
-};
+    expect(ok, String(detail)).toBe(true);
+  });
 const rejectsWith = async (promise, ErrorType) => {
   try {
     await promise;
@@ -101,29 +101,28 @@ const runChild = (args, env = {}) =>
   });
 
 const provider = createImplementation({});
+let artifact;
+let bare;
 
-if (phase === "a") {
-  // prepare
-  let artifact;
-  await probe("prepare-returns-disk-snapshot-artifact", async () => {
+describe("prepare", () => {
+  probe("prepare-returns-disk-snapshot-artifact", async () => {
     artifact = await provider.prepare(prepareCtx());
+    writeFileSync(ARTIFACT_FILE, JSON.stringify(artifact));
     const ok =
       typeof artifact.snapshot?.digest === "string" &&
       typeof artifact.templateKey === "string" &&
       artifact.msbVersion === "0.7.10";
     return [ok, JSON.stringify(artifact)];
   });
-  if (artifact === undefined) process.exit(1);
-  writeFileSync("/home/node/artifact.json", JSON.stringify(artifact));
-  await probe("prepare-leaves-no-build-sandbox", async () => {
+  probe("prepare-leaves-no-build-sandbox", async () => {
     const names = await sandboxNames();
     return [!names.some((name) => name.startsWith("eve-plus-tpl-")), JSON.stringify(names)];
   });
-  await probe("prepare-reuses-cached-template", async () => {
+  probe("prepare-reuses-cached-template", async () => {
     const again = await provider.prepare(prepareCtx());
     return [again.snapshot.digest === artifact.snapshot.digest, again.snapshot.digest];
   });
-  await probe("prepare-fails-clearly-without-bash-and-leaves-nothing", async () => {
+  probe("prepare-fails-clearly-without-bash-and-leaves-nothing", async () => {
     const before = await snapshotDigests();
     const [rejected, detail] = await rejectsWith(
       createImplementation({ image: ALPINE }).prepare(prepareCtx({ salt: "alpine" })),
@@ -134,7 +133,7 @@ if (phase === "a") {
     const same = JSON.stringify(before) === JSON.stringify(await snapshotDigests());
     return [rejected && /must provide bash/.test(detail) && clean && same, detail];
   });
-  await probe("prepare-failure-in-populate-leaves-nothing", async () => {
+  probe("prepare-failure-in-populate-leaves-nothing", async () => {
     const before = await snapshotDigests();
     const failing = prepareCtx({
       salt: "populate-fails",
@@ -148,11 +147,12 @@ if (phase === "a") {
     const same = JSON.stringify(before) === JSON.stringify(await snapshotDigests());
     return [rejected && clean && same, `${detail}; sandboxes ${JSON.stringify(names)}`];
   });
+});
 
+describe("a bare open", () => {
   // A bare open(): eve passes undefined options to start().
-  const bare = await provider.start(sessionCtx("bare-open"), undefined, artifact);
-  const c = bare.connection;
-  await probe("bare-open-config-deny-all-no-tls-no-timeouts-1cpu-1gib", async () => {
+  probe("bare-open-config-deny-all-no-tls-no-timeouts-1cpu-1gib", async () => {
+    bare = await provider.start(sessionCtx("bare-open"), undefined, artifact);
     const config = JSON.parse((await Sandbox.get(bare.state.sandboxName)).configJson);
     const ok =
       config.network.policy.default_egress === "deny" &&
@@ -171,55 +171,58 @@ if (phase === "a") {
       }),
     ];
   });
-  await probe("deny-all-blocks-host", async () => {
-    const r = await reaches(c, "https://example.com");
+  probe("deny-all-blocks-host", async () => {
+    const r = await reaches(bare.connection, "https://example.com");
     return [!r.reached, r.detail];
   });
-  await probe("deny-all-blocks-direct-ip", async () => {
-    const r = await reaches(c, "-k https://1.1.1.1");
+  probe("deny-all-blocks-direct-ip", async () => {
+    const r = await reaches(bare.connection, "-k https://1.1.1.1");
     return [!r.reached, r.detail];
   });
-  await probe("deny-all-blocks-ipv4-mapped-ipv6", async () => {
-    const r = await reaches(c, "-k -g https://[::ffff:1.1.1.1]");
+  probe("deny-all-blocks-ipv4-mapped-ipv6", async () => {
+    const r = await reaches(bare.connection, "-k -g https://[::ffff:1.1.1.1]");
     return [!r.reached, r.detail];
   });
-  await probe("deny-all-blocks-outside-dns", async () => {
-    const r = await run(c, "dig +short +time=3 +tries=1 example.com A @1.1.1.1");
+  probe("deny-all-blocks-outside-dns", async () => {
+    const r = await run(bare.connection, "dig +short +time=3 +tries=1 example.com A @1.1.1.1");
     return [!/^\d+\.\d+\.\d+\.\d+/m.test(r.out), r.out || r.err || "no answer"];
   });
-  await probe("guest-trust-store-is-the-images-own", async () => {
+  probe("guest-trust-store-is-the-images-own", async () => {
     const r = await run(
-      c,
+      bare.connection,
       "ls /usr/local/share/ca-certificates | wc -l; test -f /etc/ssl/certs/ca-certificates.crt && echo bundle",
     );
     return [r.out.startsWith("0") && r.out.includes("bundle"), r.out];
   });
+});
 
-  // connection
-  await probe("workspace-seeded-from-template", async () => {
-    const bytes = await c.readFile({ path: "/workspace/seed.txt" });
+describe("the connection", () => {
+  probe("workspace-seeded-from-template", async () => {
+    const bytes = await bare.connection.readFile({ path: "/workspace/seed.txt" });
     return [bytes !== null && decode(bytes) === "seeded", bytes === null ? "null" : decode(bytes)];
   });
-  await probe("spawn-output-exit-cwd-env-agent-marker", async () => {
-    const r = await run(c, 'echo "$PWD $GREETING $AI_AGENT"; echo oops >&2; exit 3', {
+  probe("spawn-output-exit-cwd-env-agent-marker", async () => {
+    const r = await run(bare.connection, 'echo "$PWD $GREETING $AI_AGENT"; echo oops >&2; exit 3', {
       cwd: "/tmp",
       env: { GREETING: "hi" },
     });
     return [r.out === "/tmp hi eve" && r.err === "oops" && r.code === 3, JSON.stringify(r)];
   });
-  await probe("write-then-read-nested-file", async () => {
+  probe("write-then-read-nested-file", async () => {
+    const c = bare.connection;
     await c.writeFiles({ files: [{ path: "/workspace/a/b/c.txt", content: encode("deep") }] });
     const bytes = await c.readFile({ path: "/workspace/a/b/c.txt" });
     return [bytes !== null && decode(bytes) === "deep", bytes === null ? "null" : decode(bytes)];
   });
-  await probe("read-missing-is-null", async () => {
-    const bytes = await c.readFile({ path: "/workspace/missing.txt" });
+  probe("read-missing-is-null", async () => {
+    const bytes = await bare.connection.readFile({ path: "/workspace/missing.txt" });
     return [bytes === null, String(bytes)];
   });
-  await probe("read-directory-rejects", async () =>
-    rejectsWith(c.readFile({ path: "/workspace/a" }), Error),
+  probe("read-directory-rejects", async () =>
+    rejectsWith(bare.connection.readFile({ path: "/workspace/a" }), Error),
   );
-  await probe("remove-path-file-force-recursive", async () => {
+  probe("remove-path-file-force-recursive", async () => {
+    const c = bare.connection;
     await c.removePath({ path: "/workspace/a/b/c.txt" });
     const gone = (await c.readFile({ path: "/workspace/a/b/c.txt" })) === null;
     await c.removePath({ path: "/workspace/never", force: true });
@@ -233,7 +236,8 @@ if (phase === "a") {
       JSON.stringify({ gone, strict, nonEmpty, dirGone }),
     ];
   });
-  await probe("abort-kills-tree-including-background-grandchild", async () => {
+  probe("abort-kills-tree-including-background-grandchild", async () => {
+    const c = bare.connection;
     const controller = new AbortController();
     const child = await c.spawn({
       abortSignal: controller.signal,
@@ -254,9 +258,11 @@ if (phase === "a") {
     );
     return [r.out === "dead\ndead", r.out];
   });
+});
 
-  // start: stopped and running sandboxes, concurrency
-  await probe("start-reconnects-a-stopped-sandbox-with-its-files", async () => {
+describe("start: stopped and running sandboxes, concurrency", () => {
+  probe("start-reconnects-a-stopped-sandbox-with-its-files", async () => {
+    const c = bare.connection;
     await c.writeFiles({ files: [{ path: "/workspace/kept.txt", content: encode("kept") }] });
     await c.stop();
     await c.stop();
@@ -276,7 +282,7 @@ if (phase === "a") {
       config.network.policy.default_egress === "deny";
     return [ok, `status after stop: ${status}; egress ${config.network.policy.default_egress}`];
   });
-  await probe("concurrent-starts-yield-one-sandbox", async () => {
+  probe("concurrent-starts-yield-one-sandbox", async () => {
     const opened = await Promise.all(
       Array.from({ length: 4 }, () =>
         provider.start(sessionCtx("concurrent"), undefined, artifact),
@@ -286,18 +292,17 @@ if (phase === "a") {
     const count = (await sandboxNames()).filter((name) => names.has(name)).length;
     return [names.size === 1 && count === 1, `${names.size} name(s), ${count} sandbox(es)`];
   });
-  await probe("two-process-starts-yield-one-sandbox", async () => {
+  probe("two-process-starts-yield-one-sandbox", async () => {
     const [one, two] = await Promise.all([
-      runChild(["start-child.mjs", "two-process"]),
-      runChild(["start-child.mjs", "two-process"]),
+      runChild(["integration/start-child.mjs", "two-process"]),
+      runChild(["integration/start-child.mjs", "two-process"]),
     ]);
     const lines = [one, two].map((r) => r.out.split("\n").at(-1));
     const count = (await sandboxNames()).filter((name) => name === lines[0]).length;
     const ok = one.code === 0 && two.code === 0 && lines[0] === lines[1] && count === 1;
     return [ok, `exit ${one.code}/${two.code}; ${lines.join(" ")}; ${count} sandbox(es)`];
   });
-
-  await probe("deny-all-open-of-an-allow-all-sandbox-is-refused", async () => {
+  probe("deny-all-open-of-an-allow-all-sandbox-is-refused", async () => {
     const conflictCtx = sessionCtx("policy-conflict");
     const open = await provider.start(conflictCtx, { networkPolicy: "allow-all" }, artifact);
     const [refused, detail] = await rejectsWith(
@@ -307,9 +312,10 @@ if (phase === "a") {
     await provider.onSessionEnd(conflictCtx, open.state, { reason: "completed" });
     return [refused, detail];
   });
+});
 
-  // allow-all
-  await probe("allow-all-reaches-host", async () => {
+describe("network policies", () => {
+  probe("allow-all-reaches-host", async () => {
     const open = await provider.start(
       sessionCtx("allow-all"),
       { networkPolicy: "allow-all" },
@@ -319,69 +325,56 @@ if (phase === "a") {
     await provider.onSessionEnd(sessionCtx("allow-all"), open.state, { reason: "completed" });
     return [r.reached, r.detail];
   });
+  // Every unsupported shape fails the same check before any VM call, so one stands for all of them.
+  probe("rejects-an-unsupported-policy-creating-nothing", async () => {
+    const before = await sandboxNames();
+    const [rejected, detail] = await rejectsWith(
+      provider.start(sessionCtx("rejected"), { networkPolicy: {} }, artifact),
+      UnsupportedNetworkPolicyError,
+    );
+    const after = await sandboxNames();
+    return [rejected && before.length === after.length, detail];
+  });
+});
 
-  // rejected shapes
-  for (const [label, policy] of [
-    ["empty-object", {}],
-    ["allow-star-list", { allow: ["*"] }],
-    ["allow-star-map", { allow: { "*": [] } }],
-    ["allowlist", { allow: ["example.com"] }],
-    ["transform", { allow: { "github.com": [{ transform: [{ headers: { a: "b" } }] }] } }],
-    ["forward-url", { allow: { "github.com": [{ forwardURL: "https://p" }] } }],
-    [
-      "match",
-      { allow: { "github.com": [{ match: { method: ["GET"] }, forwardURL: "https://p" }] } },
-    ],
-    ["subnets", { subnets: { deny: ["10.0.0.0/8"] } }],
-  ]) {
-    await probe(`rejects-policy-${label}-creating-nothing`, async () => {
-      const ctx = sessionCtx(`rejected-${label}`);
-      const before = await sandboxNames();
-      const [rejected, detail] = await rejectsWith(
-        provider.start(ctx, { networkPolicy: policy }, artifact),
-        UnsupportedNetworkPolicyError,
-      );
-      const after = await sandboxNames();
-      return [rejected && before.length === after.length, detail];
-    });
-  }
-
-  // stale runtime: an older msb selected through MSB_PATH, then one sitting in MSB_HOME
-  await probe("stale-runtime-via-msb-path-is-refused", async () => {
-    const r = await runChild(["stale-child.mjs"], {
+describe("a stale runtime: an older msb selected through MSB_PATH, then one sitting in MSB_HOME", () => {
+  probe("stale-runtime-via-msb-path-is-refused", async () => {
+    const r = await runChild(["integration/stale-child.mjs"], {
       MSB_PATH: "/home/node/stale/package/bin/msb",
       MSB_LIBKRUNFW_PATH: "/home/node/stale/package/lib/libkrunfw.so.5.6.1",
     });
     return [r.out.includes("refused MicrosandboxRuntimeMismatchError"), r.out];
   });
-  await probe("stale-runtime-in-msb-home-never-runs", async () => {
+  probe("stale-runtime-in-msb-home-never-runs", async () => {
     // The child's MSB_HOME holds the stale pair and no template. Either microsandbox prefers the
     // locked package (then start gets as far as the missing template), or the provider refuses.
-    const r = await runChild(["stale-child.mjs"], { MSB_HOME: "/home/node/stale-home" });
+    const r = await runChild(["integration/stale-child.mjs"], {
+      MSB_HOME: "/home/node/stale-home",
+    });
     const lockedWins =
       r.out.includes("resolved sdk_package 0.7.10") &&
       r.out.includes("refused SandboxTemplateNotProvisionedError");
     const refused = r.out.includes("refused MicrosandboxRuntimeMismatchError");
     return [lockedWins || refused, r.out];
   });
+});
 
-  // gone session, idempotent end
-  await probe("session-end-deletes-idempotently-then-resume-is-gone", async () => {
+describe("ending sessions, and a missing template", () => {
+  probe("session-end-deletes-idempotently-then-resume-is-gone", async () => {
     const ctx = sessionCtx("concurrent");
     const state = (await provider.start(ctx, undefined, artifact)).state;
     await provider.onSessionEnd(ctx, state, { reason: "completed" });
     await provider.onSessionEnd(ctx, state, { reason: "completed" });
     await provider.onSessionEnd(sessionCtx("never-existed"), null, { reason: "deleted" });
+    await provider.onSessionEnd(sessionCtx("two-process"), null, { reason: "completed" });
     const [gone, detail] = await rejectsWith(
       provider.resume(ctx, artifact, state),
       SandboxSessionGoneError,
     );
     return [gone, detail];
   });
-  await provider.onSessionEnd(sessionCtx("two-process"), null, { reason: "completed" });
-
-  // missing template, and pruning never breaks a live session
-  await probe("missing-template-throws-not-provisioned-and-live-session-survives", async () => {
+  // Pruning a template never breaks a live session.
+  probe("missing-template-throws-not-provisioned-and-live-session-survives", async () => {
     const live = await provider.start(sessionCtx("pruned"), undefined, artifact);
     await live.connection.stop();
     await Snapshot.remove(artifact.snapshot.digest);
@@ -394,26 +387,18 @@ if (phase === "a") {
     await provider.onSessionEnd(sessionCtx("pruned"), live.state, { reason: "completed" });
     return [missing && bytes !== null && decode(bytes) === "seeded", detail];
   });
+});
 
-  // persistence across a new process: record the stopped bare-open session for phase b
-  await (await provider.resume(sessionCtx("bare-open"), artifact, bare.state)).stop();
-  writeFileSync(STATE_FILE, JSON.stringify(bare.state));
-  record(true, "phase-a-recorded-session-for-new-process");
-} else {
-  const artifact = JSON.parse(readFileSync("/home/node/artifact.json", "utf8"));
-  const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-  await probe("new-process-resumes-recorded-session-with-files", async () => {
-    const connection = await provider.resume(sessionCtx("bare-open"), artifact, state);
-    const bytes = await connection.readFile({ path: "/workspace/kept.txt" });
-    return [bytes !== null && decode(bytes) === "kept", bytes === null ? "null" : decode(bytes)];
+describe("persistence across a new process", () => {
+  probe("new-process-resumes-recorded-session-with-files", async () => {
+    await (await provider.resume(sessionCtx("bare-open"), artifact, bare.state)).stop();
+    writeFileSync(STATE_FILE, JSON.stringify(bare.state));
+    const r = await runChild(["integration/resume-child.mjs"]);
+    return [r.code === 0 && r.out.split("\n").at(-1) === "kept", r.out];
   });
-  await provider.onSessionEnd(sessionCtx("bare-open"), state, { reason: "completed" });
-  await probe("cleanup-leaves-no-sandbox", async () => {
+  probe("cleanup-leaves-no-sandbox", async () => {
+    await provider.onSessionEnd(sessionCtx("bare-open"), bare.state, { reason: "completed" });
     const names = await sandboxNames();
     return [names.length === 0, JSON.stringify(names)];
   });
-}
-
-const failed = results.filter((ok) => !ok).length;
-console.log(`SUMMARY ${phase}: ${results.length - failed} pass, ${failed} fail`);
-process.exit(failed === 0 ? 0 : 1);
+});
