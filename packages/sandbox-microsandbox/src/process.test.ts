@@ -68,6 +68,43 @@ describe("adaptExecToSandboxProcess", () => {
     }
   });
 
+  it("reports a successful exit when the reader cancelled the output early", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    globalThis.process.on("unhandledRejection", onUnhandled);
+    try {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const handle = {
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "stdout", data: bytes("first") } as ExecEvent;
+          await gate;
+          yield { kind: "stdout", data: bytes("after cancel") } as ExecEvent;
+          yield { kind: "stderr", data: bytes("still read") } as ExecEvent;
+          yield { kind: "exited", code: 0 } as ExecEvent;
+        },
+        async kill() {},
+      } as unknown as ExecHandle;
+      const sandboxProcess = adaptExecToSandboxProcess(handle);
+      await sandboxProcess.stdout.cancel();
+      release();
+      const [err, status] = await Promise.all([
+        new Response(sandboxProcess.stderr).text(),
+        sandboxProcess.wait(),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect({ err, status, unhandled }).toEqual({
+        err: "still read",
+        status: { exitCode: 0 },
+        unhandled: [],
+      });
+    } finally {
+      globalThis.process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("kills once however often kill() is called", async () => {
     const { handle, kills } = fakeHandle([{ kind: "exited", code: 0 }]);
     const process = adaptExecToSandboxProcess(handle);
