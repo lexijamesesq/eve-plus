@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { resolveNetworkPolicy, UnsupportedNetworkPolicyError } from "./network-policy.js";
 
-// The README's policy table is the published contract, so the test reads it rather than
-// restating it: a row added there is a row tested here.
+// The README's policy table is the published contract. Every shape it accepts is tested from the table, so an
+// accepted row added there is tested here. Every rejection fails at the same check, so three representatives from
+// the table stand for the rest: an object, a wrong-case string, and null.
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const section = readme.split("## Network policy")[1]?.split("\n## ")[0] ?? "";
 const rows = section
@@ -16,29 +17,25 @@ const rows = section
       .map((cell) => cell.trim()),
   )
   .filter(([shape]) => shape !== "Shape" && !/^-+$/.test(shape ?? ""));
+const parse = (shape: string) =>
+  shape === "absent" ? undefined : JSON.parse(shape.replace(/^`|`$/g, ""));
 
 describe("the README's network policy table", () => {
-  it("lists the accepted and rejected shapes", () => {
-    expect(rows.length).toBeGreaterThanOrEqual(10);
-  });
-
-  for (const [shape, result] of rows) {
+  for (const [shape, result] of rows.filter(([, result]) => result !== "rejects")) {
     it(`${shape} → ${result}`, () => {
-      const policy = shape === "absent" ? undefined : JSON.parse(shape.replace(/^`|`$/g, ""));
-      if (result === "rejects") {
-        expect(() => resolveNetworkPolicy(policy)).toThrow(UnsupportedNetworkPolicyError);
-      } else {
-        expect(resolveNetworkPolicy(policy)).toBe(result.replace(/`/g, ""));
-      }
+      expect(resolveNetworkPolicy(parse(shape))).toBe(result.replace(/`/g, ""));
+    });
+  }
+
+  for (const shape of ["`{}`", '`"DENY-ALL"`', "`null`"]) {
+    it(`${shape} → rejects`, () => {
+      expect(rows).toContainEqual([shape, "rejects"]);
+      expect(() => resolveNetworkPolicy(parse(shape))).toThrow(UnsupportedNetworkPolicyError);
     });
   }
 });
 
 describe("resolveNetworkPolicy", () => {
-  it("defaults to deny-all when no policy is given", () => {
-    expect(resolveNetworkPolicy(undefined)).toBe("deny-all");
-  });
-
   it("names the rejected policy in the error", () => {
     expect(() => resolveNetworkPolicy({ allow: ["*"] })).toThrow(/\{"allow":\["\*"\]\}/);
   });

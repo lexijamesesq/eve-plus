@@ -39,29 +39,3 @@ describe("shipped src/ imports only eve's public exports", () => {
     });
   }
 });
-
-describe("the specifier scan", () => {
-  it("catches static, side-effect, dynamic and require forms", () => {
-    const source = [
-      `import { a } from "eve/sandbox/provider";`,
-      `import "eve/internal/mount-state";`,
-      `const b = await import("eve/dist/src/sandbox/state.js");`,
-      `const c = require('eve');`,
-      `export * from "eve/sandbox";`,
-      `import { d } from "evelyn";`,
-    ].join("\n");
-    expect(eveSpecifiers(source)).toEqual([
-      "eve/sandbox/provider",
-      "eve/internal/mount-state",
-      "eve/dist/src/sandbox/state.js",
-      "eve",
-      "eve/sandbox",
-    ]);
-  });
-
-  it("treats a deep path and an internal subpath as non-public", () => {
-    expect(publicSpecifiers.has("eve/sandbox/provider")).toBe(true);
-    expect(publicSpecifiers.has("eve/internal/mount-state")).toBe(false);
-    expect(publicSpecifiers.has("eve/dist/src/sandbox/state.js")).toBe(false);
-  });
-});

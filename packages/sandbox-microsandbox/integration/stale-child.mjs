@@ -2,10 +2,12 @@
 // bin/ and lib/, where a runtime linked or installed by hand lives). Prints which runtime
 // resolved, then whether the provider accepts it.
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { resolveRuntime, resolveRuntimeVersion } from "microsandbox";
 
-const pkg = "./node_modules/@eve-plus/sandbox-microsandbox/dist";
-const { createImplementation } = await import(`${pkg}/provider.js`);
+const pkg = join(process.cwd(), "node_modules/@eve-plus/sandbox-microsandbox/dist");
+const { createImplementation } = await import(pathToFileURL(join(pkg, "provider.js")).href);
 const runtime = resolveRuntime();
 console.log(`resolved ${runtime.origin} ${await resolveRuntimeVersion(runtime.msbPath)}`);
 const artifact = JSON.parse(readFileSync("/home/node/artifact.json", "utf8"));

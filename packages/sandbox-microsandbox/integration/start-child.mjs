@@ -1,9 +1,10 @@
 // One of two processes racing start() for the same session. Prints the sandbox name it got.
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-const { createImplementation } = await import(
-  "./node_modules/@eve-plus/sandbox-microsandbox/dist/provider.js"
-);
+const pkg = join(process.cwd(), "node_modules/@eve-plus/sandbox-microsandbox/dist");
+const { createImplementation } = await import(pathToFileURL(join(pkg, "provider.js")).href);
 const artifact = JSON.parse(readFileSync("/home/node/artifact.json", "utf8"));
 const ctx = {
   kind: "session",
