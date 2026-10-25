@@ -2,7 +2,8 @@
 //
 // Writes an empty consumer project that depends on the package the way eve-deploy's agents do: a github: spec with
 // &path:, eve at the version the package is built against, and allowBuilds that deny better-sqlite3's build (its
-// prebuilt binding must load) and allow only the package's own prepare build, keyed to the commit.
+// prebuilt binding must load) and allow only the package's own prepare build, keyed to the commit. Like the
+// estate's own installs, it sets no release-age gate.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -24,6 +25,6 @@ writeFileSync(join(consumerDir, "package.json"), `${JSON.stringify(consumer, nul
 const buildKey = `${manifest.name}@https://codeload.github.com/${repo}/tar.gz/${sha}#path:${packageDir}`;
 writeFileSync(
   join(consumerDir, "pnpm-workspace.yaml"),
-  `allowBuilds:\n  better-sqlite3: false\n  ${JSON.stringify(buildKey)}: true\n`,
+  `allowBuilds:\n  better-sqlite3: false\n  ${JSON.stringify(buildKey)}: true\nminimumReleaseAge: 0\n`,
 );
 process.stdout.write(manifest.name);
