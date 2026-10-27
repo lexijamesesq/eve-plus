@@ -1,8 +1,10 @@
 # Changelog
 
-## 0.1.0
+## 0.1.1
 
-Unreleased candidate. Qualification is incomplete and the README lists known release-blocking defects.
+- Use SQLite's shipped platform bindings during Git preparation instead of permitting an inferred node-gyp rebuild. Clean frozen consumers no longer require a compiler for this dependency.
+
+## 0.1.0
 
 - Add the principal-bound SQLite commissioning ledger and immutable proposal decisions.
 - Add native commissioner tools, queued owner notifications, durable outbox retries, and overdue checkpoint sweeps.

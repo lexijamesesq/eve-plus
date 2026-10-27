@@ -2,7 +2,7 @@
 
 Durable software commissioning for [eve](https://github.com/vercel/eve), with a worker-neutral core and an optional, included Cyrus connector. A commissioner defines work, an authenticated worker asks questions and proposes an immutable Git artifact, and the commissioner explicitly answers, accepts or requests revision.
 
-This is an **unreleased 0.1.0 candidate**. Corrected lifecycle and handoff behavior has passed installed-consumer and isolated native qualification with synthetic services. Live service qualification and release checks remain outstanding.
+Corrected lifecycle and handoff behavior has passed installed-consumer and isolated native qualification with synthetic services. Live credentials, service intake and deployment require qualification in the consuming application.
 
 ## Install and try
 
@@ -16,18 +16,18 @@ pnpm --dir packages/commissioning pack --pack-destination /tmp/commissioning-pac
 
 Install the resulting tarball alongside published `eve@0.83.2` in your own project. The complete [Cyrus consumer](examples/cyrus/README.md) supplies its own identity adapter and selects the real connector. Qualification supplies synthetic external responses; ordinary configured use calls the real service. It imports no private application.
 
-This repository distributes packages through Git release tags. **Once actually released**, the dependency form will be:
+This repository distributes packages through Git release tags. For the release containing the clean-install correction, use:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.1.0&path:packages/commissioning",
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.1.1&path:packages/commissioning",
     "eve": "0.83.2"
   }
 }
 ```
 
-That future tag is not evidence of availability or qualification. Local tarballs are the prerelease review path.
+The tag becomes available through the normal release workflow after merge. Local tarballs remain the prerelease review path. Version 0.1.0 can fail during a clean pnpm Git install because its workspace permits an unnecessary native rebuild; use 0.1.1 or newer for that installation path.
 
 ## Select a worker
 
