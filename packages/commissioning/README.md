@@ -37,6 +37,8 @@ A proposal identifies a repository, full 40-character commit, and pull request U
 
 The consuming estate owns acceptance timing, human escalation, and merge/deployment policy. For an estate that accepts after merge, instruct its commissioner to verify the merged artifact before accepting. Proposal review does not introduce a new merge gate. This package does not automatically wake, resume, cancel, or restart Cyrus. Worker answers are discoverable through durable MCP polling.
 
+Trusted host adapters can pass a fifth `OpenOptions` argument to `store.open`: `{ requestWorkerActivation: true }`. The default and `false` preserve the existing behavior. `true` atomically records the commission and one owner-duty `worker_activation_requested` event/outbox entry, whose public payload contains only `commissionId`. The host dispatcher must intercept that entry, perform a supported activation operation, reconcile uncertain outcomes before retrying, and acknowledge only a confirmed handoff. The receipt means activation was requested; it does not prove the worker started or provide automatic resume. Build the external contract from the worker projection, never from the owner delivery packet or private context.
+
 ## Configuration and operations
 
 | Setting | Meaning |
