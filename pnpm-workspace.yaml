@@ -1,10 +1,10 @@
 packages:
   - packages/*
 
-# better-sqlite3 ships a native binding; its install script must run (prebuilt
-# download or compile) or the store cannot open. Allow it to build.
+# better-sqlite3 13 ships its platform bindings and has no install script.
+# Deny pnpm's inferred node-gyp rebuild during workspace and Git preparation.
 allowBuilds:
-  better-sqlite3: true
+  better-sqlite3: false
 
 # No release-age gate: whether a new release has settled is decided when it's adopted, not by a blanket delay.
 minimumReleaseAge: 0
