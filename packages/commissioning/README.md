@@ -2,7 +2,7 @@
 
 Durable software commissioning for [eve](https://github.com/vercel/eve), with a worker-neutral core and an optional, included Cyrus connector. A commissioner defines work, an authenticated worker asks questions and proposes an immutable Git artifact, and the commissioner explicitly answers, accepts or requests revision.
 
-Corrected lifecycle and handoff behavior has passed installed-consumer and isolated native qualification with synthetic services. Live credentials, service intake and deployment require qualification in the consuming application.
+This is an **unreleased 0.1.1 candidate**. Corrected lifecycle and handoff behavior has passed installed-consumer and isolated native qualification with synthetic services. Live service qualification and release checks remain outstanding.
 
 ## Install and try
 
