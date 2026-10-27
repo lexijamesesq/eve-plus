@@ -29,11 +29,26 @@ export default defineTool({
       throw new Error(
         "Commissioner context exceeds 128 KiB; compact the conversation before commissioning",
       );
+    const source = extension.config.captureSource?.(ctx);
+    const initiator = ctx.session.auth.initiator ?? ctx.session.auth.current;
     const result = runtime().store.open(
       caller,
       { commissionId, spec: input.spec },
       { verified: true, principalId: extension.config.workerPrincipalId },
-      { originSessionId: ctx.session.id, messages },
+      {
+        originSessionId: ctx.session.id,
+        messages,
+        ...(source ? { source } : {}),
+        ...(initiator
+          ? {
+              initiator: {
+                principalId: initiator.principalId,
+                authenticator: initiator.authenticator,
+                principalType: initiator.principalType,
+              },
+            }
+          : {}),
+      },
     );
     binding.update((state) => ({
       commissionIds: [...new Set([...state.commissionIds, commissionId])],

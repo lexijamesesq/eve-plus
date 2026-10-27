@@ -362,4 +362,152 @@ describe("commission ledger", () => {
       "invalid_input",
     );
   });
+  it("rebinds only the active pointer through verified owner CAS and exact source provenance", () => {
+    const store = new CommissionStore(":memory:");
+    stores.push(store);
+    const source = { channel: "future-channel", conversationId: "source-private" };
+    const context = {
+      originSessionId: "origin-private",
+      messages: [{ role: "user" as const, content: "Snapshot private" }],
+      source,
+      initiator: {
+        principalId: "initiator-private",
+        authenticator: "native-auth",
+        principalType: "future-human-type",
+      },
+    };
+    store.open(owner, open, worker, context);
+    const requestedBy: Caller = { verified: true, principalId: "actual-operator-private" };
+    const input = {
+      commissionId: "c1",
+      eventId: "recover-1",
+      expectedActiveSessionId: "origin-private",
+      activeSessionId: "new-private",
+      source,
+    };
+    code(() => store.rebindSession(worker, input, requestedBy), "forbidden");
+    code(() => store.rebindSession(stranger, input, requestedBy), "not_found");
+    code(
+      () =>
+        store.rebindSession(owner, input, { ...requestedBy, verified: false } as unknown as Caller),
+      "unverified_caller",
+    );
+    code(
+      () =>
+        store.rebindSession(
+          owner,
+          { ...input, source: { ...source, conversationId: "changed" } },
+          requestedBy,
+        ),
+      "forbidden",
+    );
+    expect(store.rebindSession(owner, input, requestedBy)).toEqual({
+      commissionId: "c1",
+      activeSessionId: "new-private",
+    });
+    expect(
+      store.rebindSession(
+        owner,
+        { ...input, source: { conversationId: "source-private", channel: "future-channel" } },
+        requestedBy,
+      ),
+    ).toEqual({ commissionId: "c1", activeSessionId: "new-private" });
+    expect(store.context("c1")).toEqual({ ...context, activeSessionId: "new-private" });
+    code(
+      () => store.rebindSession(owner, { ...input, activeSessionId: "other" }, requestedBy),
+      "conflict",
+    );
+    code(
+      () =>
+        store.rebindSession(owner, input, { ...requestedBy, principalId: "different-operator" }),
+      "conflict",
+    );
+    code(
+      () =>
+        store.rebindSession(
+          owner,
+          { ...input, eventId: "stale-cas", activeSessionId: "stale" },
+          requestedBy,
+        ),
+      "conflict",
+    );
+    store.rebindSession(
+      owner,
+      {
+        ...input,
+        eventId: "recover-2",
+        expectedActiveSessionId: "new-private",
+        activeSessionId: "newer-private",
+      },
+      requestedBy,
+    );
+    expect(store.context("c1")).toEqual({ ...context, activeSessionId: "newer-private" });
+    expect(store.rebindSession(owner, input, requestedBy).activeSessionId).toBe("new-private");
+    expect(store.context("c1")?.activeSessionId).toBe("newer-private");
+    expect(
+      store.read(owner, "c1").events.filter((event) => event.kind === "session_rebound"),
+    ).toHaveLength(2);
+    const workerView = JSON.stringify(store.read(worker, "c1"));
+    for (const privateValue of [
+      "source-private",
+      "origin-private",
+      "new-private",
+      "newer-private",
+      "initiator-private",
+      "actual-operator-private",
+      "Snapshot private",
+    ])
+      expect(workerView).not.toContain(privateValue);
+    expect(store.claimOutbox({ consumerId: "host" })).toEqual([]);
+    code(
+      () =>
+        store.report(worker, {
+          commissionId: "c1",
+          eventId: "recover-1",
+          kind: "checkpoint",
+          data: { summary: "Collision" },
+        }),
+      "conflict",
+    );
+  });
+
+  it("bounds captured provenance and permits explicit active pointers only through rebind", () => {
+    const store = new CommissionStore(":memory:");
+    stores.push(store);
+    const context = {
+      originSessionId: "original",
+      messages: [{ role: "user" as const, content: "Snapshot" }],
+    };
+    for (const extra of [
+      { activeSessionId: "injected" },
+      { source: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`field${i}`, "value"])) },
+      { source: { ["k".repeat(65)]: "value" } },
+      { source: { id: "v".repeat(1025) } },
+      {
+        initiator: {
+          principalId: "human",
+          authenticator: "native",
+          principalType: "human",
+          credentials: "forbidden",
+        },
+      },
+    ])
+      code(() => store.open(owner, open, worker, { ...context, ...extra }), "invalid_input");
+    store.open(owner, open, worker, context);
+    code(
+      () =>
+        store.rebindSession(
+          owner,
+          {
+            commissionId: "c1",
+            eventId: "no-source",
+            expectedActiveSessionId: "original",
+            activeSessionId: "new",
+            source: { id: "cannot-invent" },
+          },
+          owner,
+        ),
+      "forbidden",
+    );
+  });
 });

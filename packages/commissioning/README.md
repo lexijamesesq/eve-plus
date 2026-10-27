@@ -22,7 +22,7 @@ export default commissioning({
 });
 ```
 
-These three callbacks are trusted host code. `authenticateWorker(Request)` validates the estate's existing credential and returns `{ verified: true, principalId }` or `null`. Its principal must match `workerPrincipalId`; even a successfully authenticated owner credential is denied at the worker endpoint. `resolveSessionPrincipal(auth)` validates eve session identity and returns the same minimal caller shape. `resolveDeliveryAuth(principalId)` resolves a current eve auth context for that exact stable principal; delivery rechecks both mappings. Resolve and rotate credentials through the estate's existing secret provider. Do not return credentials as attributes or include them in errors.
+These three callbacks are trusted host code. `authenticateWorker(Request)` validates the estate's existing credential and returns `{ verified: true, principalId }` or `null`. Its principal must match `workerPrincipalId`; even a successfully authenticated owner credential is denied at the worker endpoint. `resolveSessionPrincipal(auth)` validates eve session identity and returns the same minimal caller shape. A consuming agent may map its admitted callers to a stable commissioner authority, while preserving the actual initiator privately. Explicitly exclude the configured worker and its native channel identities from that owner mapping. `resolveDeliveryAuth(principalId)` supplies a current eve auth context whose verified host mapping resolves to that commissioner; its raw transport principal may differ. Resolve and rotate credentials through the estate's existing secret provider. Do not return credentials as attributes or include them in errors.
 
 The mount contributes `commissioning__open`, `commissioning__read`, `commissioning__decide`, a channel at `/commissioning/mcp`, and the `commissioning__reconcile` handler schedule. Mount filenames set tool and schedule prefixes; route paths remain literal. Use a unique namespace and MCP path for each mount.
 
@@ -47,6 +47,7 @@ The consuming estate owns acceptance timing, human escalation, and merge/deploym
 | `authenticateWorker` | Required verified request-to-worker resolver. |
 | `resolveSessionPrincipal` | Required verified eve-auth-to-caller resolver. |
 | `resolveDeliveryAuth` | Required current principal-to-eve-auth resolver for owner notification. |
+| `captureSource` | Optional synchronous host callback receiving `ToolContext`, returning only whitelisted non-secret native conversation coordinates. These stay private with the original context. |
 | `overdueAfterMs` | Optional positive checkpoint interval; default one minute. |
 | `reconcileCron` | Optional native handler cron; default every minute. The consuming estate owns maintenance windows. |
 | `mcpPath` | Optional unique channel route; default `/commissioning/mcp`. |
@@ -58,6 +59,10 @@ The handler schedule checks overdue work, leases pending owner notifications, an
 Retry question IDs and event IDs with identical content. Changed reuse conflicts. SQLite commits before notification. Dispatch retries reuse stable eve idempotency keys; eve retains only its recent 1,024 keys per session, so recovery does not guarantee exactly-once model execution after resets, replacement, or retention eviction. Ledger decisions and worker events remain idempotent independently.
 
 Owner reads include `notification` diagnostics: pending receipt count, durable attempt count, last attempt time, and a fixed `identity_unavailable` or `dispatch_failed` class. No raw exception is persisted. `currentProposal` always includes the current immutable artifact and summary, even when the cursor page contains only older events. Worker views omit owner notification diagnostics.
+
+For an estate that needs human clarification, override both the contributed channel and schedule through eve's documented directory mount. The public `/transport` export includes `createDispatcher` and `OwnerDelivery`, including the private context for a trusted host adapter. Deliver to the original visible native conversation using its stored source and exact session ID; do not silently create an unbound replacement conversation. The package's default private owner continuation cannot itself display questions to a person on another channel.
+
+After a native runtime reset, a consuming estate may provide an explicit operator recovery tool. Its host code must verify the actual operator and the same captured source, then call the host-only `store.rebindSession` with the expected active session, new session, stable receipt ID, and verified requester. Original context, source, and initiator stay immutable. Once a new active session is recorded, only that exact session can decide, even if an old session returns with stale durable state. The package does not expose a default recovery tool or permit automatic cross-conversation relocation.
 
 ## Build and test
 

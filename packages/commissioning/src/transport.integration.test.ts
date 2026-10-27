@@ -189,4 +189,22 @@ describe("official stateless MCP worker transport", () => {
     });
     expect(attempts).toBe(2);
   });
+  it("accepts a host-verified commissioner mapping without equating it to the actual initiating principal", async () => {
+    const { store, config } = fixture();
+    config.resolveDeliveryAuth = () => ({ ...auth, principalId: "actual-agent-app" });
+    config.resolveSessionPrincipal = (value) =>
+      value?.authenticator === "estate" && value.principalId === "actual-agent-app" ? owner : null;
+    store.consult(worker, { commissionId: "one", questionId: "q", question: { text: "Which?" } });
+    let count = 0;
+    await createDispatcher(
+      store,
+      config,
+    )(async (delivery) => {
+      count++;
+      expect(delivery.auth.principalId).toBe("actual-agent-app");
+      expect(delivery.entry.recipient).toBe("owner");
+    });
+    expect(count).toBe(1);
+    expect(store.read(owner, "one").notification?.pending).toBe(0);
+  });
 });

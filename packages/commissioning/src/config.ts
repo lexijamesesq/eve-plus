@@ -1,7 +1,8 @@
 import { isAbsolute } from "node:path";
 import type { SessionAuthContext } from "eve/context";
+import type { ToolContext } from "eve/tools";
 import { z } from "zod";
-import type { Caller } from "./types.js";
+import type { Caller, CommissionSource } from "./types.js";
 
 export interface CommissioningConfig {
   /** Durable application storage; never a sandbox path or ephemeral deployment filesystem. */
@@ -13,6 +14,8 @@ export interface CommissioningConfig {
   resolveDeliveryAuth(
     principalId: string,
   ): SessionAuthContext | null | Promise<SessionAuthContext | null>;
+  /** Capture only whitelisted, non-secret native conversation coordinates from trusted host context. */
+  captureSource?(ctx: ToolContext): CommissionSource | undefined;
   overdueAfterMs?: number;
   reconcileCron?: string;
   mcpPath?: string;
@@ -26,6 +29,7 @@ export const configSchema = z
     authenticateWorker: fn,
     resolveSessionPrincipal: fn,
     resolveDeliveryAuth: fn,
+    captureSource: fn.optional(),
     overdueAfterMs: z.number().int().positive().optional(),
     reconcileCron: z.string().min(1).default("* * * * *"),
     mcpPath: z

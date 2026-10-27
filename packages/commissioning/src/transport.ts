@@ -6,6 +6,8 @@ import { consultSchema, readSchema, reportSchema } from "./schemas.js";
 import type { CommissionStore } from "./store.js";
 import type { Caller, ReportInput } from "./types.js";
 
+export { createDispatcher, type OwnerDelivery } from "./dispatch.js";
+
 export interface WorkerTransportOptions {
   store: CommissionStore;
   config: Pick<CommissioningConfig, "authenticateWorker" | "workerPrincipalId">;

@@ -183,4 +183,109 @@ describe("on-disk commissioning recovery", () => {
     expect(check.prepare("SELECT value FROM important").get()).toEqual({ value: "keep" });
     check.close();
   });
+  it("retains rebind receipts, immutable provenance and actual operator audit across restart and competing CAS", () => {
+    const file = path();
+    let store = new CommissionStore(file);
+    const source = { channel: "native", workId: "private-work" };
+    const context = {
+      originSessionId: "original-session",
+      messages: [{ role: "user" as const, content: "Original snapshot" }],
+      source,
+      initiator: {
+        principalId: "original-human",
+        authenticator: "native-auth",
+        principalType: "user",
+      },
+    };
+    const operator: Caller = { verified: true, principalId: "actual-recovery-operator" };
+    const recovery = {
+      commissionId: "recover",
+      eventId: "rebind-first",
+      expectedActiveSessionId: "original-session",
+      activeSessionId: "replacement-session",
+      source,
+    };
+    store.open(owner, input, worker, context);
+    store.rebindSession(owner, recovery, operator);
+    store.close();
+    store = new CommissionStore(file);
+    expect(store.rebindSession(owner, recovery, operator)).toEqual({
+      commissionId: "recover",
+      activeSessionId: "replacement-session",
+    });
+    const competing = new CommissionStore(file);
+    competing.rebindSession(
+      owner,
+      {
+        ...recovery,
+        eventId: "rebind-second",
+        expectedActiveSessionId: "replacement-session",
+        activeSessionId: "latest-session",
+      },
+      operator,
+    );
+    expect(() =>
+      store.rebindSession(
+        owner,
+        {
+          ...recovery,
+          eventId: "stale-race",
+          expectedActiveSessionId: "replacement-session",
+          activeSessionId: "stale-session",
+        },
+        operator,
+      ),
+    ).toThrow("Commission session changed");
+    expect(store.context("recover")).toEqual({ ...context, activeSessionId: "latest-session" });
+    expect(store.read(worker, "recover").status).toBe("working");
+    competing.close();
+    store.close();
+    const inspection = new Database(file, { readonly: true });
+    const events = inspection
+      .prepare("SELECT actor,payload FROM events WHERE kind='session_rebound' ORDER BY seq")
+      .all() as { actor: string; payload: string }[];
+    expect(events).toHaveLength(2);
+    expect(events.every((event) => event.actor === operator.principalId)).toBe(true);
+    expect(JSON.parse(events[0].payload)).toEqual({
+      priorSessionId: "original-session",
+      activeSessionId: "replacement-session",
+      requestedByPrincipalId: operator.principalId,
+    });
+    expect(inspection.prepare("SELECT count(*) n FROM outbox").get()).toEqual({ n: 0 });
+    inspection.close();
+  });
+
+  it("rolls back the active pointer when an audited rebind cannot commit", () => {
+    const file = path();
+    const store = new CommissionStore(file);
+    const context = {
+      originSessionId: "original",
+      messages: [{ role: "user" as const, content: "Snapshot" }],
+      source: { id: "fixed-source" },
+    };
+    store.open(owner, input, worker, context);
+    const inspection = new Database(file);
+    inspection.exec(
+      "CREATE TRIGGER reject_rebind BEFORE INSERT ON events WHEN NEW.kind='session_rebound' BEGIN SELECT RAISE(ABORT,'injected audit failure'); END;",
+    );
+    const recovery = {
+      commissionId: "recover",
+      eventId: "recovery",
+      expectedActiveSessionId: "original",
+      activeSessionId: "replacement",
+      source: context.source,
+    };
+    expect(() => store.rebindSession(owner, recovery, owner)).toThrow("injected audit failure");
+    expect(store.context("recover")).toEqual(context);
+    expect(
+      inspection.prepare("SELECT count(*) n FROM operations WHERE id='event:recovery'").get(),
+    ).toEqual({ n: 0 });
+    inspection.exec("DROP TRIGGER reject_rebind");
+    inspection.close();
+    expect(store.rebindSession(owner, recovery, owner)).toEqual({
+      commissionId: "recover",
+      activeSessionId: "replacement",
+    });
+    store.close();
+  });
 });

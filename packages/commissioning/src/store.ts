@@ -6,6 +6,7 @@ import type {
   Caller,
   CommissionErrorCode,
   CommissionerContext,
+  CommissionSource,
   CommissionSpec,
   CommissionStatus,
   CommissionView,
@@ -17,6 +18,8 @@ import type {
   PendingWork,
   QuestionInput,
   QuestionView,
+  RebindSessionInput,
+  RebindSessionResult,
   ReportInput,
   StoreOptions,
 } from "./types.js";
@@ -93,6 +96,19 @@ function spec(value: CommissionSpec): void {
     fail("invalid_input", "Acceptance criteria are required");
   value.acceptance.forEach(text);
   if (Object.hasOwn(value, "privateGuidance")) text(value.privateGuidance);
+}
+function source(value: unknown): asserts value is CommissionSource {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    fail("invalid_input", "Invalid commission source");
+  const entries = Object.entries(value);
+  if (!entries.length || entries.length > 16)
+    fail("invalid_input", "Commission source must have 1 to 16 fields");
+  for (const [key, item] of entries) {
+    identifier(key);
+    text(item);
+    if (key.length > 64 || item.length > 1024)
+      fail("invalid_input", "Commission source field exceeds bounds");
+  }
 }
 function artifact(value: unknown): void {
   object(value, ["repository", "commit", "pullRequest"]);
@@ -327,7 +343,18 @@ export class CommissionStore {
     identifier(input.commissionId);
     spec(input.spec);
     if (context !== undefined) {
-      object(context, ["originSessionId", "messages"]);
+      object(
+        context,
+        ["originSessionId", "messages", "source", "initiator"],
+        ["originSessionId", "messages"],
+      );
+      if (context.source !== undefined) source(context.source);
+      if (context.initiator !== undefined) {
+        object(context.initiator, ["principalId", "authenticator", "principalType"]);
+        identifier(context.initiator.principalId);
+        identifier(context.initiator.authenticator);
+        identifier(context.initiator.principalType);
+      }
       identifier(context.originSessionId);
       if (!Array.isArray(context.messages)) fail("invalid_input", "Invalid commissioner messages");
       for (const message of context.messages) {
@@ -544,7 +571,10 @@ export class CommissionStore {
       cursor: event.seq,
       eventId: event.id,
       kind: event.kind,
-      payload: JSON.parse(event.payload) as unknown,
+      payload:
+        actor.principalId !== row.owner && event.kind === "session_rebound"
+          ? { redacted: true }
+          : (JSON.parse(event.payload) as unknown),
       createdAt: event.created,
     }));
     const observations = new Set(
@@ -646,6 +676,52 @@ export class CommissionStore {
         return rows.length;
       })
       .immediate();
+  }
+  /** Explicit trusted-host recovery only. The host derives source, new session and requestedBy from authenticated context. */
+  rebindSession(
+    owner: Caller,
+    input: RebindSessionInput,
+    requestedBy: Caller,
+  ): RebindSessionResult {
+    this.authorized(owner, input.commissionId, "owner");
+    caller(requestedBy);
+    object(input, [
+      "commissionId",
+      "eventId",
+      "expectedActiveSessionId",
+      "activeSessionId",
+      "source",
+    ]);
+    identifier(input.eventId);
+    identifier(input.expectedActiveSessionId);
+    identifier(input.activeSessionId);
+    source(input.source);
+    return this.operation(
+      owner,
+      input.commissionId,
+      `event:${input.eventId}`,
+      { ...input, requestedBy: requestedBy.principalId },
+      () => {
+        const context = this.context(input.commissionId);
+        if (!context?.source || canonical(context.source) !== canonical(input.source))
+          fail("forbidden", "Rebind requires the original captured source");
+        const priorSessionId = context.activeSessionId ?? context.originSessionId;
+        if (priorSessionId !== input.expectedActiveSessionId)
+          fail("conflict", "Commission session changed since recovery was requested");
+        this.db
+          .prepare("UPDATE contexts SET value=? WHERE commission_id=?")
+          .run(
+            canonical({ ...context, activeSessionId: input.activeSessionId }),
+            input.commissionId,
+          );
+        this.event(requestedBy, input.commissionId, `event:${input.eventId}`, "session_rebound", {
+          priorSessionId,
+          activeSessionId: input.activeSessionId,
+          requestedByPrincipalId: requestedBy.principalId,
+        });
+        return { commissionId: input.commissionId, activeSessionId: input.activeSessionId };
+      },
+    );
   }
   /** Trusted host only: this method is never registered as a worker tool. */
   context(id: string): CommissionerContext | undefined {

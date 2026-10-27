@@ -3,13 +3,14 @@ import type { SessionHistoryMessage } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 import type { CommissioningConfig } from "./config.js";
 import type { CommissionStore } from "./store.js";
-import type { OutboxEntry, OutboxFailureClass } from "./types.js";
+import type { CommissionerContext, OutboxEntry, OutboxFailureClass } from "./types.js";
 
 export interface OwnerDelivery {
   entry: OutboxEntry;
   auth: SessionAuthContext;
   history: SessionHistoryMessage[];
   message: string;
+  context: CommissionerContext | undefined;
 }
 /** One dispatcher per mount. Durable leases handle restart; eve's key window bounds dispatch deduplication. */
 export function createDispatcher(store: CommissionStore, config: CommissioningConfig) {
@@ -29,12 +30,7 @@ export function createDispatcher(store: CommissionStore, config: CommissioningCo
         try {
           const auth = await config.resolveDeliveryAuth(entry.recipient);
           const caller = config.resolveSessionPrincipal(auth);
-          if (
-            !auth ||
-            caller?.verified !== true ||
-            caller.principalId !== entry.recipient ||
-            auth.principalId !== entry.recipient
-          ) {
+          if (!auth || caller?.verified !== true || caller.principalId !== entry.recipient) {
             throw new Error("Delivery principal unavailable");
           }
           const commission = store.read(caller, entry.commissionId);
@@ -49,6 +45,7 @@ export function createDispatcher(store: CommissionStore, config: CommissioningCo
             entry,
             auth,
             history,
+            context,
             message: JSON.stringify({
               commissionId: entry.commissionId,
               eventId: entry.eventId,

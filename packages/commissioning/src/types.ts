@@ -118,7 +118,23 @@ export interface StoreOptions {
 }
 
 /** Captured by the trusted host, never exposed to worker tools or event envelopes. */
+export type CommissionSource = Readonly<Record<string, string>>;
 export interface CommissionerContext {
   originSessionId: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
+  source?: CommissionSource;
+  initiator?: { principalId: string; authenticator: string; principalType: string };
+  /** Set only by an explicitly authorized host rebind; origin and captured provenance never change. */
+  activeSessionId?: string;
+}
+export interface RebindSessionInput {
+  commissionId: string;
+  eventId: string;
+  expectedActiveSessionId: string;
+  activeSessionId: string;
+  source: CommissionSource;
+}
+export interface RebindSessionResult {
+  commissionId: string;
+  activeSessionId: string;
 }
