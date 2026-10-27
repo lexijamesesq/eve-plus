@@ -13,6 +13,7 @@ import type {
   DecisionInput,
   MutationResult,
   OpenInput,
+  OpenOptions,
   OutboxEntry,
   OutboxFailureClass,
   PendingWork,
@@ -336,9 +337,16 @@ export class CommissionStore {
     input: OpenInput,
     worker: Caller,
     context?: CommissionerContext,
+    options: OpenOptions = {},
   ): MutationResult {
     caller(actor);
     caller(worker);
+    object(options, ["requestWorkerActivation"], []);
+    if (
+      options.requestWorkerActivation !== undefined &&
+      typeof options.requestWorkerActivation !== "boolean"
+    )
+      fail("invalid_input", "Worker activation option must be a boolean");
     object(input, ["commissionId", "spec"]);
     identifier(input.commissionId);
     spec(input.spec);
@@ -375,7 +383,12 @@ export class CommissionStore {
       actor,
       input.commissionId,
       "open",
-      { ...input, worker: worker.principalId, context: context ?? null },
+      {
+        ...input,
+        worker: worker.principalId,
+        context: context ?? null,
+        ...(options.requestWorkerActivation === true ? { requestWorkerActivation: true } : {}),
+      },
       () => {
         this.db
           .prepare(
@@ -397,6 +410,15 @@ export class CommissionStore {
         this.event(actor, input.commissionId, "open", "opened", {
           spec: { brief: input.spec.brief, acceptance: input.spec.acceptance },
         });
+        if (options.requestWorkerActivation === true)
+          this.event(
+            actor,
+            input.commissionId,
+            "worker_activation:open",
+            "worker_activation_requested",
+            { commissionId: input.commissionId },
+            actor.principalId,
+          );
         return this.result(input.commissionId);
       },
     );

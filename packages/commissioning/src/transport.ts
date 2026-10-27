@@ -3,7 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { CommissioningConfig } from "./config.js";
 import { verified } from "./config.js";
 import { consultSchema, readSchema, reportSchema } from "./schemas.js";
-import type { CommissionStore } from "./store.js";
+import { CommissionError, type CommissionStore } from "./store.js";
 import type { Caller, ReportInput } from "./types.js";
 
 export { createDispatcher, type OwnerDelivery } from "./dispatch.js";
@@ -48,18 +48,13 @@ export async function handleWorkerRequest(
         structuredContent: body,
       };
     } catch (error) {
-      const code =
-        error && typeof error === "object" && "code" in error && typeof error.code === "string"
-          ? error.code
-          : "internal";
-      // Never expose callback failures, credentials, filesystem paths, or raw exception messages.
+      const code = error instanceof CommissionError ? error.code : "internal";
+      // Only the store's fixed domain reasons are public; unknown exceptions remain opaque.
       const body = {
         error: {
           code,
           message:
-            code === "internal"
-              ? "Commissioning operation failed"
-              : "Commissioning operation rejected",
+            error instanceof CommissionError ? error.message : "Commissioning operation failed",
         },
       };
       return {

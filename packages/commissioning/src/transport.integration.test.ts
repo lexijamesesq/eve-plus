@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommissioningConfig } from "./config.js";
 import { createDispatcher } from "./dispatch.js";
 import { CommissionStore } from "./store.js";
@@ -65,6 +65,51 @@ afterEach(async () => {
 });
 
 describe("official stateless MCP worker transport", () => {
+  it("returns actionable fixed domain reasons while hiding unknown errors and credentials", async () => {
+    const { store, config } = fixture();
+    const client = await clientFor(store, config);
+    const args = { commissionId: "one", questionId: "same", question: { text: "First question" } };
+    await client.callTool({ name: "commission_consult", arguments: args });
+    const conflict = await client.callTool({
+      name: "commission_consult",
+      arguments: { ...args, question: { text: "Changed question" } },
+    });
+    expect(conflict.structuredContent).toMatchObject({
+      error: { code: "conflict", message: "Event ID was already used with different input" },
+    });
+    const read = vi.spyOn(store, "read").mockImplementation(() => {
+      throw Object.assign(new Error("credential-must-not-escape"), { code: "forbidden" });
+    });
+    const unknown = await client.callTool({
+      name: "commission_read",
+      arguments: { commissionId: "one" },
+    });
+    expect(unknown.structuredContent).toEqual({
+      error: { code: "internal", message: "Commissioning operation failed" },
+    });
+    expect(JSON.stringify(unknown)).not.toContain("credential-must-not-escape");
+    read.mockRestore();
+    const report = vi.spyOn(store, "report");
+    const uppercase = await client.callTool({
+      name: "commission_report",
+      arguments: {
+        commissionId: "one",
+        eventId: "upper",
+        kind: "proposal",
+        data: {
+          summary: "Ready",
+          artifact: {
+            repository: "https://example.test/repo",
+            commit: "A".repeat(40),
+            pullRequest: "https://example.test/repo/pull/1",
+          },
+        },
+      },
+    });
+    expect(uppercase.isError).toBe(true);
+    expect(report).not.toHaveBeenCalled();
+    report.mockRestore();
+  });
   it("advertises only worker tools and authenticates every request", async () => {
     const { store, config } = fixture();
     const client = await clientFor(store, config);

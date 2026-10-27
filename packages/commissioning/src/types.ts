@@ -8,6 +8,10 @@ export interface CommissionSpec {
   acceptance: string[];
   privateGuidance?: string;
 }
+/** Trusted host only; enable only when the host has installed the owner-duty activation handler. */
+export interface OpenOptions {
+  requestWorkerActivation?: boolean;
+}
 export interface OpenInput {
   commissionId: string;
   spec: CommissionSpec;

@@ -288,4 +288,95 @@ describe("on-disk commissioning recovery", () => {
     });
     store.close();
   });
+  it("recovers an activation committed before any external call and never duplicates its intent", () => {
+    const file = path();
+    let store = new CommissionStore(file);
+    const context = {
+      originSessionId: "original",
+      messages: [{ role: "user" as const, content: "Private original snapshot" }],
+      source: { workIssueId: "fixed-public-work-record" },
+    };
+    const receipt = store.open(owner, input, worker, context, { requestWorkerActivation: true });
+    store.close(); // Lost caller receipt; no external activation callback or outbox claim has happened.
+    store = new CommissionStore(file);
+    expect(store.open(owner, input, worker, context, { requestWorkerActivation: true })).toEqual(
+      receipt,
+    );
+    expect(store.context("recover")).toEqual(context);
+    const pending = store.claimOutbox({ consumerId: "restarted-host" });
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      recipient: "owner",
+      kind: "worker_activation_requested",
+      payload: { commissionId: "recover" },
+    });
+    store.acknowledgeOutbox(pending[0].seq, pending[0].leaseToken);
+    store.close();
+    store = new CommissionStore(file);
+    expect(store.open(owner, input, worker, context, { requestWorkerActivation: true })).toEqual(
+      receipt,
+    );
+    expect(store.claimOutbox({ consumerId: "again" })).toEqual([]);
+    expect(store.read(worker, "recover").events.map((event) => event.kind)).toEqual([
+      "opened",
+      "worker_activation_requested",
+    ]);
+    store.close();
+    const inspection = new Database(file, { readonly: true });
+    expect(inspection.prepare("SELECT count(*) n FROM operations").get()).toEqual({ n: 1 });
+    expect(inspection.prepare("SELECT count(*) n FROM outbox").get()).toEqual({ n: 1 });
+    inspection.close();
+  });
+
+  it("rolls the entire open back if either activation audit or outbox insertion fails", () => {
+    for (const table of ["events", "outbox"]) {
+      const file = path();
+      const store = new CommissionStore(file);
+      const inspection = new Database(file);
+      inspection.exec(
+        `CREATE TRIGGER reject_activation BEFORE INSERT ON ${table} WHEN NEW.kind='worker_activation_requested' BEGIN SELECT RAISE(ABORT,'injected activation failure'); END;`,
+      );
+      const context = {
+        originSessionId: "original",
+        messages: [{ role: "user" as const, content: "Private snapshot" }],
+      };
+      expect(() =>
+        store.open(owner, input, worker, context, { requestWorkerActivation: true }),
+      ).toThrow("injected activation failure");
+      for (const target of ["commissions", "contexts", "events", "operations", "outbox"])
+        expect(inspection.prepare(`SELECT count(*) n FROM ${target}`).get()).toEqual({ n: 0 });
+      expect(store.context("recover")).toBeUndefined();
+      inspection.exec("DROP TRIGGER reject_activation");
+      expect(store.open(owner, input, worker, context, { requestWorkerActivation: true })).toEqual({
+        commissionId: "recover",
+        status: "working",
+      });
+      expect(inspection.prepare("SELECT count(*) n FROM outbox").get()).toEqual({ n: 1 });
+      inspection.close();
+      store.close();
+    }
+  });
+
+  it("preserves the legacy open fingerprint and default/false replay after reopening", () => {
+    const file = path();
+    let store = new CommissionStore(file);
+    const receipt = store.open(owner, input, worker);
+    store.close();
+    const inspection = new Database(file, { readonly: true });
+    // Historical canonical fingerprint before the activation option existed (no context, no option field).
+    expect(inspection.prepare("SELECT hash FROM operations WHERE id='open'").get()).toEqual({
+      hash: "bf77f9589236541e4c2df472801a3d051611363ed4b3c026eb637549c87b5e20",
+    });
+    expect(inspection.prepare("SELECT count(*) n FROM outbox").get()).toEqual({ n: 0 });
+    inspection.close();
+    store = new CommissionStore(file);
+    expect(store.open(owner, input, worker)).toEqual(receipt);
+    expect(store.open(owner, input, worker, undefined, { requestWorkerActivation: false })).toEqual(
+      receipt,
+    );
+    expect(() =>
+      store.open(owner, input, worker, undefined, { requestWorkerActivation: true }),
+    ).toThrow("Event ID was already used with different input");
+    store.close();
+  });
 });

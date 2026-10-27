@@ -510,4 +510,57 @@ describe("commission ledger", () => {
       "forbidden",
     );
   });
+  it("atomically requests one public-safe owner activation only when the trusted host opts in", () => {
+    const store = new CommissionStore(":memory:");
+    stores.push(store);
+    const context = {
+      originSessionId: "private-origin",
+      messages: [{ role: "user" as const, content: "Private activation snapshot" }],
+      source: { workIssueId: "canonical-work-record" },
+    };
+    const receipt = store.open(owner, open, worker, context, { requestWorkerActivation: true });
+    expect(store.open(owner, open, worker, context, { requestWorkerActivation: true })).toEqual(
+      receipt,
+    );
+    expect(store.read(owner, "c1").events.map((event) => event.kind)).toEqual([
+      "opened",
+      "worker_activation_requested",
+    ]);
+    const intents = store.claimOutbox({ consumerId: "host" });
+    expect(intents).toMatchObject([
+      {
+        recipient: "owner",
+        eventId: "worker_activation:open",
+        kind: "worker_activation_requested",
+        payload: { commissionId: "c1" },
+      },
+    ]);
+    expect(intents).toHaveLength(1);
+    const packet = JSON.stringify(intents[0].payload);
+    for (const privateValue of [
+      "owner secret",
+      "Private activation snapshot",
+      "private-origin",
+      "canonical-work-record",
+    ])
+      expect(packet).not.toContain(privateValue);
+    code(
+      () => store.open(owner, open, worker, context, { requestWorkerActivation: false }),
+      "conflict",
+    );
+    code(() => store.open(owner, open, worker, context), "conflict");
+    const defaultInput = { ...open, commissionId: "default-open" };
+    const legacy = store.open(owner, defaultInput, worker);
+    expect(
+      store.open(owner, defaultInput, worker, undefined, { requestWorkerActivation: false }),
+    ).toEqual(legacy);
+    code(
+      () => store.open(owner, defaultInput, worker, undefined, { requestWorkerActivation: true }),
+      "conflict",
+    );
+    expect(store.read(worker, "default-open").events.map((event) => event.kind)).toEqual([
+      "opened",
+    ]);
+    expect(store.claimOutbox({ consumerId: "more" })).toEqual([]);
+  });
 });

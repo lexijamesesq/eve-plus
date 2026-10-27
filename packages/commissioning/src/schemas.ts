@@ -35,7 +35,7 @@ export const reportSchema = z.discriminatedUnion("kind", [
           artifact: z
             .object({
               repository: id,
-              commit: z.string().regex(/^[a-f0-9]{40}$/i),
+              commit: z.string().regex(/^[a-f0-9]{40}$/),
               pullRequest: z.url(),
             })
             .strict(),
