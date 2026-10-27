@@ -15,7 +15,7 @@ for (const [subpath, conditions] of Object.entries(exports)) {
   for (const target of Object.values(conditions)) {
     if (!existsSync(join(root, target))) problems.push(`${subpath}: ${target} is missing`);
   }
-  if (conditions.import !== undefined) {
+  if (conditions.import !== undefined || conditions.default !== undefined) {
     const specifier = subpath === "." ? name : `${name}/${subpath.slice(2)}`;
     try {
       await import(specifier);

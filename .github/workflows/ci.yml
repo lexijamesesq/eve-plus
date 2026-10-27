@@ -58,6 +58,11 @@ jobs:
         with:
           node-version: 24
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - name: Validate commissioning behavior
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @eve-plus/commissioning run typecheck
+          pnpm --filter @eve-plus/commissioning test
       - name: Install each package as a git consumer does, and resolve its exports
         env:
           HEAD_SHA: ${{ needs.checks.outputs.head_sha }}
@@ -94,4 +99,5 @@ jobs:
           FAILED=0
           bash .github/scripts/tag-package-release.sh packages/memory memory || FAILED=1
           bash .github/scripts/tag-package-release.sh packages/sandbox-microsandbox sandbox-microsandbox || FAILED=1
+          bash .github/scripts/tag-package-release.sh packages/commissioning commissioning || FAILED=1
           exit "$FAILED"

@@ -1,0 +1,11 @@
+# Validation boundaries
+
+Local deterministic verification is `pnpm typecheck && pnpm test && pnpm build`. The transport integration suite uses the official MCP `Client` and `StreamableHTTPClientTransport` against the real Web-standard server transport through an in-process fetch adapter. It exercises initialization, tool listing, request authentication, strict schemas, cross-worker denial, unknown owner tools, durable mutation before delivery, retries, private-context redaction, and delivery-identity failure.
+
+The build must produce `dist/index.mjs`, declarations, an agent-shaped `dist/extension` tree, and `_manifest.json` declaring `better-sqlite3` as external. Public exports are the mount factory, authored `tools`, host-only `store`, `transport`, and typed `config`. Publish only after checking a packed clean consumer can import these exports and typecheck its configured mount without the source checkout.
+
+Native eve deployment proof runs on the intended host, in an isolated fixture and durable test directory after independent package review. Mount the built candidate, supply synthetic verified owner/worker resolvers through the existing identity seam, and choose a separate MCP route. Build the consuming agent, inspect discovered native tools/channel/schedule and the external native driver, and start the standard eve runtime. Exercise the worker route through the official MCP client without invoking a model. Trigger handler reconciliation with no work and verify it creates no model session. Production cron behavior must be checked on `eve start`, because `eve dev` never fires schedules automatically.
+
+Owner model dispatch requires the estate's approved test model or a host-supported deterministic provider fixture. Do not claim that local transport tests prove native owner tool execution or cross-turn state persistence. The required host proof is: original context appears once, continuation turns queue per commission, `turn.started` seeds the trusted binding, another principal/session cannot decide, and restart replays an unacknowledged notification with the same key. No live or paid-model tests run as part of the package suite.
+
+Estate wiring, release, and deployment are subsequent milestones. Keep the candidate unpublished until the independent package review has passed.

@@ -1,0 +1,13 @@
+# Operations and recovery
+
+The commissioner host owns the SQLite database at `<dataDir>/<namespace>/commissions.sqlite`. Deploy one container/process and its durable volume per mount. Preserve the entire durable directory during deployments. Never point this package at worker sandbox storage.
+
+Every worker mutation commits before notification. The owner outbox leases rows, sends through eve's queued channel, then acknowledges. Failure leaves the row retryable. A process crash after send but before acknowledgement can repeat the dispatch; its stable key suppresses repeats only within eve's recent-key retention window. Keep eve's durable Workflow World and the commissioning database across redeployments. A new World, session reset, expired history, or eviction from the 1,024-key window can cause another owner turn. Exact ledger event IDs still prevent repeated decisions or reports.
+
+If owner auth cannot resolve or channel dispatch fails, restore the existing estate identity provider and native eve runtime, then let `reconcile` run again. Callback errors are not returned to the model and are not logged by the package. Inspect the host identity provider and eve operational telemetry without printing credentials. `commission_read` also attempts reconciliation; read failures never undo already committed work.
+
+A native handler schedule calls overdue reconciliation before draining notifications. Working commissions that miss the checkpoint interval receive one owner alert per last worker activity timestamp. A pending question or proposal does not create a repetitive model heartbeat. Failure reports alert the owner immediately and remain blocked until the worker records a checkpoint. Repeated empty schedules do no model work.
+
+Worker recovery is a human operation in v1. If Cyrus fails, parks, or is cancelled, inspect its linked Linear issue, current worker/session state, and latest ledger event before asking it to continue. Start a human-authored Linear follow-up or a fresh worker session through the estate's supported workflow; include the existing commission ID and have the worker read its durable cursor history. Keep the same verified worker mapping. Do not manufacture an owner credential, parse a worker's prose as approval, infer cancellation from a missed checkpoint, or create an automatic restart loop. This package does not send Linear messages or wake Cyrus.
+
+For an after-merge estate, the commissioner checks the specific merged repository/commit/PR evidence and records acceptance of that exact proposal. Acceptance does not approve a merge, change branch protection, or grant deployment permission. Keep those duties in the consuming agent's established instructions.

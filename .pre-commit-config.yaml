@@ -21,6 +21,10 @@ repos:
         alias: sandbox-microsandbox-version
         args: [package, packages/sandbox-microsandbox, sandbox-microsandbox]
         stages: [pre-push]
+      - id: release-version
+        alias: commissioning-version
+        args: [package, packages/commissioning, commissioning]
+        stages: [pre-push]
       - id: house-code
         stages: [pre-commit]
       - id: vale-self-narration
@@ -43,6 +47,8 @@ repos:
     rev: v6.0.0
     hooks:
       - id: check-yaml
+        # pnpm 12 lockfiles contain two YAML documents; validate both.
+        args: [--allow-multiple-documents]
         stages: [pre-commit]
       - id: check-json
         stages: [pre-commit]

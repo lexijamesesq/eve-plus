@@ -1,0 +1,192 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { afterEach, describe, expect, it } from "vitest";
+import type { CommissioningConfig } from "./config.js";
+import { createDispatcher } from "./dispatch.js";
+import { CommissionStore } from "./store.js";
+import { handleWorkerRequest } from "./transport.js";
+
+const owner = { principalId: "owner", verified: true as const };
+const worker = { principalId: "worker", verified: true as const };
+const auth = {
+  principalId: "owner",
+  authenticator: "estate",
+  principalType: "user",
+  attributes: {},
+};
+const stores: CommissionStore[] = [];
+const clients: Client[] = [];
+function fixture() {
+  const store = new CommissionStore(":memory:");
+  stores.push(store);
+  store.open(
+    owner,
+    {
+      commissionId: "one",
+      spec: { brief: "Update labels", acceptance: ["Tests pass"], privateGuidance: "Owner only" },
+    },
+    worker,
+    {
+      originSessionId: "original",
+      messages: [{ role: "user", content: "Use the original commissioning context" }],
+    },
+  );
+  const config: CommissioningConfig = {
+    dataDir: "/tmp/commissioning-tests",
+    namespace: "test",
+    workerPrincipalId: "worker",
+    authenticateWorker: (request) =>
+      request.headers.get("authorization") === "Bearer fixture-secret" ? worker : null,
+    resolveSessionPrincipal: (value) =>
+      value?.authenticator === "estate" && value.principalId === "owner" ? owner : null,
+    resolveDeliveryAuth: () => auth,
+  };
+  return { store, config };
+}
+async function clientFor(
+  store: CommissionStore,
+  config: CommissioningConfig,
+  reconcile?: () => Promise<unknown>,
+) {
+  const client = new Client({ name: "official-test-client", version: "1.0.0" });
+  clients.push(client);
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL("https://fixture.invalid/commissioning/mcp"), {
+      requestInit: { headers: { authorization: "Bearer fixture-secret" } },
+      fetch: async (url, init) =>
+        handleWorkerRequest(new Request(url, init), { store, config, reconcile }),
+    }),
+  );
+  return client;
+}
+afterEach(async () => {
+  await Promise.all(clients.splice(0).map((client) => client.close()));
+  for (const store of stores.splice(0)) store.close();
+});
+
+describe("official stateless MCP worker transport", () => {
+  it("advertises only worker tools and authenticates every request", async () => {
+    const { store, config } = fixture();
+    const client = await clientFor(store, config);
+    expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
+      "commission_consult",
+      "commission_read",
+      "commission_report",
+    ]);
+    const result = await client.callTool({
+      name: "commission_read",
+      arguments: { commissionId: "one" },
+    });
+    expect(JSON.stringify(result)).not.toContain("Owner only");
+    expect(JSON.stringify(result)).not.toContain("original commissioning context");
+    expect(JSON.stringify(result)).not.toContain("fixture-secret");
+    config.authenticateWorker = () => null;
+    await expect(client.listTools()).rejects.toThrow();
+  });
+  it("fails closed for credentials mapped to an owner, spoofed fields, and owner tool names", async () => {
+    const { store, config } = fixture();
+    const response = await handleWorkerRequest(
+      new Request("https://fixture.invalid/commissioning/mcp", { method: "POST" }),
+      { store, config: { ...config, authenticateWorker: () => owner } },
+    );
+    expect(response.status).toBe(401);
+    const client = await clientFor(store, config);
+    expect(
+      (await client.callTool({ name: "commission_decide", arguments: { commissionId: "one" } }))
+        .isError,
+    ).toBe(true);
+    expect(
+      (
+        await client.callTool({
+          name: "commission_consult",
+          arguments: {
+            commissionId: "one",
+            questionId: "q",
+            question: { text: "Question" },
+            owner: "owner",
+          },
+        })
+      ).isError,
+    ).toBe(true);
+    store.open(
+      { verified: true, principalId: "other-owner" },
+      { commissionId: "other", spec: { brief: "Other", acceptance: ["Done"] } },
+      { verified: true, principalId: "other-worker" },
+    );
+    const forbidden = await client.callTool({
+      name: "commission_read",
+      arguments: { commissionId: "other" },
+    });
+    expect(forbidden.isError).toBe(true);
+    expect(JSON.stringify(forbidden)).toContain("not_found");
+  });
+  it("keeps a durable mutation when delivery fails; retry reuses the event", async () => {
+    const { store, config } = fixture();
+    const client = await clientFor(store, config, async () => {
+      throw new Error("secret failed callback");
+    });
+    const input = {
+      name: "commission_consult",
+      arguments: {
+        commissionId: "one",
+        questionId: "q",
+        question: { text: "Which label?", options: ["A", "B"] },
+      },
+    };
+    const first = await client.callTool(input);
+    expect(first.structuredContent).toMatchObject({ recorded: true });
+    await client.callTool(input);
+    expect(store.read(owner, "one").questions).toHaveLength(1);
+    const drain = createDispatcher(store, config);
+    const deliveries: unknown[] = [];
+    await drain(async (delivery) => {
+      deliveries.push(delivery);
+    });
+    await drain(async (delivery) => {
+      deliveries.push(delivery);
+    });
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({
+      history: [{ role: "user", text: "Use the original commissioning context" }],
+      auth: { principalId: "owner" },
+    });
+    expect(JSON.stringify(deliveries[0])).toContain("Owner only");
+    store.decide(owner, {
+      commissionId: "one",
+      eventId: "answer",
+      target: "question",
+      questionId: "q",
+      decision: { answer: "A" },
+    });
+    const read = await client.callTool({
+      name: "commission_read",
+      arguments: { commissionId: "one" },
+    });
+    expect(JSON.stringify(read)).toContain("answered");
+    expect(JSON.stringify(read)).not.toContain("Owner only");
+  });
+  it("retries owner delivery after callback failure and rejects mismatched delivery identity", async () => {
+    const { store, config } = fixture();
+    store.consult(worker, { commissionId: "one", questionId: "q", question: { text: "Ready?" } });
+    let attempts = 0;
+    const drain = createDispatcher(store, config);
+    await drain(async () => {
+      attempts++;
+      throw new Error("offline");
+    });
+    config.resolveDeliveryAuth = () => ({ ...auth, principalId: "wrong" });
+    await drain(async () => {
+      attempts++;
+    });
+    expect(attempts).toBe(1);
+    config.resolveDeliveryAuth = () => auth;
+    await drain(async () => {
+      attempts++;
+    });
+    expect(attempts).toBe(2);
+    await drain(async () => {
+      attempts++;
+    });
+    expect(attempts).toBe(2);
+  });
+});
