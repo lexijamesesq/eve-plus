@@ -20,14 +20,35 @@ export function createDispatcher(store: CommissionStore, config: CommissioningCo
     if (active) return active;
     active = (async () => {
       store.reconcileOverdue();
-      let afterSeq = 0;
-      for (let index = 0; index < 100; index++) {
+      for (const seq of store.pendingOutboxIds()) {
         // Acquire a fresh lease immediately before each send, rather than aging an entire batch.
-        const entry = store.claimOutbox({ consumerId, limit: 1, leaseMs: 120000, afterSeq })[0];
-        if (!entry) break;
-        afterSeq = entry.seq;
+        const entry = store.claimOutboxSeq({ seq, consumerId, leaseMs: 120000 });
+        if (!entry) continue;
         let failureClass: OutboxFailureClass = "identity_unavailable";
         try {
+          const stored =
+            entry.kind === "worker_activation_requested"
+              ? store.workerBinding(entry.commissionId)
+              : undefined;
+          if (entry.kind === "worker_activation_requested" && (config.worker || stored)) {
+            failureClass = "worker_unavailable";
+            if (!config.worker) throw new Error("Worker connector unavailable");
+            failureClass = "worker_binding_mismatch";
+            if (!stored || stored.connectorId !== config.worker.id)
+              throw new Error("Worker binding unavailable or changed");
+            const commission = store.read(
+              { verified: true, principalId: config.workerPrincipalId },
+              entry.commissionId,
+            );
+            failureClass = "worker_handoff_failed";
+            await config.worker.handoff({
+              commissionId: entry.commissionId,
+              spec: { brief: commission.spec.brief, acceptance: commission.spec.acceptance },
+              binding: stored.binding,
+            });
+            store.acknowledgeOutbox(entry.seq, entry.leaseToken);
+            continue;
+          }
           const auth = await config.resolveDeliveryAuth(entry.recipient);
           const caller = config.resolveSessionPrincipal(auth);
           if (!auth || caller?.verified !== true || caller.principalId !== entry.recipient) {

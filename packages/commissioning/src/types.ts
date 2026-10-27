@@ -1,3 +1,5 @@
+import type { StoredWorkerBinding, WorkReference } from "./worker.js";
+
 /** Only the host's authenticated principal resolver may construct this value. Never accept it from tool arguments. */
 export interface Caller {
   principalId: string;
@@ -8,13 +10,17 @@ export interface CommissionSpec {
   acceptance: string[];
   privateGuidance?: string;
 }
-/** Trusted host only; enable only when the host has installed the owner-duty activation handler. */
+/** Trusted host only. Native connector selection prepares its own immutable binding. */
 export interface OpenOptions {
+  /** Legacy host activation callback; use only with a host-installed activation handler. */
   requestWorkerActivation?: boolean;
+  /** Trusted host preparation, committed atomically with the commission and activation. */
+  workerBinding?: StoredWorkerBinding;
 }
 export interface OpenInput {
   commissionId: string;
   spec: CommissionSpec;
+  workReference?: WorkReference;
 }
 export interface QuestionInput {
   commissionId: string;
@@ -95,7 +101,7 @@ export interface CommissionView extends MutationResult {
   questions: QuestionView[];
   events: EventView[];
   nextCursor: number;
-  attention?: { kind: "overdue_checkpoint"; lastWorkerActivity: number };
+  attention?: { kind: "overdue_checkpoint"; lastWorkerActivity: number; activityEpoch: number };
 }
 export interface PendingWork {
   commissionId: string;
@@ -115,7 +121,12 @@ export interface OutboxEntry {
   attemptCount: number;
   lastAttemptAt: number;
 }
-export type OutboxFailureClass = "identity_unavailable" | "dispatch_failed";
+export type OutboxFailureClass =
+  | "identity_unavailable"
+  | "dispatch_failed"
+  | "worker_unavailable"
+  | "worker_binding_mismatch"
+  | "worker_handoff_failed";
 export interface StoreOptions {
   now?: () => number;
   overdueAfterMs?: number;

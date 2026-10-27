@@ -31,6 +31,193 @@ afterEach(() => {
 });
 
 describe("on-disk commissioning recovery", () => {
+  it("conditionally claims a snapshot across handles and never reclaims an acknowledged entry", () => {
+    const file = path();
+    let now = 1;
+    const store = new CommissionStore(file, { now: () => now });
+    const other = new CommissionStore(file, { now: () => now });
+    try {
+      store.open(owner, input, worker);
+      store.consult(worker, question);
+      const [seq] = store.pendingOutboxIds();
+      const claimed = other.claimOutboxSeq({ seq, consumerId: "other", leaseMs: 10 });
+      if (!claimed) throw new Error("Expected eligible snapshot claim");
+      expect(store.claimOutboxSeq({ seq, consumerId: "stale-snapshot" })).toBeUndefined();
+      expect(store.read(owner, "recover").notification?.attemptCount).toBe(1);
+      other.acknowledgeOutbox(seq, claimed.leaseToken);
+      now = 12;
+      expect(store.claimOutboxSeq({ seq, consumerId: "expired-but-acknowledged" })).toBeUndefined();
+      expect(store.pendingOutboxIds()).toEqual([]);
+    } finally {
+      other.close();
+      store.close();
+    }
+  });
+  it("gives a late commissioner answer a full worker grace interval and deduplicates its epoch across reopen", () => {
+    const file = path();
+    let now = 0;
+    let store = new CommissionStore(file, { now: () => now });
+    try {
+      store.open(owner, input, worker);
+      store.consult(worker, question);
+      now = 100000;
+      expect(store.read(worker, "recover").attention).toBeUndefined();
+      expect(store.reconcileOverdue()).toBe(0);
+      store.decide(owner, answer);
+      expect(store.read(worker, "recover").attention).toBeUndefined();
+      expect(store.reconcileOverdue()).toBe(0);
+      now += 60001;
+      expect(store.read(worker, "recover").attention).toMatchObject({
+        lastWorkerActivity: 0,
+        activityEpoch: 100000,
+      });
+      expect(store.reconcileOverdue()).toBe(1);
+      store.close();
+      store = new CommissionStore(file, { now: () => now });
+      expect(store.reconcileOverdue()).toBe(0);
+      store.report(worker, {
+        commissionId: "recover",
+        eventId: "resumed",
+        kind: "checkpoint",
+        data: { summary: "Working again" },
+      });
+      expect(store.read(worker, "recover").attention).toBeUndefined();
+      now += 60001;
+      expect(store.reconcileOverdue()).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("applies overdue grace to requested revision while excluding owner review, blocked and accepted work", () => {
+    const file = path();
+    let now = 0;
+    const store = new CommissionStore(file, { now: () => now });
+    const proposal = (eventId: string) => ({
+      commissionId: "recover",
+      eventId,
+      kind: "proposal" as const,
+      data: {
+        summary: "Proposed",
+        artifact: {
+          repository: "https://example.test/repo",
+          commit: "a".repeat(40),
+          pullRequest: "https://example.test/repo/pull/1",
+        },
+      },
+    });
+    try {
+      store.open(owner, input, worker);
+      store.report(worker, proposal("p1"));
+      now = 100000;
+      expect(store.read(worker, "recover").attention).toBeUndefined();
+      expect(store.reconcileOverdue()).toBe(0);
+      store.decide(owner, {
+        commissionId: "recover",
+        eventId: "revise",
+        target: "proposal",
+        proposalId: "p1",
+        decision: { verdict: "revise", feedback: "Fix it" },
+      });
+      expect(store.read(worker, "recover").attention).toBeUndefined();
+      now += 60001;
+      expect(store.read(worker, "recover").attention).toMatchObject({
+        lastWorkerActivity: 0,
+        activityEpoch: 100000,
+      });
+      expect(store.reconcileOverdue()).toBe(1);
+      expect(store.reconcileOverdue()).toBe(0);
+      store.report(worker, {
+        commissionId: "recover",
+        eventId: "blocked",
+        kind: "failure",
+        data: { summary: "Blocked" },
+      });
+      now += 60001;
+      expect(store.read(worker, "recover").attention).toBeUndefined();
+      expect(store.reconcileOverdue()).toBe(0);
+      store.report(worker, proposal("p2"));
+      store.decide(owner, {
+        commissionId: "recover",
+        eventId: "accept",
+        target: "proposal",
+        proposalId: "p2",
+        decision: { verdict: "accept", feedback: "Done" },
+      });
+      now += 60001;
+      expect(store.read(worker, "recover").attention).toBeUndefined();
+      expect(store.reconcileOverdue()).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+  it("migrates v2 ledgers and atomically commits prepared binding with its activation", () => {
+    const file = path();
+    let store = new CommissionStore(file);
+    store.open(owner, input, worker);
+    store.close();
+    const db = new Database(file);
+    db.exec("DROP TABLE worker_bindings; PRAGMA user_version=2;");
+    db.close();
+    store = new CommissionStore(file);
+    expect(store.read(owner, "recover").spec).toEqual(input.spec);
+    expect(store.workerBinding("recover")).toBeUndefined();
+    const inspection = new Database(file);
+    expect(inspection.pragma("user_version", { simple: true })).toBe(3);
+    inspection.exec(
+      "CREATE TRIGGER reject_binding_activation BEFORE INSERT ON outbox WHEN NEW.kind='worker_activation_requested' BEGIN SELECT RAISE(ABORT,'injected bound activation failure'); END;",
+    );
+    const workReference = { kind: "test-work", id: "WORK-1" };
+    const next = { ...input, commissionId: "bound", workReference };
+    const workerBinding = {
+      commissionId: "bound",
+      connectorId: "test",
+      reference: workReference,
+      binding: { target: "fixed-target" },
+    };
+    expect(() => store.open(owner, next, worker, undefined, { workerBinding })).toThrow(
+      "injected bound activation failure",
+    );
+    expect(store.workerBinding("bound")).toBeUndefined();
+    for (const table of ["commissions", "contexts", "events", "operations", "outbox"])
+      expect(
+        inspection
+          .prepare(
+            `SELECT count(*) n FROM ${table} WHERE ${table === "commissions" ? "id" : "commission_id"}='bound'`,
+          )
+          .get(),
+      ).toEqual({ n: 0 });
+    inspection.exec("DROP TRIGGER reject_binding_activation");
+    const receipt = store.open(owner, next, worker, undefined, { workerBinding });
+    inspection.close();
+    store.close();
+    store = new CommissionStore(file);
+    expect(store.open(owner, next, worker, undefined, { workerBinding })).toEqual(receipt);
+    expect(store.workerBinding("bound")).toEqual(workerBinding);
+    expect(store.claimOutbox({ consumerId: "restart" })).toHaveLength(1);
+    store.close();
+  });
+
+  it("rolls the complete v1 migration back if the binding migration cannot complete", () => {
+    const file = path();
+    const store = new CommissionStore(file);
+    store.open(owner, input, worker);
+    store.close();
+    const db = new Database(file);
+    db.exec(
+      "ALTER TABLE outbox DROP COLUMN attempt_count; ALTER TABLE outbox DROP COLUMN last_attempt_at; ALTER TABLE outbox DROP COLUMN failure_class; PRAGMA user_version=1;",
+    );
+    // A pre-existing incompatible table causes the last migration step to fail.
+    expect(() => new CommissionStore(file)).toThrow("worker_bindings already exists");
+    expect(db.pragma("user_version", { simple: true })).toBe(1);
+    expect(
+      (db.pragma("table_info(outbox)") as Array<{ name: string }>).some(
+        (column) => column.name === "attempt_count",
+      ),
+    ).toBe(false);
+    expect(db.prepare("SELECT id FROM commissions").get()).toEqual({ id: "recover" });
+    db.close();
+  });
   it("recovers committed questions, delivery leases, answers and caller retries after close/reopen", () => {
     const file = path();
     let now = 0;
@@ -156,7 +343,7 @@ describe("on-disk commissioning recovery", () => {
   });
 
   it("refuses unsupported future schemas and unversioned data without modifying them", () => {
-    for (const version of [3, 999]) {
+    for (const version of [4, 999]) {
       const file = path();
       const initial = new CommissionStore(file);
       initial.close();

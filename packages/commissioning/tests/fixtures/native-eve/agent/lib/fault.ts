@@ -10,13 +10,23 @@ function crash(boundary: string): never {
 }
 if (process.env.FIXTURE_FAULT_BEFORE_ACK === "1") {
   const prepare = Database.prototype.prepare;
-  Database.prototype.prepare = function (sql: string) {
-    const statement = prepare.call(this, sql);
+  Database.prototype.prepare = function (this: Database.Database, sql: string) {
+    const statement = prepare.call(this, sql) as Database.Statement<unknown[]>;
     if (sql.startsWith("UPDATE outbox SET delivered=1")) {
-      statement.run = () => crash("after-native-send-before-ack");
+      const run = statement.run.bind(statement);
+      statement.run = (...args: unknown[]) => {
+        // Activation is acknowledged normally; inject only after a question's native owner send.
+        const lookup = prepare.call(
+          this,
+          "SELECT kind FROM outbox WHERE seq=?",
+        ) as Database.Statement<unknown[], { kind?: string }>;
+        const entry = lookup.get(args[0]);
+        if (entry?.kind === "question") crash("after-native-send-before-ack");
+        return run(...args);
+      };
     }
     return statement;
-  };
+  } as typeof prepare;
 }
 const afterCommit = process.env.FIXTURE_FAULT_AFTER_COMMIT;
 if (afterCommit === "question" || afterCommit === "decision") {

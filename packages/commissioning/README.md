@@ -1,79 +1,118 @@
 # @eve-plus/commissioning
 
-An eve extension for durable commissioning: a verified commissioner defines work, a fixed authenticated worker reports progress and asks bounded questions, and the commissioner explicitly answers or reviews an immutable proposal. SQLite persists the specification, decisions, cursor history, commissioner context, and notification outbox.
+Durable software commissioning for [eve](https://github.com/vercel/eve), with a worker-neutral core and an optional, included Cyrus connector. A commissioner defines work, an authenticated worker asks questions and proposes an immutable Git artifact, and the commissioner explicitly answers, accepts or requests revision.
 
-The package uses published eve's `defineExtension`, tools, a queued channel, and handler schedules. Worker MCP uses the official SDK's stateless JSON Streamable HTTP transport on the eve channel route. There is no separate HTTP server.
+This is an **unreleased 0.1.0 candidate**. Corrected lifecycle and handoff behavior has passed installed-consumer and isolated native qualification with synthetic services. Live service qualification and release checks remain outstanding.
 
-## Mount
+## Install and try
 
-Install the package alongside eve, then create `agent/extensions/commissioning.ts`:
+Use Node 24 and the repository's pinned pnpm. From an eve-plus checkout:
 
-```ts
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter @eve-plus/commissioning run build
+pnpm --dir packages/commissioning pack --pack-destination /tmp/commissioning-package
+```
+
+Install the resulting tarball alongside published `eve@0.83.2` in your own project. The complete [Cyrus consumer](examples/cyrus/README.md) supplies its own identity adapter and selects the real connector. Qualification supplies synthetic external responses; ordinary configured use calls the real service. It imports no private application.
+
+This repository distributes packages through Git release tags. **Once actually released**, the dependency form will be:
+
+```json
+{
+  "dependencies": {
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.1.0&path:packages/commissioning",
+    "eve": "0.83.2"
+  }
+}
+```
+
+That future tag is not evidence of availability or qualification. Local tarballs are the prerelease review path.
+
+## Select a worker
+
+Select the public Cyrus module in an ordinary mount. It supplies actual supported Linear handoff and reconciliation; the application does not implement a replacement open tool, dispatcher or scheduler:
+
+```ts title="agent/extensions/commissioning.ts"
 import commissioning from "@eve-plus/commissioning";
-import { authenticateBuilder, resolvePrincipal, deliveryAuth } from "../lib/estate-identity.js";
+import { cyrus } from "@eve-plus/commissioning/cyrus";
+import { identity, getLinearAccessToken } from "../lib/identity.js";
 
 export default commissioning({
+  ...identity,
   dataDir: "/var/lib/my-agent",
-  namespace: "commissioning",
-  workerPrincipalId: "estate:builder",
-  authenticateWorker: authenticateBuilder,
-  resolveSessionPrincipal: resolvePrincipal,
-  resolveDeliveryAuth: deliveryAuth,
+  namespace: "commissions",
+  worker: cyrus({
+    linear: { accessToken: getLinearAccessToken },
+    delegateId: "your-cyrus-linear-user-id",
+    mcp: {
+      serverName: "commissioner",
+      endpoint: "https://agent.example/commissioning/mcp",
+    },
+  }),
 });
 ```
 
-These three callbacks are trusted host code. `authenticateWorker(Request)` validates the estate's existing credential and returns `{ verified: true, principalId }` or `null`. Its principal must match `workerPrincipalId`; even a successfully authenticated owner credential is denied at the worker endpoint. `resolveSessionPrincipal(auth)` validates eve session identity and returns the same minimal caller shape. A consuming agent may map its admitted callers to a stable commissioner authority, while preserving the actual initiator privately. Explicitly exclude the configured worker and its native channel identities from that owner mapping. `resolveDeliveryAuth(principalId)` supplies a current eve auth context whose verified host mapping resolves to that commissioner; its raw transport principal may differ. Resolve and rotate credentials through the estate's existing secret provider. Do not return credentials as attributes or include them in errors.
+The [reference consumer](examples/cyrus/README.md) includes a complete identity adapter, including its matching `workerPrincipalId`. Keep that configured principal consistent with the identity returned by worker authentication. The three trusted callbacks below are application-owned authentication, not hidden dependencies. Actual credentials, delegate IDs, destinations and acceptance policy remain your configuration.
 
-The mount contributes `commissioning__open`, `commissioning__read`, `commissioning__decide`, a channel at `/commissioning/mcp`, and the `commissioning__reconcile` handler schedule. Mount filenames set tool and schedule prefixes; route paths remain literal. Use a unique namespace and MCP path for each mount.
+The mounted open tool accepts:
 
-## Workflow
-
-1. A verified commissioner calls `open` with `{ spec: { brief, acceptance, privateGuidance? } }`. The host assigns a stable commission ID from the eve session and tool call, fixes the worker, and captures the commissioner's original textual conversation snapshot. No model argument can select an owner.
-2. The worker authenticates and calls MCP `commission_read`, `commission_consult`, and `commission_report`. Worker views omit private guidance and commissioner context. `commission_read` takes `{ commissionId, after? }` and returns durable events with a new cursor. Poll this tool to discover answers and revision requests.
-3. Questions, proposals, failures, and overdue checkpoints enter a transactional owner outbox. The channel dispatches them through one queued continuation per commission. The original commissioner history seeds that continuation once.
-4. The commissioner calls `decide` to answer a question or accept/request revision of the exact proposal ID. Both the verified current owner and a trusted session binding are checked. Final response text, JSON, worker content, and guessed commission IDs cannot create decision authority.
-
-A proposal identifies a repository, full 40-character commit, and pull request URL. Reviewed, merged, and deployed observations name that proposal ID. Acceptance and delivery are separate facets: acceptance can coexist with the later reviewed/merged/deployed observations. A failure means work remains blocked and alerts the owner; a later checkpoint records that active work resumed. Pending questions and proposal review remain independently visible.
-
-The consuming estate owns acceptance timing, human escalation, and merge/deployment policy. For an estate that accepts after merge, instruct its commissioner to verify the merged artifact before accepting. Proposal review does not introduce a new merge gate. This package does not automatically wake, resume, cancel, or restart Cyrus. Worker answers are discoverable through durable MCP polling.
-
-Trusted host adapters can pass a fifth `OpenOptions` argument to `store.open`: `{ requestWorkerActivation: true }`. The default and `false` preserve the existing behavior. `true` atomically records the commission and one owner-duty `worker_activation_requested` event/outbox entry, whose public payload contains only `commissionId`. The host dispatcher must intercept that entry, perform a supported activation operation, reconcile uncertain outcomes before retrying, and acknowledge only a confirmed handoff. The receipt means activation was requested; it does not prove the worker started or provide automatic resume. Build the external contract from the worker projection, never from the owner delivery packet or private context.
-
-## Configuration and operations
-
-| Setting | Meaning |
-| --- | --- |
-| `dataDir` | Required absolute durable application data directory, outside sandbox and ephemeral deployment output. |
-| `namespace` | Required unique lowercase mount name, up to 64 characters. |
-| `workerPrincipalId` | Required fixed principal validated on every worker request. |
-| `authenticateWorker` | Required verified request-to-worker resolver. |
-| `resolveSessionPrincipal` | Required verified eve-auth-to-caller resolver. |
-| `resolveDeliveryAuth` | Required current principal-to-eve-auth resolver for owner notification. |
-| `captureSource` | Optional synchronous host callback receiving `ToolContext`, returning only whitelisted non-secret native conversation coordinates. These stay private with the original context. |
-| `overdueAfterMs` | Optional positive checkpoint interval; default one minute. |
-| `reconcileCron` | Optional native handler cron; default every minute. The consuming estate owns maintenance windows. |
-| `mcpPath` | Optional unique channel route; default `/commissioning/mcp`. |
-
-Run one eve host process per mount and data directory, on a local filesystem that supports SQLite WAL. Enforce this deployment constraint with one container/process and its durable volume. Do not use shared multi-host storage or horizontal replicas. Back up the SQLite database with the WAL-aware SQLite backup mechanism or stop the host before copying its files. The original owner conversation snapshot is private durable data; apply the estate's normal data retention and filesystem access policy.
-
-The handler schedule checks overdue work, leases pending owner notifications, and awaits native channel delivery before marking them delivered. A route operation can reconcile immediately as well. Empty sweeps create no model turns. `eve dev` does not fire cron automatically; production must run eve's supported schedule runner, normally `eve build && eve start`. See [operations and recovery](docs/operations.md).
-
-Retry question IDs and event IDs with identical content. Changed reuse conflicts. SQLite commits before notification. Dispatch retries reuse stable eve idempotency keys; eve retains only its recent 1,024 keys per session, so recovery does not guarantee exactly-once model execution after resets, replacement, or retention eviction. Ledger decisions and worker events remain idempotent independently.
-
-Owner reads include `notification` diagnostics: pending receipt count, durable attempt count, last attempt time, and a fixed `identity_unavailable` or `dispatch_failed` class. No raw exception is persisted. `currentProposal` always includes the current immutable artifact and summary, even when the cursor page contains only older events. Worker views omit owner notification diagnostics.
-
-For an estate that needs human clarification, override both the contributed channel and schedule through eve's documented directory mount. The public `/transport` export includes `createDispatcher` and `OwnerDelivery`, including the private context for a trusted host adapter. Deliver to the original visible native conversation using its stored source and exact session ID; do not silently create an unbound replacement conversation. The package's default private owner continuation cannot itself display questions to a person on another channel.
-
-After a native runtime reset, a consuming estate may provide an explicit operator recovery tool. Its host code must verify the actual operator and the same captured source, then call the host-only `store.rebindSession` with the expected active session, new session, stable receipt ID, and verified requester. Original context, source, and initiator stay immutable. Once a new active session is recorded, only that exact session can decide, even if an old session returns with stale durable state. The package does not expose a default recovery tool or permit automatic cross-conversation relocation.
-
-## Build and test
-
-```sh
-pnpm build
-pnpm typecheck
-pnpm test
+```json
+{
+  "spec": {
+    "brief": "Implement the requested change",
+    "acceptance": ["The agreed behavior is verified"],
+    "privateGuidance": "Owner-only review notes"
+  },
+  "workReference": { "kind": "linear-issue", "id": "ENG-123" }
+}
 ```
 
-Build runs `eve extension build` and emits public ledger/transport declarations. `better-sqlite3` is declared as an eve external dependency so its native package layout survives the consuming build. The extension is authored against eve `0.83.2`; generated compatibility metadata determines runtime compatibility. Node 24 or newer is required.
+The connector resolves the issue and persists its canonical binding with the commission and activation intent. Shared dispatch preserves the issue's existing work criteria, appends a worker-redacted contract, delegates and confirms by readback. A lost response is reconciled before retrying. **Confirmed handoff does not prove Cyrus started.** See [Cyrus setup and lifecycle](docs/cyrus.md).
 
-Deterministic tests cover the ledger, restart/outbox recovery, official MCP client transport, fixed-worker authentication, rejected owner operations, privacy, retry identity, and owner notification failure. No paid or live-model calls run in these tests. Runtime deployment validation belongs on the intended eve host after independent package review; see [the validation guide](docs/validation.md).
+Omit `worker` for the neutral protocol. That mode requires no Cyrus configuration and makes no Cyrus/Linear service calls. It does not launch a worker: the application hands its commission ID and worker-visible specification to an existing worker integration.
+
+## Commissioning loop
+
+1. Native `commissioning__open` records the verified commissioner, textual history and specification. Model arguments never select owner identity.
+2. The fixed worker authenticates to `/commissioning/mcp` and uses `commission_read`, `commission_consult` and `commission_report`.
+3. Questions, proposals, failures, relevant new delivery observations and overdue attention enter the durable owner outbox. Default delivery creates a separate queued commissioner continuation per commission, seeded from the original history.
+4. Native `commissioning__decide` explicitly answers a question or accepts/requests revision of its exact proposal ID. Final prose or JSON never records a decision. Workers poll MCP read for the recorded answer/verdict.
+
+Proposals require a credential-free HTTPS repository URL, full lowercase 40-hex Git commit and matching GitHub/GitLab-shaped PR URL. This version supports software proposals, not arbitrary document/research artifacts. Reviewed, merged and deployed reports are observations; acceptance is a separate decision. The application defines acceptance timing.
+
+## Configuration
+
+| Setting | Responsibility |
+| --- | --- |
+| `dataDir` | Absolute durable local storage, outside sandbox and deployment output. |
+| `namespace` | Unique lowercase storage namespace, up to 64 characters. |
+| `workerPrincipalId` | Fixed authenticated worker for the mount. |
+| `authenticateWorker(request)` | Return a host-verified worker principal or `null`. A verified owner credential is still denied at the worker endpoint. |
+| `resolveSessionPrincipal(auth)` | Validate native identity and map to commissioner authority; exclude the worker. |
+| `resolveDeliveryAuth(principalId)` | Supply current eve auth that maps back to the commissioner. |
+| `worker` | Optional connector, such as `cyrus(...)`; selected connectors require a work reference on open. |
+| `captureSource(ctx)` | Optional trusted capture of bounded, non-secret conversation coordinates, kept private. |
+| `overdueAfterMs` | Worker grace interval after activity or commissioner hand-back, default one minute. |
+| `reconcileCron` | Native handler cron, default every minute. Application maintenance policy remains external. |
+| `mcpPath` | Unique literal route, default `/commissioning/mcp`; mount filenames namespace tools, not routes. |
+
+Identity resolvers return `{verified: true, principalId}` or `null`. Never put credentials in attributes, references, model arguments or errors. Worker projections omit owner guidance, source, initiator and conversation history. Connector handoff receives only its prepared binding and worker-visible specification.
+
+## Integration boundaries
+
+- Uses published eve extension/tools/channel/schedule/state APIs and the official MCP SDK; no separate server or private runtime imports.
+- One worker and one eve process per mount with persistent local SQLite/WAL is the supported topology. This is a package constraint, not an eve-wide requirement; horizontal replicas/shared multi-host storage are unsupported.
+- Default owner continuations are private agent conversations. Human-visible routing is an application integration. Native progress renderers must not publish private tool arguments; see [operations](docs/operations.md).
+- Explicit recovery is host-authorized: verify the requester and original source, reset/create the canonical commission address, then CAS-rebind to that actual session ID with `store.rebindSession`. Delivery refuses a different current address owner. Original context stays immutable and old-session authority is revoked. See the [recovery recipe](docs/operations.md#session-and-worker-recovery).
+- `.` and `./tools` use eve-generated `.mjs`/`default` exports; `./store`, `./transport`, `./config` and `./cyrus` expose typed host APIs. Wildcard eve peer plus generated compatibility metadata follow the official extension scaffold. The qualification target is exactly eve 0.83.2, not every future runtime.
+
+## Validation and known limitations
+
+See the [validation guide](docs/validation.md) for routine tests, clean packaged-consumer checks, native eve evidence and released-Cyrus conformance. Synthetic services do not prove real credentials, webhook intake or worker execution start.
+
+Dispatch snapshots at most 100 eligible entries by durable attempt count and sequence, then claims each immediately before sending. Failed work is attempted once per sweep; later unattempted work can progress across retries and restart. Working and revision-requested commissions get overdue attention only after a full grace interval following worker activity or commissioner hand-back. Pending questions/review, blocked and accepted work do not get that attention.
+
+Worker reads do not trigger reconciliation. Mutations commit first; the native route tracks their subsequent reconciliation through Eve's `waitUntil`, and cron retries pending work. Low-level callers supplying `reconcile` directly retain its awaited callback semantics. A newly recorded current-proposal delivery observation can notify a pending reviewer; duplicate observations and accepted work do not cause repeated review turns. Acceptance remains an explicit commissioner decision after application verification.
+
+This public-consumer increment does not certify production deployment, live-model judgment, arbitrary identity adapters or a complete security/performance audit. See [operations and recovery](docs/operations.md) before adopting the candidate.

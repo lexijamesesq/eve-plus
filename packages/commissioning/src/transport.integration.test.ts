@@ -65,6 +65,101 @@ afterEach(async () => {
 });
 
 describe("official stateless MCP worker transport", () => {
+  it("reads an already recorded answer without invoking an unrelated held reconciliation callback", async () => {
+    const { store, config } = fixture();
+    store.consult(worker, {
+      commissionId: "one",
+      questionId: "answered",
+      question: { text: "Which?" },
+    });
+    store.decide(owner, {
+      commissionId: "one",
+      eventId: "answer",
+      target: "question",
+      questionId: "answered",
+      decision: { answer: "Recorded answer" },
+    });
+    for (const entry of store.claimOutbox({ consumerId: "settle-answer" }))
+      store.acknowledgeOutbox(entry.seq, entry.leaseToken);
+    store.open(
+      owner,
+      { commissionId: "unrelated", spec: { brief: "Other work", acceptance: ["Done"] } },
+      worker,
+    );
+    store.consult(worker, {
+      commissionId: "unrelated",
+      questionId: "other",
+      question: { text: "Other question" },
+    });
+    let release = () => {};
+    let entered = () => {};
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    config.resolveDeliveryAuth = async () => {
+      entered();
+      await held;
+      return auth;
+    };
+    const drain = createDispatcher(store, config);
+    const background = drain(async () => {});
+    await started;
+    const reconcile = vi.fn(() => drain(async () => {}));
+    const client = await clientFor(store, config, reconcile);
+    const pending = client.callTool({
+      name: "commission_read",
+      arguments: { commissionId: "one" },
+    });
+    try {
+      const outcome = await Promise.race([
+        pending.then(() => "response"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 1000)),
+      ]);
+      expect(outcome).toBe("response");
+      expect(reconcile).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pending;
+      await background;
+    }
+    expect(JSON.stringify(await pending)).toContain("Recorded answer");
+  });
+
+  it("preserves awaited low-level mutation reconciliation after committing the operation", async () => {
+    const { store, config } = fixture();
+    let release = () => {};
+    let entered = () => {};
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const client = await clientFor(store, config, async () => {
+      entered();
+      await held;
+    });
+    const pending = client.callTool({
+      name: "commission_consult",
+      arguments: { commissionId: "one", questionId: "held", question: { text: "Which?" } },
+    });
+    await started;
+    expect(store.question(owner, "one", "held").status).toBe("pending");
+    try {
+      expect(
+        await Promise.race([
+          pending.then(() => "response"),
+          new Promise<string>((resolve) => setTimeout(() => resolve("awaited"), 20)),
+        ]),
+      ).toBe("awaited");
+    } finally {
+      release();
+    }
+    expect((await pending).structuredContent).toMatchObject({ recorded: true });
+  });
   it("returns actionable fixed domain reasons while hiding unknown errors and credentials", async () => {
     const { store, config } = fixture();
     const client = await clientFor(store, config);

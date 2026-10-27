@@ -1,29 +1,62 @@
-# Native runtime fixture
+# Native qualification overlays
 
-Run only on the approved isolated eve host after package review. This fixture uses public `eve/evals` deterministic `mockModel` and synthetic identities; it makes no live model request. It is excluded from published package files.
+This directory is test controls, not another application. The canonical public
+consumer is `examples/cyrus`, shipped inside the package. `tests/public-consumer.mjs`
+installs a local tarball outside the monorepo, copies that installed example and
+typechecks/builds its unchanged neutral and Cyrus configurations. It starts no
+agent or model runtime.
 
-Set `FIXTURE_DATA_DIR` to an absolute durable scratch directory and `FIXTURE_AUDIT` to a JSONL audit path before build and runtime. Install the packed candidate in place of the development file dependency, then run `eve build` and `eve start --host 127.0.0.1 --port 43229`.
+After the candidate is reviewed, prepare that same stage on the isolated runtime
+platform:
 
-POST `/fixture/open` starts a real native owner turn and calls `commissioning__open`. The audit `opened.output` contains its commission ID. The worker connects to `/commissioning/mcp` with synthetic `Authorization: Bearer fixture-worker-only`, records questions and reports through the official client, and reads answers through `commission_read`.
+```sh
+node tests/prepare-native.mjs /absolute/consumer-stage --install-cyrus
+```
 
-POST `/fixture/unbound` with `{commissionId,questionId}` sends the same verified owner through an unrelated native session. Target a real unanswered question. Its attempted `commissioning__decide` must fail with the binding-specific denial and leave that question unanswered. Then POST the same IDs to `/fixture/bound` to send a native decision from the original owner session and require that same question to become answered; this tests trusted session binding in addition to ledger ownership. The worker MCP route does not advertise any owner operations.
+Preparation adds these overlays and builds; it does not start an agent. Its
+neutral and Cyrus outputs come from two normal Eve builds of the same consumer;
+the neutral build/runtime receive no Cyrus service configuration. A separate
+native neutral case opens and reads through the authored tools and worker MCP,
+then requires no binding, activation intent or synthetic service request.
+Its synthetic Git fixture uses an isolated HOME, disabled system/global configuration,
+empty templates/hooks and explicit synthetic authors. Runtime SQLite bindings
+must match the build platform and architecture; build on the target platform.
 
-Each notification audits the count of the original context sentinel; it must remain exactly one across retries and later notifications. Successful question decisions audit a real authored decide tool result. Use the native eve stream/session history to verify turn IDs and queue behavior independently of the audit file.
+Only the deterministic model's adversarial controls, fixture routes, audit hook,
+delivery-availability wrapper, external HTTP forwarding and process-kill controls
+are added. Normal open/read/question/decision/proposal behavior uses the unchanged
+example responder and inspector. The actual packaged tools, channel, schedule,
+Cyrus connector and worker artifacts/helper stay mounted.
 
-For the separate process-kill receipt control, set `FIXTURE_FAULT_BEFORE_ACK=1` and `FIXTURE_FAULT_MARKER` to an absolute scratch path. The fixture-only native SQLite wrapper kills the actual eve host with SIGKILL immediately before the delivered-receipt SQL runs, after the native send has returned. The packed extension and generated eve artifact stay unchanged. Restart with fault mode unset using the same durable directory and Workflow World, then retry/reconcile the same event. Verify the outbox recovers while the recent native delivery key prevents another owner turn. Run the normal proof with no fault environment first; label the injected control separately.
+```sh
+COMMISSIONING_PROOF_ALLOW_RUNTIME=1 node tests/native-proof.mjs /absolute/consumer-stage
+COMMISSIONING_PROOF_ALLOW_RUNTIME=1 node tests/cyrus-runtime-proof.mjs /absolute/consumer-stage
+```
 
-Artifact inspection is supplied by `agent/tools/inspect.ts`: it reads the current proposal from the ledger and independently inspects the full Git commit in `FIXTURE_GIT_DIR`. Prepare that repository with an initial `acceptance.txt` that differs from `ready`, then a second commit containing `ready`. Report the first immutable proposal and require revision, then report the second and require acceptance. Worker summary claims do not affect inspection. This is fixture evidence, not a new estate merge policy.
+Run only in an isolated disposable environment with free loopback port 43229 and
+Node 24. Review the candidate before running its isolated runtime probes.
+The public harness has no private host/SSH/global Cyrus dependency. Both commands
+use synthetic credentials and external services, never a paid/live model or real
+Linear message. Public registry access is needed to install declared dependencies.
 
-Two additional fixture-only commit-boundary controls are available through
-`FIXTURE_FAULT_AFTER_COMMIT=question` or `decision`. They wrap the public SQLite
-transaction function, wait for its real commit, and SIGKILL before returning
-control to the transport or native tool. Use question IDs `crash-question` and
-`decision-question`, respectively. Restart with fault variables unset and retry
-the same canonical operation. The candidate package remains unmodified.
+The native harness observes actual default handler cron without MCP polling,
+queued native turns and one history import, worker privacy, valid session denial
+with a positive counterpart, committed-artifact revision/acceptance, unknown
+external handoff reconciliation and an actual SIGKILL after native send/before
+acknowledgement. It honors the real receipt lease, so execution takes several
+minutes. Empty cron observation is one additional minute.
 
-A `FINAL_JSON_ONLY` question returns final owner text shaped like an answer
-without calling the decide tool. Its question must stay pending. The fixture's
-explicit Eve channel uses synthetic Basic credentials only for reading the
-public native session stream. The inspector audit records the commissioned
-session ID so the proof can verify queued turns and one history import from
-`/eve/v1/session/:sessionId/stream?follow=false` independently of model text.
+The released Cyrus probe loads the actual generated MCP map, exact tool policy,
+worker instructions and helper through its pinned released runner. Only its
+model provider and external Linear HTTP behavior are simulated. The probe does
+not establish real Linear webhook intake, service identity/secret-provider
+configuration, a production Cyrus start, or judgment by a live model.
+
+Receipts identify the candidate tarball and completed scenarios. Keep failed
+receipts and logs alongside successful runs. Native raw stream output contains
+synthetic continuation capabilities; sanitize them before sharing an artifact,
+then rerun `tests/verify-native-stream.mjs` on the sanitized stream.
+
+Known generic notification-starvation and overdue-lifecycle defects remain
+outside this bounded public-consumer qualification. A failure is reported; these
+controls do not silently fix or certify the broader backlog.

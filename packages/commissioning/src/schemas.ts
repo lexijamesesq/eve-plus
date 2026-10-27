@@ -2,11 +2,13 @@ import { z } from "zod";
 
 const id = z.string().min(1).max(256);
 const text = z.string().min(1).max(32768);
+export const workReferenceSchema = z.object({ kind: id, id }).strict();
 export const readSchema = z
   .object({ commissionId: id, after: z.number().int().nonnegative().default(0) })
   .strict();
 export const openSchema = z
   .object({
+    workReference: workReferenceSchema.optional(),
     spec: z
       .object({
         brief: text,

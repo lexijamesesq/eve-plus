@@ -1,15 +1,30 @@
 import { createHash } from "node:crypto";
-import { type ChannelFrom, DELETE, defineChannel, GET, POST } from "eve/channels";
+import {
+  type ChannelFrom,
+  DELETE,
+  defineChannel,
+  GET,
+  POST,
+  type RouteHandlerArgs,
+} from "eve/channels";
 import type { OwnerDelivery } from "../../src/dispatch.js";
 import { handleWorkerRequest } from "../../src/transport.js";
 import extension from "../extension.js";
 import { binding } from "../lib/binding.js";
 import { runtime } from "../lib/runtime.js";
 
-export async function deliverOwner(from: ChannelFrom, delivery: OwnerDelivery) {
+export async function deliverOwner(
+  from: ChannelFrom,
+  delivery: Omit<OwnerDelivery, "entry" | "auth"> & {
+    entry: Pick<OwnerDelivery["entry"], "commissionId" | "eventId">;
+    auth: import("eve/context").SessionAuthContext | null;
+  },
+) {
   const source = from(delivery.entry.commissionId);
   // create seeds the original snapshot once; retries and later reports do not duplicate history.
-  await source.create({ auth: delivery.auth, history: delivery.history });
+  const { session } = await source.create({ auth: delivery.auth, history: delivery.history });
+  if (delivery.context?.activeSessionId && session.id !== delivery.context.activeSessionId)
+    throw new Error("Canonical commissioner source does not match the active session");
   return source.send(delivery.message, {
     auth: delivery.auth,
     turnPolicy: "queue",
@@ -19,12 +34,17 @@ export async function deliverOwner(from: ChannelFrom, delivery: OwnerDelivery) {
   });
 }
 
-const handle = (request: Request, { from }: { from: ChannelFrom }) => {
+const handle = (
+  request: Request,
+  { from, waitUntil }: Pick<RouteHandlerArgs, "from" | "waitUntil">,
+) => {
   const { store, drain } = runtime();
   return handleWorkerRequest(request, {
     store,
     config: extension.config,
-    reconcile: () => drain((delivery) => deliverOwner(from, delivery)),
+    reconcile: async () => {
+      waitUntil(drain((delivery) => deliverOwner(from, delivery)));
+    },
   });
 };
 
@@ -49,21 +69,14 @@ export default defineChannel({
     const commission = runtime().store.read(caller, input.target.commissionId);
     if (commission.owner !== caller.principalId) throw new Error("Wrong commissioner");
     const context = runtime().store.context(input.target.commissionId);
-    const source = from(input.target.commissionId);
-    await source.create({
+    return deliverOwner(from, {
+      entry: input.target,
       auth: input.auth,
-      history: context?.messages.map((message) => ({ role: message.role, text: message.content })),
+      context,
+      history:
+        context?.messages.map((message) => ({ role: message.role, text: message.content })) ?? [],
+      message: typeof input.message === "string" ? input.message : JSON.stringify(input.message),
     });
-    return source.send(
-      typeof input.message === "string" ? input.message : JSON.stringify(input.message),
-      {
-        auth: input.auth,
-        turnPolicy: "queue",
-        idempotencyKey: createHash("sha256")
-          .update(`${input.target.commissionId}:${input.target.eventId}`)
-          .digest("hex"),
-      },
-    );
   },
   events: {
     "turn.started"(_event, channel, ctx) {

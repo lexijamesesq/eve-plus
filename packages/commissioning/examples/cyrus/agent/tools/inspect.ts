@@ -1,29 +1,28 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { CommissionStore } from "@eve-plus/commissioning/store";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { requiredEnv } from "../lib/env.js";
+import { identity, ownerId } from "../lib/identity.js";
+
+// Deliberately narrow demonstration policy: inspect one marker in an allowlisted local repository.
 export default defineTool({
-  description: "Fixture-only independent inspection of the committed acceptance marker.",
+  description: "Independently inspect acceptance.txt in the current immutable proposal commit.",
   inputSchema: z.object({ commissionId: z.string() }).strict(),
   execute({ commissionId }, ctx) {
-    if (
-      ctx.session.auth.current?.authenticator !== "fixture-owner" ||
-      ctx.session.auth.current.principalId !== "fixture:owner"
-    )
-      throw new Error("Fixture owner required");
+    if (identity.resolveSessionPrincipal(ctx.session.auth.current)?.principalId !== ownerId)
+      throw new Error("Example commissioner required");
     const store = new CommissionStore(
-      join(requiredEnv("FIXTURE_DATA_DIR"), "native-proof", "commissions.sqlite"),
+      join(requiredEnv("EXAMPLE_DATA_DIR"), "example-commissions", "commissions.sqlite"),
     );
     try {
       const proposal = store.read(
-        { verified: true, principalId: "fixture:owner" },
+        { verified: true, principalId: ownerId },
         commissionId,
       ).currentProposal;
-      if (proposal?.artifact.repository !== "https://example.test/repo")
-        throw new Error("Expected allowlisted fixture artifact");
+      if (!proposal || proposal.artifact.repository !== requiredEnv("EXAMPLE_ARTIFACT_REPOSITORY"))
+        throw new Error("Expected the configured example artifact repository");
       let pass = false;
       try {
         pass =
@@ -31,7 +30,7 @@ export default defineTool({
             "git",
             [
               "-C",
-              requiredEnv("FIXTURE_GIT_DIR"),
+              requiredEnv("EXAMPLE_GIT_DIR"),
               "show",
               `${proposal.artifact.commit}:acceptance.txt`,
             ],
@@ -40,10 +39,6 @@ export default defineTool({
       } catch {
         /* Missing objects fail inspection. */
       }
-      appendFileSync(
-        requiredEnv("FIXTURE_AUDIT"),
-        `${JSON.stringify({ stage: "independent-inspection", sessionId: ctx.session.id, proposalId: proposal.proposalId, commit: proposal.artifact.commit, pass })}\n`,
-      );
       return { proposalId: proposal.proposalId, commit: proposal.artifact.commit, pass };
     } finally {
       store.close();

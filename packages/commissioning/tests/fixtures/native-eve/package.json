@@ -1,7 +1,0 @@
-{
-  "name":"commissioning-native-eve-proof",
-  "private":true,
-  "type":"module",
-  "scripts":{"build":"eve build","start":"eve start --host 127.0.0.1 --port 43229"},
-  "dependencies":{"@eve-plus/commissioning":"file:../../..","@modelcontextprotocol/sdk":"1.32.2","better-sqlite3":"13.0.3","eve":"0.83.2","zod":"4.6.6"}
-}

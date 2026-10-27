@@ -5,7 +5,7 @@ import { boundOwner } from "../lib/binding.js";
 import { runtime } from "../lib/runtime.js";
 export default defineTool({
   description:
-    "Explicitly answer a worker question or accept/request revision of the exact pending proposal. Final answer text never changes the ledger. Estate acceptance policy applies here.",
+    "Explicitly answer a worker question or accept/request revision of the exact pending proposal. Final answer text never changes the ledger. The consuming application's acceptance requirements apply.",
   inputSchema: decideSchema,
   async execute(input, ctx) {
     const caller = boundOwner(ctx, input.commissionId);

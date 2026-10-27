@@ -58,6 +58,104 @@ afterEach(() => {
 });
 
 describe("commission ledger", () => {
+  it("re-engages pending review for a new delivery observation without replay or accepted-work churn", () => {
+    const store = setup();
+    store.report(worker, proposal());
+    const initial = store.claimOutbox({ consumerId: "reviewer" });
+    for (const entry of initial) store.acknowledgeOutbox(entry.seq, entry.leaseToken);
+    const observation: ReportInput = {
+      commissionId: "c1",
+      eventId: "merged-once",
+      kind: "merged",
+      data: { summary: "Merge observed; commissioner must verify", proposalId: "p1" },
+    };
+    store.report(worker, observation);
+    expect(store.read(owner, "c1").status).toBe("needs_review");
+    const followup = store.claimOutbox({ consumerId: "reviewer" });
+    expect(followup).toMatchObject([{ recipient: "owner", kind: "merged" }]);
+    for (const entry of followup) store.acknowledgeOutbox(entry.seq, entry.leaseToken);
+    store.report(worker, observation);
+    store.report(worker, { ...observation, eventId: "same-observation-new-id" });
+    expect(store.claimOutbox({ consumerId: "reviewer" })).toEqual([]);
+    code(
+      () =>
+        store.report(worker, {
+          ...observation,
+          eventId: "stale",
+          data: { ...observation.data, proposalId: "old" },
+        }),
+      "stale_proposal",
+    );
+    store.decide(owner, accept());
+    store.report(worker, {
+      commissionId: "c1",
+      eventId: "deployed-after-accept",
+      kind: "deployed",
+      data: { summary: "Deployed", proposalId: "p1" },
+    });
+    expect(store.claimOutbox({ consumerId: "reviewer" })).toEqual([]);
+  });
+  it("binds immutable prepared work to open retries without exposing its routing state", () => {
+    const store = new CommissionStore(":memory:");
+    stores.push(store);
+    const workReference = { kind: "test-issue", id: "WORK-1" };
+    const input = { ...open, workReference };
+    const workerBinding = {
+      commissionId: "c1",
+      connectorId: "test-worker",
+      reference: workReference,
+      binding: { version: "1", target: "canonical-work", endpoint: "https://worker.example/mcp" },
+    };
+    const receipt = store.open(owner, input, worker, undefined, { workerBinding });
+    expect(store.open(owner, input, worker, undefined, { workerBinding })).toEqual(receipt);
+    expect(store.workerBinding("c1")).toEqual(workerBinding);
+    for (const changed of [
+      { ...workerBinding, connectorId: "other-worker" },
+      { ...workerBinding, binding: { ...workerBinding.binding, target: "other-target" } },
+    ])
+      code(
+        () => store.open(owner, input, worker, undefined, { workerBinding: changed }),
+        "conflict",
+      );
+    code(
+      () =>
+        store.open(
+          owner,
+          { ...input, workReference: { ...workReference, id: "WORK-2" } },
+          worker,
+          undefined,
+          { workerBinding },
+        ),
+      "invalid_input",
+    );
+    const copy = store.workerBinding("c1");
+    if (!copy) throw new Error("Expected persisted binding");
+    copy.reference.id = "mutated-copy";
+    expect(store.workerBinding("c1")?.reference).toEqual(workReference);
+    const packet = JSON.stringify({
+      view: store.read(worker, "c1"),
+      outbox: store.claimOutbox({ consumerId: "test" }),
+    });
+    for (const value of ["canonical-work", "https://worker.example/mcp", "owner secret"])
+      expect(packet).not.toContain(value);
+    expect(store.read(owner, "c1").notification?.pending).toBe(1);
+    code(
+      () => store.open(owner, { ...input, commissionId: "unprepared" }, worker),
+      "invalid_input",
+    );
+    code(
+      () =>
+        store.open(owner, { ...input, commissionId: "bad-binding" }, worker, undefined, {
+          workerBinding: {
+            ...workerBinding,
+            commissionId: "bad-binding",
+            binding: { field: "x".repeat(4097) },
+          },
+        }),
+      "invalid_input",
+    );
+    code(() => store.read(owner, "bad-binding"), "not_found");
+  });
   it("uses host caller identity and hides private guidance from every worker view and envelope", () => {
     const store = setup();
     code(() => store.read(stranger, "c1"), "not_found");

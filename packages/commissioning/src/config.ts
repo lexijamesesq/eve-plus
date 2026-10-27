@@ -3,12 +3,21 @@ import type { SessionAuthContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import type { Caller, CommissionSource } from "./types.js";
+import type { WorkerConnector } from "./worker.js";
+
+export type {
+  StoredWorkerBinding,
+  WorkerBinding,
+  WorkerConnector,
+  WorkReference,
+} from "./worker.js";
 
 export interface CommissioningConfig {
   /** Durable application storage; never a sandbox path or ephemeral deployment filesystem. */
   dataDir: string;
   namespace: string;
   workerPrincipalId: string;
+  worker?: WorkerConnector;
   authenticateWorker(request: Request): Caller | null | Promise<Caller | null>;
   resolveSessionPrincipal(auth: SessionAuthContext | null): Caller | null;
   resolveDeliveryAuth(
@@ -26,6 +35,10 @@ export const configSchema = z
     dataDir: z.string().refine(isAbsolute, "dataDir must be absolute"),
     namespace: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
     workerPrincipalId: z.string().min(1).max(256),
+    worker: z
+      .object({ id: z.string().min(1).max(256), prepare: fn, handoff: fn })
+      .strict()
+      .optional(),
     authenticateWorker: fn,
     resolveSessionPrincipal: fn,
     resolveDeliveryAuth: fn,

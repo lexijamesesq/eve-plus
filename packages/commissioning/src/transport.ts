@@ -32,10 +32,10 @@ export async function handleWorkerRequest(
     });
   }
   const server = new McpServer({ name: "eve-plus-commissioning", version: "0.1.0" });
-  const run = async (operation: () => unknown) => {
+  const run = async (operation: () => unknown, mutation = false) => {
     try {
       const result = operation();
-      if (options.reconcile) {
+      if (mutation && options.reconcile) {
         try {
           await options.reconcile();
         } catch {
@@ -80,7 +80,7 @@ export async function handleWorkerRequest(
         "Record a bounded question for the commissioner. Retry the same question ID with identical content.",
       inputSchema: consultSchema,
     },
-    (input) => run(() => options.store.consult(caller, input)),
+    (input) => run(() => options.store.consult(caller, input), true),
   );
   server.registerTool(
     "commission_report",
@@ -89,7 +89,7 @@ export async function handleWorkerRequest(
         "Record a checkpoint, failure, immutable proposal, or delivery observation. Retry the same event ID with identical content.",
       inputSchema: reportSchema,
     },
-    (input) => run(() => options.store.report(caller, input as ReportInput)),
+    (input) => run(() => options.store.report(caller, input as ReportInput), true),
   );
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
