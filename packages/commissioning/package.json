@@ -1,0 +1,94 @@
+{
+  "name": "@eve-plus/commissioning",
+  "version": "0.1.0",
+  "description": "Durable software commissioning for eve, with an optional Cyrus connector.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lexijamesesq/eve-plus.git",
+    "directory": "packages/commissioning"
+  },
+  "eve": {
+    "extension": {
+      "source": "./extension",
+      "dist": "./dist/extension",
+      "externalDependencies": [
+        "better-sqlite3"
+      ]
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "docs",
+    "examples"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.mjs"
+    },
+    "./store": {
+      "types": "./dist/src/store.d.ts",
+      "import": "./dist/src/store.js"
+    },
+    "./transport": {
+      "types": "./dist/src/transport.d.ts",
+      "import": "./dist/src/transport.js"
+    },
+    "./config": {
+      "types": "./dist/src/config.d.ts",
+      "import": "./dist/src/config.js"
+    },
+    "./cyrus": {
+      "types": "./dist/src/cyrus.d.ts",
+      "import": "./dist/src/cyrus.js"
+    }
+  },
+  "scripts": {
+    "build": "eve extension build && tsc -p tsconfig.build.json",
+    "prepare": "pnpm run build",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "pnpm run test:unit && pnpm run test:integration",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:consumer": "node tests/public-consumer.mjs",
+    "test:native": "node tests/native-proof.mjs",
+    "test:cyrus": "node tests/cyrus-runtime-proof.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "better-sqlite3": "13.0.3",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.0.0",
+    "eve": "0.83.2",
+    "typescript": "^5.0.0",
+    "vitest": "4.1.10"
+  },
+  "peerDependencies": {
+    "eve": "*"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "keywords": [
+    "eve",
+    "commissioning",
+    "mcp",
+    "cyrus",
+    "agent-extension"
+  ],
+  "homepage": "https://github.com/lexijamesesq/eve-plus/tree/main/packages/commissioning#readme",
+  "bugs": {
+    "url": "https://github.com/lexijamesesq/eve-plus/issues"
+  }
+}

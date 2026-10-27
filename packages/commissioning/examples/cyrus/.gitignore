@@ -1,0 +1,7 @@
+node_modules/
+.eve/
+.env
+mcp.json
+worker-instructions.md
+worker-allowed-tools.json
+scripts/worker-settings.json

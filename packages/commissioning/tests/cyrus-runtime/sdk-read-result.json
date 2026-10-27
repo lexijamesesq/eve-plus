@@ -1,0 +1,18 @@
+{
+  "envelope": {
+    "result": {
+      "commissionId": "fixture-commission",
+      "questions": [
+        {
+          "commissionId": "fixture-commission",
+          "questionId": "released-runner-question",
+          "question": { "text": "Which behavior meets the recorded acceptance criteria?" },
+          "status": "answered",
+          "answer": { "answer": "Use the recorded acceptance criteria" }
+        }
+      ]
+    },
+    "recorded": true
+  },
+  "metadataSuffix": "\n\n<system-reminder>\n<total_tokens>1000 tokens left</total_tokens>\n</system-reminder>"
+}

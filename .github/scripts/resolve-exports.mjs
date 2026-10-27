@@ -2,7 +2,7 @@
 //
 // Copied into a consumer project's root and run there: an import resolves from the importing file, so the package
 // resolves by name exactly as a consumer's own import would. Every target in the installed package's exports must
-// exist, and every import entry must load. Exits non-zero, listing each problem, otherwise.
+// exist, and every import or default entry must load. Exits non-zero, listing each problem, otherwise.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,7 +15,7 @@ for (const [subpath, conditions] of Object.entries(exports)) {
   for (const target of Object.values(conditions)) {
     if (!existsSync(join(root, target))) problems.push(`${subpath}: ${target} is missing`);
   }
-  if (conditions.import !== undefined) {
+  if (conditions.import !== undefined || conditions.default !== undefined) {
     const specifier = subpath === "." ? name : `${name}/${subpath.slice(2)}`;
     try {
       await import(specifier);
