@@ -2,7 +2,7 @@
 
 Durable software commissioning for [eve](https://github.com/vercel/eve), with a worker-neutral core and an optional, included Cyrus connector. A commissioner defines work, an authenticated worker asks questions and proposes an immutable Git artifact, and the commissioner explicitly answers, accepts or requests revision.
 
-This is an **unreleased 0.1.1 candidate**. Corrected lifecycle and handoff behavior has passed installed-consumer and isolated native qualification with synthetic services. Live service qualification and release checks remain outstanding.
+Version **0.2.0** adds an optional owner-session policy; the strict default integration remains available without it. Local qualification uses synthetic services; it does not certify live service credentials or production operation.
 
 ## Install and try
 
@@ -16,18 +16,18 @@ pnpm --dir packages/commissioning pack --pack-destination /tmp/commissioning-pac
 
 Install the resulting tarball alongside published `eve@0.83.2` in your own project. The complete [Cyrus consumer](examples/cyrus/README.md) supplies its own identity adapter and selects the real connector. Qualification supplies synthetic external responses; ordinary configured use calls the real service. It imports no private application.
 
-This repository distributes packages through Git release tags. For the release containing the clean-install correction, use:
+This repository distributes packages through Git release tags. Choose an available tag from the [package releases](https://github.com/lexijamesesq/eve-plus/releases). For version 0.2.0, the dependency is:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.1.1&path:packages/commissioning",
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.2.0&path:packages/commissioning",
     "eve": "0.83.2"
   }
 }
 ```
 
-The tag becomes available through the normal release workflow after merge. Local tarballs remain the prerelease review path. Version 0.1.0 can fail during a clean pnpm Git install because its workspace permits an unnecessary native rebuild; use 0.1.1 or newer for that installation path.
+Use that dependency only after its tag appears in the releases. The normal main-branch workflow publishes package tags; use the tarball above to evaluate a checkout whose version is not yet released. Version 0.1.0 can fail during a clean pnpm Git install because its workspace permits an unnecessary native rebuild; use 0.1.1 or newer for that installation path.
 
 ## Select a worker
 
@@ -93,6 +93,7 @@ Proposals require a credential-free HTTPS repository URL, full lowercase 40-hex 
 | `resolveDeliveryAuth(principalId)` | Supply current eve auth that maps back to the commissioner. |
 | `worker` | Optional connector, such as `cyrus(...)`; selected connectors require a work reference on open. |
 | `captureSource(ctx)` | Optional trusted capture of bounded, non-secret conversation coordinates, kept private. |
+| `authorizeOwnerSession({session, context})` | Optional synchronous host policy replacing session binding only for the verified stored owner. Requires captured source and explicit `true`; see [owner-session policy](docs/operations.md#optional-owner-session-policy). |
 | `overdueAfterMs` | Worker grace interval after activity or commissioner hand-back, default one minute. |
 | `reconcileCron` | Native handler cron, default every minute. Application maintenance policy remains external. |
 | `mcpPath` | Unique literal route, default `/commissioning/mcp`; mount filenames namespace tools, not routes. |
@@ -104,7 +105,7 @@ Identity resolvers return `{verified: true, principalId}` or `null`. Never put c
 - Uses published eve extension/tools/channel/schedule/state APIs and the official MCP SDK; no separate server or private runtime imports.
 - One worker and one eve process per mount with persistent local SQLite/WAL is the supported topology. This is a package constraint, not an eve-wide requirement; horizontal replicas/shared multi-host storage are unsupported.
 - Default owner continuations are private agent conversations. Human-visible routing is an application integration. Native progress renderers must not publish private tool arguments; see [operations](docs/operations.md).
-- Explicit recovery is host-authorized: verify the requester and original source, reset/create the canonical commission address, then CAS-rebind to that actual session ID with `store.rebindSession`. Delivery refuses a different current address owner. Original context stays immutable and old-session authority is revoked. See the [recovery recipe](docs/operations.md#session-and-worker-recovery).
+- With the default strict session binding, explicit recovery is host-authorized: verify the requester and original source, reset/create the canonical commission address, then CAS-rebind to that actual session ID with `store.rebindSession`. Delivery refuses a different current address owner. Original context stays immutable and old-session authority is revoked. See the [recovery recipe](docs/operations.md#session-and-worker-recovery).
 - `.` and `./tools` use eve-generated `.mjs`/`default` exports; `./store`, `./transport`, `./config` and `./cyrus` expose typed host APIs. Wildcard eve peer plus generated compatibility metadata follow the official extension scaffold. The qualification target is exactly eve 0.83.2, not every future runtime.
 
 ## Validation and known limitations
@@ -115,4 +116,4 @@ Dispatch snapshots at most 100 eligible entries by durable attempt count and seq
 
 Worker reads do not trigger reconciliation. Mutations commit first; the native route tracks their subsequent reconciliation through Eve's `waitUntil`, and cron retries pending work. Low-level callers supplying `reconcile` directly retain its awaited callback semantics. A newly recorded current-proposal delivery observation can notify a pending reviewer; duplicate observations and accepted work do not cause repeated review turns. Acceptance remains an explicit commissioner decision after application verification.
 
-This public-consumer increment does not certify production deployment, live-model judgment, arbitrary identity adapters or a complete security/performance audit. See [operations and recovery](docs/operations.md) before adopting the candidate.
+This public-consumer increment does not certify production deployment, live-model judgment, arbitrary identity adapters or a complete security/performance audit. See [operations and recovery](docs/operations.md) before adopting the package.

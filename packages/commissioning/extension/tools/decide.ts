@@ -11,8 +11,6 @@ export default defineTool({
     const caller = boundOwner(ctx, input.commissionId);
     const decision = input as DecisionInput;
     const store = runtime().store;
-    const commission = store.read(caller, input.commissionId);
-    if (commission.owner !== caller.principalId) throw new Error("Commissioner identity required");
     return store.decide(caller, decision);
   },
 });

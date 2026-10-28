@@ -68,12 +68,16 @@ const spec = {
   privateGuidance: "PRIVATE_GUIDANCE",
 };
 const reference = { kind: "linear-issue", id: "ENG-123" };
-function context(id = "original", principalId = "owner"): Context {
+function context(
+  id = "original",
+  principalId = "owner",
+  attributes: Record<string, string> = {},
+): Context {
   return {
     session: {
       id,
       auth: {
-        current: { ...auth, principalId },
+        current: { ...auth, principalId, attributes },
         initiator: { ...auth, principalId: "actual-initiator" },
       },
       turn: { id: "turn", sequence: 1 },
@@ -158,6 +162,111 @@ it("executes authored neutral open/read with native identity, textual context an
   expect(await openTool({ spec }, context())).toEqual(receipt);
   expect(store().context(commissionId)?.activeSessionId).toBe("replacement");
   expect(() => readTool({ commissionId, after: 0 }, context())).toThrow("different active session");
+});
+
+it("lets the verified stored owner continue in a policy-approved source without rebinding", async () => {
+  const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+  const originalContext = store().context(commissionId);
+  store().consult(worker, { commissionId, questionId: "question", question: { text: "Which?" } });
+  host.config.authorizeOwnerSession = ({ session, context: recorded }) =>
+    session.auth.current?.attributes.conversationId === recorded.source?.conversationId;
+  host.state = { commissionIds: [] };
+  const replacement = context("replacement", "owner", { conversationId: "PRIVATE_SOURCE" });
+  const otherSource = context("other-source", "owner", { conversationId: "OTHER_SOURCE" });
+  const decision = {
+    commissionId,
+    eventId: "answer",
+    target: "question" as const,
+    questionId: "question",
+    decision: { answer: "Proceed" },
+  };
+  expect(() => readTool({ commissionId, after: 0 }, otherSource)).toThrow("authorization required");
+  await expect(decideTool(decision, otherSource)).rejects.toThrow("authorization required");
+  expect(store().question(worker, commissionId, "question").status).toBe("pending");
+  expect(
+    (readTool({ commissionId, after: 0 }, replacement) as CommissionView).spec.privateGuidance,
+  ).toBe("PRIVATE_GUIDANCE");
+  await decideTool(decision, replacement);
+  expect(store().question(worker, commissionId, "question")).toMatchObject({
+    status: "answered",
+    answer: decision.decision,
+  });
+  expect(store().context(commissionId)).toEqual(originalContext);
+});
+
+it("keeps worker exclusion and stored ownership even with a permissive session policy", async () => {
+  const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+  host.config.authorizeOwnerSession = () => true;
+  const original = context("unknown");
+  const unknownAuth = {
+    ...original,
+    session: { ...original.session, auth: { ...original.session.auth, current: null } },
+  } as Context;
+  // A formerly assigned worker remains excluded by stored ownership after configuration changes.
+  host.config.workerPrincipalId = "new-worker";
+  for (const caller of [
+    context("foreign", "stranger"),
+    context("old-worker", "worker"),
+    context("new-worker", "new-worker"),
+    unknownAuth,
+  ]) {
+    expect(() => readTool({ commissionId, after: 0 }, caller)).toThrow();
+    await expect(
+      decideTool(
+        {
+          commissionId,
+          eventId: "denied",
+          target: "question",
+          questionId: "question",
+          decision: { answer: "Never" },
+        },
+        caller,
+      ),
+    ).rejects.toThrow();
+  }
+  expect(
+    (readTool({ commissionId, after: 0 }, context("replacement")) as CommissionView).owner,
+  ).toBe("owner");
+});
+
+it.each([
+  ["false", (): boolean => false],
+  [
+    "throw",
+    (): boolean => {
+      throw new Error("PRIVATE_POLICY_FAILURE");
+    },
+  ],
+  ["truthy non-boolean", (): boolean => "true" as unknown as boolean],
+  [
+    "rejected Promise",
+    (): boolean => Promise.reject(new Error("PRIVATE_POLICY_FAILURE")) as unknown as boolean,
+  ],
+] as const)(
+  "denies a configured %s policy without falling back to original binding",
+  async (_name, policy) => {
+    const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+    host.config.authorizeOwnerSession = policy;
+    expect(() => readTool({ commissionId, after: 0 }, context())).toThrow(
+      "Owner session authorization required",
+    );
+    // Let an unsupported asynchronous policy settle while the existing runner observes errors.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  },
+);
+
+it("denies policy authorization when no durable commissioning source was captured", async () => {
+  host.config.captureSource = undefined;
+  const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+  host.config.authorizeOwnerSession = () => true;
+  expect(() => readTool({ commissionId, after: 0 }, context())).toThrow(
+    "Owner session authorization required",
+  );
+  store().open(owner, { commissionId: "without-context", spec }, worker);
+  host.state = { commissionIds: ["without-context"] };
+  expect(() => readTool({ commissionId: "without-context", after: 0 }, context())).toThrow(
+    "Owner session authorization required",
+  );
 });
 
 it("requires connector/reference together and leaves no partial commission after failed preparation", async () => {
@@ -247,11 +356,11 @@ it("seeds continuation authority through the actual authored event before decidi
 it("uses authored default delivery history, queue policy and stable keys on retries", async () => {
   const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
   store().consult(worker, { commissionId, questionId: "q", question: { text: "Which?" } });
+  const send = vi.fn(async (_message: string, _options: unknown) => ({ status: "accepted" }));
   const create = vi.fn(async (_options: unknown) => ({
     created: true,
-    session: { id: "continuation" },
+    session: { id: "continuation", send },
   }));
-  const send = vi.fn(async (_message: string, _options: unknown) => {});
   const from = vi.fn(() => ({ create, send }));
   await drain()(async (delivery) => {
     await deliverOwner(from as unknown as Parameters<typeof deliverOwner>[0], delivery);
@@ -278,11 +387,11 @@ it("uses authored default delivery history, queue policy and stable keys on retr
 it("runs the authored schedule through the actual dispatcher and default channel receiver", async () => {
   const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
   store().consult(worker, { commissionId, questionId: "q", question: { text: "Which?" } });
+  const send = vi.fn(async (_message: string, _options: unknown) => ({ status: "accepted" }));
   const create = vi.fn(async (_options: unknown) => ({
     created: true,
-    session: { id: "continuation" },
+    session: { id: "continuation", send },
   }));
-  const send = vi.fn(async (_message: string, _options: unknown) => {});
   const channel = authoredChannel as unknown as {
     receive: (input: unknown, ctx: unknown) => Promise<unknown>;
   };
@@ -328,11 +437,11 @@ it.each(["route", "schedule"])(
       question: { text: "Which?" },
     });
     let canonicalSession = "original";
+    const send = vi.fn(async (_message: string, _options: unknown) => ({ status: "accepted" }));
     const create = vi.fn(async (_options: unknown) => ({
       created: false,
-      session: { id: canonicalSession },
+      session: { id: canonicalSession, send },
     }));
-    const send = vi.fn(async (_message: string, _options: unknown) => {});
     const source = {
       create,
       send,
@@ -402,6 +511,67 @@ it.each(["route", "schedule"])(
   },
 );
 
+it.each(["route", "schedule"])(
+  "keeps default delivery pending when the checked canonical session becomes inactive through %s",
+  async (path) => {
+    const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+    store().rebindSession(
+      owner,
+      {
+        commissionId,
+        eventId: "recovery",
+        expectedActiveSessionId: "original",
+        activeSessionId: "canonical-A",
+        source: { conversationId: "PRIVATE_SOURCE" },
+      },
+      owner,
+    );
+    store().consult(worker, { commissionId, questionId: "q", question: { text: "Which?" } });
+    let active = false;
+    const acceptedBy: string[] = [];
+    const session = {
+      id: "canonical-A",
+      send: async () => {
+        if (!active) return { status: "session_not_active" };
+        acceptedBy.push("canonical-A");
+        return { status: "accepted" };
+      },
+    };
+    // Native address delivery can follow/create a successor after the checked handle retires.
+    const from = () => ({
+      create: async () => ({ created: false, session }),
+      send: async () => {
+        acceptedBy.push(active ? "canonical-A" : "successor-B");
+        return session;
+      },
+    });
+    const channel = authoredChannel as unknown as {
+      receive: (input: unknown, ctx: unknown) => Promise<unknown>;
+    };
+    const run = () =>
+      path === "route"
+        ? drain()((delivery) =>
+            deliverOwner(from as unknown as Parameters<typeof deliverOwner>[0], delivery),
+          )
+        : (authoredSchedule as unknown as { run: (ctx: unknown) => Promise<void> }).run({
+            to: (_target: unknown, target: unknown) => ({
+              send: (message: string, options: { auth: unknown }) =>
+                channel.receive({ target, auth: options.auth, message }, { from }),
+            }),
+          });
+    await run();
+    expect(store().read(owner, commissionId).notification).toMatchObject({
+      pending: 1,
+      failureClass: "dispatch_failed",
+    });
+    expect(acceptedBy).toEqual([]);
+    active = true;
+    await run();
+    expect(acceptedBy).toEqual(["canonical-A"]);
+    expect(store().read(owner, commissionId).notification?.pending).toBe(0);
+  },
+);
+
 it("returns the authored mutation response before held delivery while tracking eventual reconciliation with route waitUntil", async () => {
   const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
   let release = () => {};
@@ -415,9 +585,9 @@ it("returns the authored mutation response before held delivery while tracking e
       return deliver(delivery);
     });
   const tracked: Promise<unknown>[] = [];
-  const send = vi.fn(async (_message: string, _options: unknown) => {});
+  const send = vi.fn(async (_message: string, _options: unknown) => ({ status: "accepted" }));
   const from = () => ({
-    create: async () => ({ created: false, session: { id: "continuation" } }),
+    create: async () => ({ created: false, session: { id: "continuation", send } }),
     send,
   });
   const route = (

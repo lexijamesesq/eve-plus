@@ -25,13 +25,15 @@ export async function deliverOwner(
   const { session } = await source.create({ auth: delivery.auth, history: delivery.history });
   if (delivery.context?.activeSessionId && session.id !== delivery.context.activeSessionId)
     throw new Error("Canonical commissioner source does not match the active session");
-  return source.send(delivery.message, {
+  const result = await session.send(delivery.message, {
     auth: delivery.auth,
     turnPolicy: "queue",
     idempotencyKey: createHash("sha256")
       .update(`${delivery.entry.commissionId}:${delivery.entry.eventId}`)
       .digest("hex"),
   });
+  if (result.status !== "accepted") throw new Error("Canonical commissioner session is inactive");
+  return session;
 }
 
 const handle = (

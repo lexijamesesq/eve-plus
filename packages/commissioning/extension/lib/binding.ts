@@ -15,7 +15,26 @@ export function owner(ctx: Pick<ToolContext, "session">) {
 }
 export function boundOwner(ctx: Pick<ToolContext, "session">, commissionId: string) {
   const caller = owner(ctx);
-  const context = runtime().store.context(commissionId);
+  const store = runtime().store;
+  if (store.read(caller, commissionId).owner !== caller.principalId)
+    throw new Error("Commissioner identity required");
+  const context = store.context(commissionId);
+  const authorize = extension.config.authorizeOwnerSession;
+  if (authorize !== undefined) {
+    let allowed = false;
+    try {
+      if (context?.source !== undefined) {
+        const result: unknown = authorize({ session: ctx.session, context });
+        allowed = result === true;
+        // Unsupported async policies still deny; consume failures without leaking host errors.
+        if (!allowed) void Promise.resolve(result).catch(() => {});
+      }
+    } catch {
+      // Host policy failures deny without exposing private context or errors.
+    }
+    if (!allowed) throw new Error("Owner session authorization required");
+    return caller;
+  }
   // Explicit recovery revokes every old session, including a restored session with stale durable state.
   if (context?.activeSessionId !== undefined) {
     if (context.activeSessionId !== ctx.session.id)
