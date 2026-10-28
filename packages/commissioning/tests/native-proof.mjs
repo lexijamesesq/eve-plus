@@ -39,6 +39,19 @@ const { StreamableHTTPClientTransport } = await load(
 );
 const Database = requireConsumer("better-sqlite3");
 const config = JSON.parse(await readFile(join(stage, "native-config.json"), "utf8"));
+const signedControl =
+  config.EXAMPLE_WORKER_AUTH === "signed"
+    ? (await load("@eve-plus/commissioning/auth")).createSignedWorkerCredential({
+        issuer: "urn:example:commissioning:worker",
+        subject: "example:builder",
+        resolvePrivateKey: () => readFile(join(stage, "synthetic-worker-private.pem"), "utf8"),
+      })
+    : undefined;
+const controlBearer = () =>
+  signedControl
+    ? signedControl({ endpoint: config.EXAMPLE_MCP_ENDPOINT, signal: new AbortController().signal })
+    : Promise.resolve(config.EXAMPLE_WORKER_TOKEN);
+
 const cyrusEnvironmentKeys = [
   "EXAMPLE_LINEAR_TOKEN",
   "EXAMPLE_CYRUS_DELEGATE_ID",
@@ -227,7 +240,8 @@ async function stop(child) {
     }
   }
 }
-async function connect(token = config.EXAMPLE_WORKER_TOKEN) {
+async function connect(token) {
+  token ??= await controlBearer();
   const client = new Client({ name: "public-qualification-worker", version: "1" });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(config.EXAMPLE_MCP_ENDPOINT), {

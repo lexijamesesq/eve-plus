@@ -1,4 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createSignedWorkerAuthenticator } from "@eve-plus/commissioning/auth";
 import type { CommissioningConfig } from "@eve-plus/commissioning/config";
 import { extractBearerToken, httpBasic } from "eve/channels/auth";
 import { requiredEnv } from "./env.js";
@@ -18,17 +20,29 @@ export const ownerRouteAuth = httpBasic({
   password: requiredEnv("EXAMPLE_OWNER_PASSWORD"),
 });
 const hash = (value: string) => createHash("sha256").update(value).digest();
+const workerAuthMode = process.env.EXAMPLE_WORKER_AUTH ?? "bearer";
+if (workerAuthMode !== "bearer" && workerAuthMode !== "signed")
+  throw new Error("Unknown example worker auth mode");
+const authenticateWorker: CommissioningConfig["authenticateWorker"] =
+  workerAuthMode === "signed"
+    ? createSignedWorkerAuthenticator({
+        issuer: requiredEnv("EXAMPLE_WORKER_ISSUER"),
+        subject: workerId,
+        audience: requiredEnv("EXAMPLE_MCP_ENDPOINT"),
+        publicKeys: [readFileSync(requiredEnv("EXAMPLE_WORKER_PUBLIC_KEY_FILE"), "utf8")],
+      })
+    : (request) => {
+        const token = extractBearerToken(request.headers.get("authorization"));
+        return token && timingSafeEqual(hash(token), hash(requiredEnv("EXAMPLE_WORKER_TOKEN")))
+          ? { verified: true, principalId: workerId }
+          : null;
+      };
 export const identity: Pick<
   CommissioningConfig,
   "workerPrincipalId" | "authenticateWorker" | "resolveSessionPrincipal" | "resolveDeliveryAuth"
 > = {
   workerPrincipalId: workerId,
-  authenticateWorker(request) {
-    const token = extractBearerToken(request.headers.get("authorization"));
-    return token && timingSafeEqual(hash(token), hash(requiredEnv("EXAMPLE_WORKER_TOKEN")))
-      ? { verified: true, principalId: workerId }
-      : null;
-  },
+  authenticateWorker,
   resolveSessionPrincipal(auth) {
     return auth?.authenticator === "http-basic" &&
       auth.principalId === ownerId &&

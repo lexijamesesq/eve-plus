@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+- Add optional `./auth` signed-worker credential and authenticator factories using native Eve verification and standard JOSE signing, with configurable bounded lifetime, clock tolerance and public-key rotation trust.
+- Keep existing authentication callbacks unchanged; document generic custody composition and demonstrate signed mode in the public consumer.
+
 ## 0.2.0
 
 - Keep default canonical notifications bound to the checked native session handle, and leave delivery pending if that session becomes inactive before accepting the send.
