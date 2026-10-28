@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Add optional synchronous `authorizeOwnerSession` for host-authorized owner sessions using captured trusted source context. Verified identity, stored ownership and worker exclusion remain mandatory; absent policy preserves strict session binding and explicit recovery.
+- Document application-owned native delivery and its at-least-once notification semantics.
+- Correct the standalone example to install the actual packed artifact filename.
+
 ## 0.1.1
 
 - Use SQLite's shipped platform bindings during Git preparation instead of permitting an inferred node-gyp rebuild. Clean frozen consumers no longer require a compiler for this dependency.

@@ -13,8 +13,10 @@ the local candidate tarball produced by `pnpm --filter @eve-plus/commissioning
 pack --pack-destination /absolute/scratch`, then install the example's declared
 dependencies:
 
+Replace `PACKED_TARBALL.tgz` below with the exact filename printed by `pack`.
+
 ```sh
-npm install /absolute/scratch/eve-plus-commissioning-0.1.0.tgz
+npm install /absolute/scratch/PACKED_TARBALL.tgz
 npm run typecheck
 ```
 

@@ -22,7 +22,7 @@ vi.mock("../extension/extension.js", () => ({
   },
 }));
 vi.mock("../extension/lib/runtime.js", () => ({
-  runtime: () => ({ store: { context: () => host.context } }),
+  runtime: () => ({ store: { read: () => ({ owner: "owner" }), context: () => host.context } }),
 }));
 
 import { boundOwner } from "../extension/lib/binding.js";

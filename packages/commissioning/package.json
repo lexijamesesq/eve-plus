@@ -1,6 +1,6 @@
 {
   "name": "@eve-plus/commissioning",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Durable software commissioning for eve, with an optional Cyrus connector.",
   "license": "MIT",
   "type": "module",

@@ -68,12 +68,16 @@ const spec = {
   privateGuidance: "PRIVATE_GUIDANCE",
 };
 const reference = { kind: "linear-issue", id: "ENG-123" };
-function context(id = "original", principalId = "owner"): Context {
+function context(
+  id = "original",
+  principalId = "owner",
+  attributes: Record<string, string> = {},
+): Context {
   return {
     session: {
       id,
       auth: {
-        current: { ...auth, principalId },
+        current: { ...auth, principalId, attributes },
         initiator: { ...auth, principalId: "actual-initiator" },
       },
       turn: { id: "turn", sequence: 1 },
@@ -158,6 +162,105 @@ it("executes authored neutral open/read with native identity, textual context an
   expect(await openTool({ spec }, context())).toEqual(receipt);
   expect(store().context(commissionId)?.activeSessionId).toBe("replacement");
   expect(() => readTool({ commissionId, after: 0 }, context())).toThrow("different active session");
+});
+
+it("lets the verified stored owner continue in a policy-approved source without rebinding", async () => {
+  const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+  const originalContext = store().context(commissionId);
+  store().consult(worker, { commissionId, questionId: "question", question: { text: "Which?" } });
+  host.config.authorizeOwnerSession = ({ session, context: recorded }) =>
+    session.auth.current?.attributes.conversationId === recorded.source?.conversationId;
+  host.state = { commissionIds: [] };
+  const replacement = context("replacement", "owner", { conversationId: "PRIVATE_SOURCE" });
+  const otherSource = context("other-source", "owner", { conversationId: "OTHER_SOURCE" });
+  const decision = {
+    commissionId,
+    eventId: "answer",
+    target: "question" as const,
+    questionId: "question",
+    decision: { answer: "Proceed" },
+  };
+  expect(() => readTool({ commissionId, after: 0 }, otherSource)).toThrow("authorization required");
+  await expect(decideTool(decision, otherSource)).rejects.toThrow("authorization required");
+  expect(store().question(worker, commissionId, "question").status).toBe("pending");
+  expect(
+    (readTool({ commissionId, after: 0 }, replacement) as CommissionView).spec.privateGuidance,
+  ).toBe("PRIVATE_GUIDANCE");
+  await decideTool(decision, replacement);
+  expect(store().question(worker, commissionId, "question")).toMatchObject({
+    status: "answered",
+    answer: decision.decision,
+  });
+  expect(store().context(commissionId)).toEqual(originalContext);
+});
+
+it("keeps worker exclusion and stored ownership even with a permissive session policy", async () => {
+  const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+  host.config.authorizeOwnerSession = () => true;
+  const original = context("unknown");
+  const unknownAuth = {
+    ...original,
+    session: { ...original.session, auth: { ...original.session.auth, current: null } },
+  } as Context;
+  // A formerly assigned worker remains excluded by stored ownership after configuration changes.
+  host.config.workerPrincipalId = "new-worker";
+  for (const caller of [
+    context("foreign", "stranger"),
+    context("old-worker", "worker"),
+    context("new-worker", "new-worker"),
+    unknownAuth,
+  ]) {
+    expect(() => readTool({ commissionId, after: 0 }, caller)).toThrow();
+    await expect(
+      decideTool(
+        {
+          commissionId,
+          eventId: "denied",
+          target: "question",
+          questionId: "question",
+          decision: { answer: "Never" },
+        },
+        caller,
+      ),
+    ).rejects.toThrow();
+  }
+  expect(
+    (readTool({ commissionId, after: 0 }, context("replacement")) as CommissionView).owner,
+  ).toBe("owner");
+});
+
+it.each([
+  ["false", (): boolean => false],
+  [
+    "throw",
+    (): boolean => {
+      throw new Error("PRIVATE_POLICY_FAILURE");
+    },
+  ],
+  ["truthy non-boolean", (): boolean => "true" as unknown as boolean],
+] as const)(
+  "denies a configured %s policy without falling back to original binding",
+  async (_name, policy) => {
+    const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+    host.config.authorizeOwnerSession = policy;
+    expect(() => readTool({ commissionId, after: 0 }, context())).toThrow(
+      "Owner session authorization required",
+    );
+  },
+);
+
+it("denies policy authorization when no durable commissioning source was captured", async () => {
+  host.config.captureSource = undefined;
+  const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+  host.config.authorizeOwnerSession = () => true;
+  expect(() => readTool({ commissionId, after: 0 }, context())).toThrow(
+    "Owner session authorization required",
+  );
+  store().open(owner, { commissionId: "without-context", spec }, worker);
+  host.state = { commissionIds: ["without-context"] };
+  expect(() => readTool({ commissionId: "without-context", after: 0 }, context())).toThrow(
+    "Owner session authorization required",
+  );
 });
 
 it("requires connector/reference together and leaves no partial commission after failed preparation", async () => {

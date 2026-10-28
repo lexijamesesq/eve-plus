@@ -2,7 +2,7 @@ import { isAbsolute } from "node:path";
 import type { SessionAuthContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
-import type { Caller, CommissionSource } from "./types.js";
+import type { Caller, CommissionerContext, CommissionSource } from "./types.js";
 import type { WorkerConnector } from "./worker.js";
 
 export type {
@@ -25,6 +25,11 @@ export interface CommissioningConfig {
   ): SessionAuthContext | null | Promise<SessionAuthContext | null>;
   /** Capture only whitelisted, non-secret native conversation coordinates from trusted host context. */
   captureSource?(ctx: ToolContext): CommissionSource | undefined;
+  /** Replace only session binding for the verified stored owner; synchronous explicit true permits. */
+  authorizeOwnerSession?(input: {
+    session: ToolContext["session"];
+    context: CommissionerContext;
+  }): boolean;
   overdueAfterMs?: number;
   reconcileCron?: string;
   mcpPath?: string;
@@ -43,6 +48,7 @@ export const configSchema = z
     resolveSessionPrincipal: fn,
     resolveDeliveryAuth: fn,
     captureSource: fn.optional(),
+    authorizeOwnerSession: fn.optional(),
     overdueAfterMs: z.number().int().positive().optional(),
     reconcileCron: z.string().min(1).default("* * * * *"),
     mcpPath: z
