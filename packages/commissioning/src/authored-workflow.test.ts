@@ -238,6 +238,10 @@ it.each([
     },
   ],
   ["truthy non-boolean", (): boolean => "true" as unknown as boolean],
+  [
+    "rejected Promise",
+    (): boolean => Promise.reject(new Error("PRIVATE_POLICY_FAILURE")) as unknown as boolean,
+  ],
 ] as const)(
   "denies a configured %s policy without falling back to original binding",
   async (_name, policy) => {
@@ -246,6 +250,8 @@ it.each([
     expect(() => readTool({ commissionId, after: 0 }, context())).toThrow(
       "Owner session authorization required",
     );
+    // Let an unsupported asynchronous policy settle while the existing runner observes errors.
+    await new Promise<void>((resolve) => setImmediate(resolve));
   },
 );
 
@@ -350,11 +356,11 @@ it("seeds continuation authority through the actual authored event before decidi
 it("uses authored default delivery history, queue policy and stable keys on retries", async () => {
   const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
   store().consult(worker, { commissionId, questionId: "q", question: { text: "Which?" } });
+  const send = vi.fn(async (_message: string, _options: unknown) => ({ status: "accepted" }));
   const create = vi.fn(async (_options: unknown) => ({
     created: true,
-    session: { id: "continuation" },
+    session: { id: "continuation", send },
   }));
-  const send = vi.fn(async (_message: string, _options: unknown) => {});
   const from = vi.fn(() => ({ create, send }));
   await drain()(async (delivery) => {
     await deliverOwner(from as unknown as Parameters<typeof deliverOwner>[0], delivery);
@@ -381,11 +387,11 @@ it("uses authored default delivery history, queue policy and stable keys on retr
 it("runs the authored schedule through the actual dispatcher and default channel receiver", async () => {
   const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
   store().consult(worker, { commissionId, questionId: "q", question: { text: "Which?" } });
+  const send = vi.fn(async (_message: string, _options: unknown) => ({ status: "accepted" }));
   const create = vi.fn(async (_options: unknown) => ({
     created: true,
-    session: { id: "continuation" },
+    session: { id: "continuation", send },
   }));
-  const send = vi.fn(async (_message: string, _options: unknown) => {});
   const channel = authoredChannel as unknown as {
     receive: (input: unknown, ctx: unknown) => Promise<unknown>;
   };
@@ -431,11 +437,11 @@ it.each(["route", "schedule"])(
       question: { text: "Which?" },
     });
     let canonicalSession = "original";
+    const send = vi.fn(async (_message: string, _options: unknown) => ({ status: "accepted" }));
     const create = vi.fn(async (_options: unknown) => ({
       created: false,
-      session: { id: canonicalSession },
+      session: { id: canonicalSession, send },
     }));
-    const send = vi.fn(async (_message: string, _options: unknown) => {});
     const source = {
       create,
       send,
@@ -505,6 +511,67 @@ it.each(["route", "schedule"])(
   },
 );
 
+it.each(["route", "schedule"])(
+  "keeps default delivery pending when the checked canonical session becomes inactive through %s",
+  async (path) => {
+    const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
+    store().rebindSession(
+      owner,
+      {
+        commissionId,
+        eventId: "recovery",
+        expectedActiveSessionId: "original",
+        activeSessionId: "canonical-A",
+        source: { conversationId: "PRIVATE_SOURCE" },
+      },
+      owner,
+    );
+    store().consult(worker, { commissionId, questionId: "q", question: { text: "Which?" } });
+    let active = false;
+    const acceptedBy: string[] = [];
+    const session = {
+      id: "canonical-A",
+      send: async () => {
+        if (!active) return { status: "session_not_active" };
+        acceptedBy.push("canonical-A");
+        return { status: "accepted" };
+      },
+    };
+    // Native address delivery can follow/create a successor after the checked handle retires.
+    const from = () => ({
+      create: async () => ({ created: false, session }),
+      send: async () => {
+        acceptedBy.push(active ? "canonical-A" : "successor-B");
+        return session;
+      },
+    });
+    const channel = authoredChannel as unknown as {
+      receive: (input: unknown, ctx: unknown) => Promise<unknown>;
+    };
+    const run = () =>
+      path === "route"
+        ? drain()((delivery) =>
+            deliverOwner(from as unknown as Parameters<typeof deliverOwner>[0], delivery),
+          )
+        : (authoredSchedule as unknown as { run: (ctx: unknown) => Promise<void> }).run({
+            to: (_target: unknown, target: unknown) => ({
+              send: (message: string, options: { auth: unknown }) =>
+                channel.receive({ target, auth: options.auth, message }, { from }),
+            }),
+          });
+    await run();
+    expect(store().read(owner, commissionId).notification).toMatchObject({
+      pending: 1,
+      failureClass: "dispatch_failed",
+    });
+    expect(acceptedBy).toEqual([]);
+    active = true;
+    await run();
+    expect(acceptedBy).toEqual(["canonical-A"]);
+    expect(store().read(owner, commissionId).notification?.pending).toBe(0);
+  },
+);
+
 it("returns the authored mutation response before held delivery while tracking eventual reconciliation with route waitUntil", async () => {
   const { commissionId } = (await openTool({ spec }, context())) as MutationResult;
   let release = () => {};
@@ -518,9 +585,9 @@ it("returns the authored mutation response before held delivery while tracking e
       return deliver(delivery);
     });
   const tracked: Promise<unknown>[] = [];
-  const send = vi.fn(async (_message: string, _options: unknown) => {});
+  const send = vi.fn(async (_message: string, _options: unknown) => ({ status: "accepted" }));
   const from = () => ({
-    create: async () => ({ created: false, session: { id: "continuation" } }),
+    create: async () => ({ created: false, session: { id: "continuation", send } }),
     send,
   });
   const route = (

@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- Keep default canonical notifications bound to the checked native session handle, and leave delivery pending if that session becomes inactive before accepting the send.
+
 - Add optional synchronous `authorizeOwnerSession` for host-authorized owner sessions using captured trusted source context. Verified identity, stored ownership and worker exclusion remain mandatory; absent policy preserves strict session binding and explicit recovery.
 - Document application-owned native delivery and its at-least-once notification semantics.
 - Correct the standalone example to install the actual packed artifact filename.

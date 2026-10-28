@@ -116,4 +116,4 @@ Dispatch snapshots at most 100 eligible entries by durable attempt count and seq
 
 Worker reads do not trigger reconciliation. Mutations commit first; the native route tracks their subsequent reconciliation through Eve's `waitUntil`, and cron retries pending work. Low-level callers supplying `reconcile` directly retain its awaited callback semantics. A newly recorded current-proposal delivery observation can notify a pending reviewer; duplicate observations and accepted work do not cause repeated review turns. Acceptance remains an explicit commissioner decision after application verification.
 
-This public-consumer increment does not certify production deployment, live-model judgment, arbitrary identity adapters or a complete security/performance audit. See [operations and recovery](docs/operations.md) before adopting the candidate.
+This public-consumer increment does not certify production deployment, live-model judgment, arbitrary identity adapters or a complete security/performance audit. See [operations and recovery](docs/operations.md) before adopting the package.

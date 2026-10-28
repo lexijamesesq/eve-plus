@@ -23,8 +23,12 @@ export function boundOwner(ctx: Pick<ToolContext, "session">, commissionId: stri
   if (authorize !== undefined) {
     let allowed = false;
     try {
-      allowed =
-        context?.source !== undefined && authorize({ session: ctx.session, context }) === true;
+      if (context?.source !== undefined) {
+        const result: unknown = authorize({ session: ctx.session, context });
+        allowed = result === true;
+        // Unsupported async policies still deny; consume failures without leaking host errors.
+        if (!allowed) void Promise.resolve(result).catch(() => {});
+      }
     } catch {
       // Host policy failures deny without exposing private context or errors.
     }
