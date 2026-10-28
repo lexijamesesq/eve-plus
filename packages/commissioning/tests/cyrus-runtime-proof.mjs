@@ -66,9 +66,10 @@ async function child(command, args, options, timeoutMs = 60000) {
     }, 1000).unref();
   }, timeoutMs);
   try {
-    const [code] = await once(subprocess, "exit");
+    const [code, signal] = await once(subprocess, "exit");
     return {
       code,
+      signal,
       timedOut,
       stdout: Buffer.concat(buffers.stdout).toString(),
       stderr: Buffer.concat(buffers.stderr).toString(),
@@ -416,8 +417,15 @@ export async function runCyrusProbe(
     "Probe connects only to the synthetic loopback endpoint",
   );
   const signed = config.EXAMPLE_WORKER_AUTH === "signed";
+  const commissioningRoot = dirname(dirname(requireConsumer.resolve("@eve-plus/commissioning")));
+  const commissioningManifest = await readJson(join(commissioningRoot, "package.json"));
   const signedControl = signed
-    ? (await load("@eve-plus/commissioning/auth")).createSignedWorkerCredential({
+    ? (
+        await import(
+          pathToFileURL(join(commissioningRoot, commissioningManifest.exports["./auth"].import))
+            .href
+        )
+      ).createSignedWorkerCredential({
         issuer: "urn:example:commissioning:worker",
         subject: "example:builder",
         resolvePrivateKey: () => readFile(join(stage, "synthetic-worker-private.pem"), "utf8"),
@@ -1074,8 +1082,14 @@ if (process.argv[1] && resolve(process.argv[1]) === thisFile) {
       },
       240000,
     );
-    if (result.code !== 0 || result.timedOut)
+    if (result.code !== 0 || result.timedOut) {
+      // Bounded synthetic child output is retained even if startup failed before native run receipts.
+      await writeFile(
+        join(resolve(process.argv[2]), "cyrus-native-child-failure.json"),
+        `${JSON.stringify(result, null, 2)}\n`,
+      );
       throw new Error("Isolated Cyrus runtime proof failed; inspect the synthetic stage receipts");
+    }
     process.stdout.write(result.stdout);
   }
 }

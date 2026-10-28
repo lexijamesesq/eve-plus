@@ -39,9 +39,18 @@ const { StreamableHTTPClientTransport } = await load(
 );
 const Database = requireConsumer("better-sqlite3");
 const config = JSON.parse(await readFile(join(stage, "native-config.json"), "utf8"));
+const commissioningRoot = dirname(dirname(requireConsumer.resolve("@eve-plus/commissioning")));
+const commissioningManifest = JSON.parse(
+  await readFile(join(commissioningRoot, "package.json"), "utf8"),
+);
 const signedControl =
   config.EXAMPLE_WORKER_AUTH === "signed"
-    ? (await load("@eve-plus/commissioning/auth")).createSignedWorkerCredential({
+    ? (
+        await import(
+          pathToFileURL(join(commissioningRoot, commissioningManifest.exports["./auth"].import))
+            .href
+        )
+      ).createSignedWorkerCredential({
         issuer: "urn:example:commissioning:worker",
         subject: "example:builder",
         resolvePrivateKey: () => readFile(join(stage, "synthetic-worker-private.pem"), "utf8"),
