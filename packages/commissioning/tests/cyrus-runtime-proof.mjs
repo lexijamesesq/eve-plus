@@ -628,8 +628,22 @@ export async function runCyrusProbe(
           .filter((block) => block.name.startsWith("mcp__commissioner__"))
           .map((block) => block.id),
       );
+      const expectedRefreshFailure =
+        signed && active.mode === "jwt-refresh-failure"
+          ? called.find(
+              (block) =>
+                block.name === "mcp__commissioner__commission_consult" &&
+                block.input?.commissionId === commissionId &&
+                block.input?.questionId === active.questionId,
+            )
+          : undefined;
       assert.equal(
-        results.some((block) => workerIds.has(block.tool_use_id) && block.is_error),
+        results.some(
+          (block) =>
+            workerIds.has(block.tool_use_id) &&
+            block.is_error &&
+            block.tool_use_id !== expectedRefreshFailure?.id,
+        ),
         false,
         "Real commissioning tool failed",
       );
@@ -689,18 +703,36 @@ export async function runCyrusProbe(
               question: { text: "Which behavior meets the recorded acceptance criteria?" },
             },
           };
-        } else if (active.mode === "jwt-refresh-failure") {
+        } else if (signed) {
           const consult = called.find(
-            (block) => block.name === "mcp__commissioner__commission_consult",
-          );
-          const blocks = body.messages.flatMap((message) =>
-            Array.isArray(message.content) ? message.content : [],
-          );
-          active.refreshRejected = blocks.some(
             (block) =>
-              block.type === "tool_result" && block.tool_use_id === consult.id && block.is_error,
+              block.name === "mcp__commissioner__commission_consult" &&
+              block.input?.commissionId === linkedId &&
+              block.input?.questionId === active.questionId,
           );
-          assert.equal(active.refreshRejected, true, "Failed signing custody must reject the tool");
+          assert.ok(consult, "Signed proof requires its matching consult call");
+          const result = results.find((block) => block.tool_use_id === consult.id);
+          assert.ok(result, "Signed proof requires its correlated consult result");
+          if (active.mode === "jwt-refresh-failure") {
+            active.refreshRejected = result.is_error === true;
+            assert.equal(
+              active.refreshRejected,
+              true,
+              "Failed signing custody must reject the tool",
+            );
+          } else {
+            assert.notEqual(result.is_error, true, "Refreshed consult must succeed");
+            active.consultAccepted =
+              sdkResultObjects(
+                result.content,
+                (value) => value.recorded === true && value.result?.commissionId === linkedId,
+              ).length > 0;
+            assert.equal(
+              active.consultAccepted,
+              true,
+              "Refreshed consult must return a valid recorded response",
+            );
+          }
         } else {
           active.answerRecovered = hasRecoveredCommissionerAnswer(
             body.messages ?? [],
@@ -854,7 +886,7 @@ export async function runCyrusProbe(
         linearMcpPath,
         JSON.stringify({ mcpServers: { linear: { type: "http", url: linearPeerUrl } } }),
       );
-      const prompt = `${mode === "valid-fallback" ? prompts.fallback : prompts.label}\n\n${mode === "missing-expected" ? "Commissioned work is expected for this issue; stop if its contract is missing." : "Follow the commissioning discovery protocol before work."}\nFor this synthetic qualification, ask a bounded question, recover its explicit answer and report a checkpoint when a linked contract exists.`;
+      const prompt = `${mode === "valid-fallback" ? prompts.fallback : prompts.label}\n\n${mode === "missing-expected" ? "Commissioned work is expected for this issue; stop if its contract is missing." : "Follow the commissioning discovery protocol before work."}\n${signed ? "For this synthetic authentication qualification, complete a read and bounded consult, then report its result and finish. This case does not qualify the answer/checkpoint loop." : "For this synthetic qualification, ask a bounded question, recover its explicit answer and report a checkpoint when a linked contract exists."}`;
       await writeFile(
         join(caseRoot, "runner-settings.json"),
         JSON.stringify({
@@ -877,6 +909,7 @@ export async function runCyrusProbe(
         discoveredCommissionId: null,
         disposition: null,
         answerRecovered: false,
+        consultAccepted: false,
         providerFailure: false,
         providerFailureClass: null,
         requestSummaries: [],
@@ -931,6 +964,9 @@ export async function runCyrusProbe(
       assert.equal(runner.subprocessEnvironmentScrub, true);
       const after = await read();
       if (signed) {
+        assert.equal(active.providerFailure, false);
+        assert.equal(runner.completed, true);
+        assert.equal(runner.runnerError, false);
         const authJournal = (await readFile(config.FIXTURE_WORKER_AUTH_JOURNAL, "utf8"))
           .trim()
           .split("\n")
@@ -999,14 +1035,17 @@ export async function runCyrusProbe(
         assert.ok(active.modelRequests > 0);
         assert.equal(runner.completed, true);
         assert.equal(runner.runnerError, false);
-        assert.equal(active.answerRecovered, true);
-        assert.ok(active.requestedTools.filter((name) => name === "commission_read").length >= 2);
-        assert.ok(
-          after.events.some(
-            (event) =>
-              event.eventId === "event:released-runner-checkpoint" && event.kind === "checkpoint",
-          ),
-        );
+        if (signed) assert.equal(active.consultAccepted, true);
+        else {
+          assert.equal(active.answerRecovered, true);
+          assert.ok(active.requestedTools.filter((name) => name === "commission_read").length >= 2);
+          assert.ok(
+            after.events.some(
+              (event) =>
+                event.eventId === "event:released-runner-checkpoint" && event.kind === "checkpoint",
+            ),
+          );
+        }
       } else if (mode !== "jwt-refresh-failure") {
         assert.equal(active.providerFailure, false);
         if (mode === "ordinary") assert.deepEqual(active.disposition, { status: "ordinary" });
@@ -1030,6 +1069,8 @@ export async function runCyrusProbe(
         disposition: active.disposition,
         initialPromptContainsCommissionId: prompt.includes(commissionId),
         answerRecovered: active.answerRecovered,
+        authenticationOnly: signed,
+        consultAccepted: active.consultAccepted,
         exactThreeToolPolicy: true,
         wrongHelperContextRejected: true,
         subprocessEnvironmentScrub: true,
@@ -1046,7 +1087,7 @@ export async function runCyrusProbe(
         "Synthetic declared MCP tools, not hosted Linear schema or production OAuth qualification",
       executionPending: false,
       limits:
-        "Released runner and SDK; real installed Eve MCP endpoint; synthetic credentials and loopback model only. No live Cyrus webhook, paid model, external work message, automatic wake, or production execution-start claim.",
+        "Released runner and SDK; real installed Eve MCP endpoint; synthetic credentials and loopback model only. Signed cases qualify authentication expiry/refresh only, not the full answer/checkpoint loop. No live Cyrus webhook, paid model, external work message, automatic wake, or production execution-start claim.",
     };
     await writeFile(join(root, "result.json"), `${JSON.stringify(receipt, null, 2)}\n`);
     return receipt;
