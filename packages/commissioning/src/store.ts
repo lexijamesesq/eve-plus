@@ -87,6 +87,7 @@ interface CommissionRow {
 }
 interface OutboxRow {
   seq: number;
+  attempt_count: number;
   commission_id: string;
   event_id: string;
   kind: string;
@@ -493,6 +494,7 @@ export class CommissionStore {
           kind: row.kind,
           payload: JSON.parse(row.payload) as unknown,
           leaseToken: token,
+          attempt: row.attempt_count,
         };
       })
       .immediate();

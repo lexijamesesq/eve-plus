@@ -181,20 +181,26 @@ describe("dispatch", () => {
     }
   });
 
-  it("tries a lone persistent failure once per sweep", async () => {
+  it("tries a lone persistent failure once per sweep, and warns with fixed fields on each attempt", async () => {
     const store = new CommissionStore(":memory:");
     try {
       openHandedOff(store, "failed");
       ask(store, "failed");
       const failing = vi.fn(() => {
-        throw new Error("offline");
+        throw new Error("offline with a credential");
       });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const drain = createDispatcher(store, config());
       await drain(recordingTo(failing).to);
       expect(failing).toHaveBeenCalledTimes(1);
       await drain(recordingTo(failing).to);
       expect(failing).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls).toEqual([
+        ["[commissioning] delivery failed: commission=failed reason=delivery_failed attempt=1"],
+        ["[commissioning] delivery failed: commission=failed reason=delivery_failed attempt=2"],
+      ]);
     } finally {
+      vi.restoreAllMocks();
       store.close();
     }
   });

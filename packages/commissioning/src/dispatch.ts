@@ -86,7 +86,11 @@ export function createDispatcher(store: CommissionStore, config: CommissioningCo
           }
           store.acknowledgeOutbox(entry.seq, entry.leaseToken);
         } catch {
-          // Leave it for the next sweep. Callback and provider errors aren't kept: they can carry secrets.
+          // Leave it for the next sweep, and say so: a notice that keeps failing would otherwise be silent. Fixed
+          // fields only; the notice, the auth and callback or provider errors can carry secrets.
+          console.warn(
+            `[commissioning] delivery failed: commission=${entry.commissionId} reason=${failure} attempt=${entry.attempt}`,
+          );
           try {
             store.releaseOutbox(entry.seq, entry.leaseToken, failure);
           } catch {

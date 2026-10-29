@@ -93,6 +93,8 @@ export interface OutboxEntry {
   kind: string;
   payload: unknown;
   leaseToken: string;
+  /** Delivery attempts so far, this one included. */
+  attempt: number;
 }
 /** Fixed reasons a delivery stays pending. Raw callback and provider errors are never stored or shown. */
 export type OutboxFailureClass = "handoff_failed" | "commissioner_unavailable" | "delivery_failed";
