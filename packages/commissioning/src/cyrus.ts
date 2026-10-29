@@ -88,6 +88,9 @@ const bindingSchema = z
   })
   .strict();
 const maxContractCharacters = 1_048_576;
+// The contract's first line, and how a contract is recognized on an issue. It's a visible heading because Linear
+// shows HTML comments as text.
+const CONTRACT_HEADING = "## Commissioning contract";
 const recordSchema = z.object({
   id: identifier,
   url: issueUrl,
@@ -172,7 +175,7 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
   async function readIssue(id: string, commentId: string) {
     const response = await request<{ issue: unknown }>(
       "CommissionWorkRecord",
-      'query CommissionWorkRecord($id:String!,$commentId:ID!){issue(id:$id){id url description delegate{id} comments(first:2,filter:{or:[{id:{eq:$commentId}},{body:{contains:"<!-- eve-commission:"}}]}){nodes{id body} pageInfo{hasNextPage}}}}',
+      `query CommissionWorkRecord($id:String!,$commentId:ID!){issue(id:$id){id url description delegate{id} comments(first:2,filter:{or:[{id:{eq:$commentId}},{body:{contains:"${CONTRACT_HEADING}"}}]}){nodes{id body} pageInfo{hasNextPage}}}}`,
       { id, commentId },
     );
     const record = recordSchema.safeParse(response?.issue);
@@ -193,7 +196,7 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
       const record = await readIssue(reference.id, contractCommentId);
       if (
         record.delegate ||
-        (record.description ?? "").includes("<!-- eve-commission:") ||
+        (record.description ?? "").includes(CONTRACT_HEADING) ||
         record.comments.nodes.length ||
         record.comments.pageInfo.hasNextPage
       )
@@ -220,8 +223,7 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
       )
         fail("configuration_changed");
       const contract = [
-        `<!-- eve-commission:${commissionId} -->`,
-        "## Commissioning contract",
+        CONTRACT_HEADING,
         `Commission ID: ${commissionId}`,
         `MCP server: ${target.mcpServerName}`,
         `Endpoint: ${target.mcpEndpoint}`,
@@ -232,14 +234,13 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
         "",
         "Acceptance:",
         ...spec.acceptance.map((value) => `- ${value}`),
-        `<!-- /eve-commission:${commissionId} -->`,
       ].join("\n");
       // Check the complete rendered contract before any handoff read or external mutation.
       if (contract.length > maxContractCharacters) fail("contract_too_large");
       const canonical = (record: z.infer<typeof recordSchema>) =>
         record.id === target.issueId &&
         record.url === target.issueUrl &&
-        !(record.description ?? "").includes("<!-- eve-commission:");
+        !(record.description ?? "").includes(CONTRACT_HEADING);
       const matchesContract = (record: z.infer<typeof recordSchema>) =>
         canonical(record) &&
         !record.comments.pageInfo.hasNextPage &&

@@ -51,9 +51,12 @@ function provider() {
         return new Response("provider-credential-must-not-escape", { status: 503 });
       }
       expect(["ENG-123", canonicalId]).toContain(body.variables.id);
+      // Apply the comment filter the query actually sends, as Linear would.
+      const marker = body.query.match(/body:\{contains:"([^"]*)"\}/)?.[1];
       const matches = comments.filter(
         (comment) =>
-          comment.id === body.variables.commentId || comment.body.includes("<!-- eve-commission:"),
+          comment.id === body.variables.commentId ||
+          (marker !== undefined && comment.body.includes(marker)),
       );
       return Response.json({
         data: {
@@ -159,6 +162,11 @@ describe("public Cyrus Linear connector", () => {
       },
     ]);
     const contract = fixture.comments[0].body;
+    // Linear shows HTML comments as text, so the contract carries none and opens with its visible heading.
+    expect(contract.startsWith(`## Commissioning contract\nCommission ID: ${commissionId}\n`)).toBe(
+      true,
+    );
+    expect(contract).not.toContain("<!--");
     for (const value of [
       spec.brief,
       `- ${spec.acceptance[0]}`,
@@ -244,8 +252,8 @@ describe("public Cyrus Linear connector", () => {
       const fixture = provider();
       const binding = await fixture.prepare();
       const markerSpec = {
-        brief: `Document <!-- eve-commission: and <!-- eve-commission:${commissionId} --> exactly.`,
-        acceptance: [`Quote <!-- /eve-commission:${commissionId} -->.`],
+        brief: `Document the "## Commissioning contract" heading and Commission ID: ${commissionId} exactly.`,
+        acceptance: ["Quote ## Commissioning contract."],
       };
       const store = new CommissionStore(":memory:");
       try {
@@ -353,7 +361,7 @@ describe("public Cyrus Linear connector", () => {
   it.each([
     "another-delegate",
     "same-delegate-without-contract",
-    "legacy-description",
+    "description-contract",
     "foreign-comment",
     "changed-contract",
     "extra-contract",
@@ -364,15 +372,22 @@ describe("public Cyrus Linear connector", () => {
     const binding = await fixture.prepare();
     if (kind === "another-delegate") fixture.issue.delegate = { id: "another-worker" };
     if (kind === "same-delegate-without-contract") fixture.issue.delegate = { id: delegateId };
-    if (kind === "legacy-description") fixture.issue.description += "\n<!-- eve-commission:old -->";
+    if (kind === "description-contract")
+      fixture.issue.description += "\n## Commissioning contract\nCommission ID: old";
     if (kind === "foreign-comment")
-      fixture.comments.push({ id: "other-comment", body: "<!-- eve-commission:foreign -->" });
+      fixture.comments.push({
+        id: "other-comment",
+        body: "## Commissioning contract\nCommission ID: foreign",
+      });
     if (["changed-contract", "extra-contract", "deleted-contract"].includes(kind)) {
       await fixture.connector.handoff({ commissionId, spec, binding });
       if (kind === "changed-contract")
         fixture.comments[0].body = "Changed entirely, including marker removal";
       else if (kind === "extra-contract")
-        fixture.comments.push({ id: "other-comment", body: "<!-- eve-commission:foreign -->" });
+        fixture.comments.push({
+          id: "other-comment",
+          body: "## Commissioning contract\nCommission ID: foreign",
+        });
       else fixture.comments.splice(0);
     }
     if (kind === "extra-page") fixture.fault.extraPage = true;
@@ -387,7 +402,11 @@ describe("public Cyrus Linear connector", () => {
 
   it("refuses occupied work and wrong references during read-only preparation", async () => {
     const fixture = provider();
-    fixture.comments.push({ id: "foreign", body: "<!-- eve-commission:other -->" });
+    // A contract a 0.5.0 handoff wrote, with its HTML-comment markers, still occupies the issue.
+    fixture.comments.push({
+      id: "foreign",
+      body: "<!-- eve-commission:other -->\n## Commissioning contract\nCommission ID: other\n<!-- /eve-commission:other -->",
+    });
     await expect(fixture.prepare()).rejects.toMatchObject({ code: "handoff_conflict" });
     expect(fixture.mutations()).toHaveLength(0);
     fixture.comments.splice(0);

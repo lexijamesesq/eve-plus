@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+The Cyrus contract comment no longer shows HTML-comment markers as text. Linear renders an HTML comment visibly, so
+the contract now opens with its heading, `## Commissioning contract`, followed by `Commission ID: <id>`; the rest of
+it is unchanged. That heading is also how a contract is recognized on an issue, so an issue holding a contract
+written by 0.5.0 or 0.5.1 is still refused as already commissioned. A Cyrus that finds its contract by the heading and
+the `Commission ID:` line reads either version. No API or store change.
+
 ## 0.5.0
 
 A breaking rework to what commissioning needs: the commissioner and the worker can talk, and nothing more. Stores

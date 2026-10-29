@@ -53,7 +53,7 @@ A result is `{ result, recorded: true }`, or `{ error: { code, message } }` with
 - `mcp.serverName` and `mcp.endpoint`: the name Cyrus's MCP configuration gives this mount, and the URL Cyrus reaches it at (HTTPS, or HTTP on this host only).
 - `timeoutMs`: the deadline for each Linear operation. Default 15 seconds.
 
-**The handoff.** `open` reads the issue: it must have no delegate and no commissioning contract yet. The dispatcher then adds one root comment holding the commission's contract (its ID, the server name and endpoint, the brief and the acceptance criteria), reads it back, sets only the delegate, and reads that back. It never edits the issue's description or another comment. A lost response is reconciled by reading the issue before retrying. Linear has no compare-and-swap on delegation, so use an issue dedicated to the commission.
+**The handoff.** `open` reads the issue: it must have no delegate and no commissioning contract yet, meaning no comment and no description containing `## Commissioning contract`. The dispatcher then adds one root comment holding the commission's contract (its ID, the server name and endpoint, the brief and the acceptance criteria), reads it back, sets only the delegate, and reads that back. It never edits the issue's description or another comment. A lost response is reconciled by reading the issue before retrying. Linear has no compare-and-swap on delegation, so use an issue dedicated to the commission.
 
 **Cyrus's side.** Cyrus needs the endpoint in its MCP configuration with the worker token as a header, read from its environment rather than written into the file:
 
@@ -69,7 +69,7 @@ A result is `{ result, recorded: true }`, or `{ error: { code, message } }` with
 }
 ```
 
-Allow exactly `mcp__<server>__commission_read`, `mcp__<server>__commission_consult` and `mcp__<server>__commission_report` alongside Cyrus's own tools, and give it instructions to look for the `<!-- eve-commission:… -->` contract comment on a delegated issue before starting, read the commission, and use the three tools.
+Allow exactly `mcp__<server>__commission_read`, `mcp__<server>__commission_consult` and `mcp__<server>__commission_report` alongside Cyrus's own tools, and give it instructions to look for the contract comment on a delegated issue before starting (a comment headed `## Commissioning contract`, whose next line is `Commission ID: <id>`), read the commission, and use the three tools.
 
 **When Cyrus stops.** Cyrus polls `commission_read` while it's running. Once its session parks or exits, nothing here wakes it: a person replies in its Linear agent session, or starts a fresh session on the same issue, which reads the commission first. The overdue notice is how the commissioner learns it's gone quiet.
 

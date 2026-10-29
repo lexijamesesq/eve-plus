@@ -11,7 +11,7 @@ Install it from a release tag as a git dependency, next to eve 0.83.2 or later w
 ```json
 {
   "dependencies": {
-    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.5.0&path:packages/commissioning",
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.5.1&path:packages/commissioning",
     "eve": "0.83.2"
   }
 }
