@@ -85,6 +85,14 @@ export const reportSchema = z.discriminatedUnion("kind", [
 // What the worker endpoint publishes for commission_report: one flat object, because an MCP client is shown no
 // arguments for a discriminated union. reportSchema then applies the per-kind rules inside the handler.
 type ReportKind = z.infer<typeof reportSchema>["kind"];
+// The artifact's field names, from artifactSchema, as plain strings: the handler's strict check refuses a malformed
+// one with invalid_input, where a strict published schema would be refused by the SDK as a protocol error.
+const publishedArtifact = z.looseObject(
+  Object.fromEntries(Object.keys(artifactSchema.shape).map((key) => [key, z.string()])) as Record<
+    keyof typeof artifactSchema.shape,
+    z.ZodString
+  >,
+);
 export const reportToolSchema = z
   .object({
     commissionId: id,
@@ -98,7 +106,7 @@ export const reportToolSchema = z
     data: z
       .object({
         summary: text,
-        artifact: artifactSchema
+        artifact: publishedArtifact
           .optional()
           .describe(
             "Required for a proposal, and only for one: HTTPS repository, full 40-hex commit, and its PR",

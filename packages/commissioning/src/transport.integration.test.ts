@@ -210,7 +210,9 @@ describe("the worker endpoint", () => {
         },
       },
     });
+    // A malformed artifact is the handler's refusal, with the store's reason, not a protocol error from the SDK.
     expect(moving.isError).toBe(true);
+    expect(moving.structuredContent).toMatchObject({ error: { code: "invalid_input" } });
     // The per-kind rules hold in the handler: a proposal needs its artifact, and only a proposal may carry one.
     const artifact = {
       repository: "https://github.com/example/repo",
