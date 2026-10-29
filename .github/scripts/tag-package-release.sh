@@ -17,12 +17,44 @@ if [[ -n "$REMOTE" ]]; then
 	}
 	git cat-file -e "$SOURCE^{commit}" 2>/dev/null || git fetch --no-tags origin "$SOURCE"
 fi
+confirm_tag_source() {
+	local winner
+	winner=$(git ls-remote --tags origin "refs/tags/$TAG^{}" | awk '{print $1}')
+	[[ "$winner" == "$SOURCE" ]] || {
+		echo "FAIL: $TAG source changed during release; rerun against the winning tag" >&2
+		exit 1
+	}
+}
 ASSETS=()
 if [[ "$PACKAGE_NAME" == commissioning ]]; then
 	ASSET_ROOT=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/commissioning-assets.XXXXXXXX")
 	trap 'rm -rf "$ASSET_ROOT"' EXIT
-	bash "$(dirname "$0")/build-worker-release.sh" "$SOURCE" "$ASSET_ROOT"
-	ASSETS=("$ASSET_ROOT/commissioning-worker-v${CURRENT_VERSION}.tar.gz" "$ASSET_ROOT/commissioning-worker-v${CURRENT_VERSION}.tar.gz.sha256")
+	ARCHIVE="commissioning-worker-v${CURRENT_VERSION}.tar.gz"
+	if [[ -n "$REMOTE" ]] && gh release view "$TAG" >/dev/null 2>&1; then
+		NAMES=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+		if grep -Fxq "$ARCHIVE" <<<"$NAMES" && grep -Fxq "$ARCHIVE.sha256" <<<"$NAMES"; then
+			for name in "$ARCHIVE" "$ARCHIVE.sha256"; do
+				gh release download "$TAG" --pattern "$name" --dir "$ASSET_ROOT"
+			done
+			# Consistency of the existing trusted asset pair and tag metadata, not a fresh rebuild.
+			python3 - "$ASSET_ROOT/$ARCHIVE" "$CURRENT_VERSION" "$SOURCE" <<'PYTHON'
+import hashlib, json, pathlib, sys, tarfile
+archive = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+if pathlib.Path(str(archive) + ".sha256").read_text() != f"{digest}  {archive.name}\n":
+    raise SystemExit("FAIL: published worker checksum differs")
+with tarfile.open(archive) as bundle:
+    manifest = json.load(bundle.extractfile("package.json"))
+if (manifest.get("name"), manifest.get("version"), manifest.get("gitHead"), manifest.get("type")) != ("@eve-plus/commissioning-worker", sys.argv[2], sys.argv[3], "module"):
+    raise SystemExit("FAIL: published worker metadata differs from the annotated tag")
+PYTHON
+			confirm_tag_source
+			echo "$PACKAGE_NAME: verified existing $TAG assets without rebuilding"
+			exit 0
+		fi
+	fi
+	env -u GH_TOKEN -u GITHUB_TOKEN bash "$(dirname "$0")/build-worker-release.sh" "$SOURCE" "$ASSET_ROOT"
+	ASSETS=("$ASSET_ROOT/$ARCHIVE" "$ASSET_ROOT/$ARCHIVE.sha256")
 fi
 if [[ -z "$REMOTE" ]]; then
 	echo "$PACKAGE_NAME: tagging $TAG"
@@ -31,11 +63,7 @@ if [[ -z "$REMOTE" ]]; then
 		echo "$PACKAGE_NAME: push rejected; verifying the winning tag"
 	fi
 fi
-WINNER=$(git ls-remote --tags origin "refs/tags/$TAG^{}" | awk '{print $1}')
-[[ "$WINNER" == "$SOURCE" ]] || {
-	echo "FAIL: $TAG source changed during release; rerun against the winning tag" >&2
-	exit 1
-}
+confirm_tag_source
 if ! gh release view "$TAG" >/dev/null 2>&1; then
 	PREV_TAG=$(git tag -l "${PACKAGE_NAME}--v*" --sort=-v:refname | grep -vxF "$TAG" | head -1 || true)
 	notes=(--generate-notes)

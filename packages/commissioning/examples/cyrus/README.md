@@ -31,6 +31,7 @@ Set these environment variables before both build and runtime:
 | `EXAMPLE_OWNER_PASSWORD` | Local owner's password; do not reuse a worker credential. |
 | `EXAMPLE_WORKER_TOKEN` | Bearer mode: worker endpoint credential, provided privately. |
 | `EXAMPLE_WORKER_AUTH` | `bearer` (default) or explicit `signed` mode below. |
+| `EXAMPLE_WORKER_ALGORITHM` | `ES256` (default) or explicit `EdDSA` for Ed25519, matched on server and worker. |
 | `EXAMPLE_WORKER_MODE` | `cyrus` (default) or `neutral`. |
 | `EXAMPLE_LINEAR_TOKEN` | Cyrus mode: token for the configured Linear workspace. |
 | `EXAMPLE_CYRUS_DELEGATE_ID` | Cyrus mode: explicit enrolled Cyrus delegate ID. |
@@ -113,7 +114,7 @@ On Eve, supply `EXAMPLE_WORKER_ISSUER`, `EXAMPLE_MCP_ENDPOINT` and
 is the example's existing `example:builder`. No worker private key or token is required on Eve in this mode.
 
 For `scripts/worker-artifacts.mjs`, supply the same issuer and endpoint plus
-`EXAMPLE_WORKER_PRIVATE_KEY_FILE` pointing to a dedicated ES256 PKCS8 key under your worker's custody.
+`EXAMPLE_WORKER_PRIVATE_KEY_FILE` pointing to a dedicated PKCS8 key matching the selected algorithm under your worker's custody.
 Generated settings contain its path, not key material. The native headers helper reads that key and uses
 `createSignedWorkerCredential`; replace the example file reader with your existing custody provider as
 needed. Do not pass a live key or token into a model, ordinary environment variable or MCP JSON.

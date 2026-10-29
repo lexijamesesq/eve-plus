@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.3.1
+## 0.4.0
+
+- Add explicit EdDSA (Ed25519) signed worker authentication using JOSE while preserving ES256 as the default and its native Eve verification path. Both algorithms retain strict issuer, subject, audience and bounded lifetime checks.
 
 - Publish a portable worker-side release archive with the existing Cyrus configuration/header helper and signed credential factory, bundled with their licenses and requiring only Node 24.
 - Keep worker code independent of Eve and SQLite while preserving the existing public module exports. Git preparation invokes the native build commands directly.

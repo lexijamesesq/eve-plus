@@ -87,6 +87,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       # Build the portable worker before publishing its release; no host build tools are needed.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -106,6 +107,7 @@ jobs:
         run: |
           set -uo pipefail
           FAILED=0
+          gh auth setup-git || exit 1
           bash .github/scripts/tag-package-release.sh packages/memory memory || FAILED=1
           bash .github/scripts/tag-package-release.sh packages/sandbox-microsandbox sandbox-microsandbox || FAILED=1
           bash .github/scripts/tag-package-release.sh packages/commissioning commissioning || FAILED=1

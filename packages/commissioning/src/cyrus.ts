@@ -26,7 +26,6 @@ export interface CyrusOptions {
   timeoutMs?: number;
 }
 
-/** Native MCP server name to exact worker-reachable HTTP endpoint. */
 const identifier = z
   .string()
   .min(1)

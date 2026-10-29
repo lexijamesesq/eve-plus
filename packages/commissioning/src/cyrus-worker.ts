@@ -2,6 +2,7 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { failCyrus as fail } from "./cyrus-errors.js";
 
+/** Native MCP server name to exact worker-reachable HTTP endpoint. */
 export type CyrusServers = Readonly<Record<string, string>>;
 
 export const hasControlCharacters = (value: string) =>

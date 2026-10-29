@@ -46,20 +46,22 @@ assert.ok(notices.includes("jose") && notices.includes("zod"));
 const endpoint="http://127.0.0.1:43229/commissioning/mcp";
 const artifacts=worker.createCyrusWorkerArtifacts({servers:{commissioner:endpoint},headersHelperPath:"/synthetic/headers-helper"});
 assert.deepEqual(artifacts.allowedTools,["mcp__commissioner__commission_read","mcp__commissioner__commission_consult","mcp__commissioner__commission_report"]);
-const {privateKey,publicKey}=generateKeyPairSync("ec",{namedCurve:"P-256",privateKeyEncoding:{type:"pkcs8",format:"pem"},publicKeyEncoding:{type:"spki",format:"pem"}});
-const credential=worker.createSignedWorkerCredential({issuer:"urn:example:worker",subject:"synthetic-worker",resolvePrivateKey:()=>privateKey});
+for (const algorithm of ["ES256","EdDSA"]) {
+const {privateKey,publicKey}=algorithm==="ES256"?generateKeyPairSync("ec",{namedCurve:"P-256",privateKeyEncoding:{type:"pkcs8",format:"pem"},publicKeyEncoding:{type:"spki",format:"pem"}}):generateKeyPairSync("ed25519",{privateKeyEncoding:{type:"pkcs8",format:"pem"},publicKeyEncoding:{type:"spki",format:"pem"}});
+const credential=worker.createSignedWorkerCredential({issuer:"urn:example:worker",subject:"synthetic-worker",algorithm:algorithm==="ES256"?undefined:algorithm,resolvePrivateKey:()=>privateKey});
 let output="";let errors="";
 const code=await worker.runCyrusHeadersHelper({servers:{commissioner:endpoint},resolveCredential:credential,env:{CLAUDE_CODE_MCP_SERVER_NAME:"commissioner",CLAUDE_CODE_MCP_SERVER_URL:endpoint},stdout:{write(value){output+=value;}},stderr:{write(value){errors+=value;}}});
 assert.equal(code,0);assert.equal(errors,"");
 const token=JSON.parse(output).Authorization.slice(7);const [header,payload,signature]=token.split(".");
-assert.equal(JSON.parse(Buffer.from(header,"base64url")).alg,"ES256");
-assert.equal(verify("sha256",Buffer.from(header+"."+payload),{key:publicKey,dsaEncoding:"ieee-p1363"},Buffer.from(signature,"base64url")),true);
+assert.equal(JSON.parse(Buffer.from(header,"base64url")).alg,algorithm);
+assert.equal(verify(algorithm==="ES256"?"sha256":null,Buffer.from(header+"."+payload),algorithm==="ES256"?{key:publicKey,dsaEncoding:"ieee-p1363"}:publicKey,Buffer.from(signature,"base64url")),true);
 const claims=JSON.parse(Buffer.from(payload,"base64url"));
 assert.equal(claims.iss,"urn:example:worker");assert.equal(claims.sub,"synthetic-worker");assert.equal(claims.aud,endpoint);assert.equal(claims.exp-claims.iat,300);
-let custodyReached=false;output="";
+}
+let custodyReached=false;let output="";
 assert.equal(await worker.runCyrusHeadersHelper({servers:{commissioner:endpoint},resolveCredential(){custodyReached=true;return "unused";},env:{CLAUDE_CODE_MCP_SERVER_NAME:"commissioner",CLAUDE_CODE_MCP_SERVER_URL:"https://wrong.example/mcp"},stdout:{write(value){output+=value;}},stderr:{write(){}}}),1);
 assert.equal(custodyReached,false);assert.equal(output,"");
-console.log(JSON.stringify({passed:true,version:manifest.version,gitHead:manifest.gitHead,standaloneWorker:true,exactWorkerGrants:true,realSignedHeader:true,wrongDestinationDeniesCustody:true,noPackageInstall:true,node:process.version,platform:process.platform,arch:process.arch}));
+console.log(JSON.stringify({passed:true,version:manifest.version,gitHead:manifest.gitHead,standaloneWorker:true,exactWorkerGrants:true,realSignedHeader:true,algorithms:["ES256","EdDSA"],wrongDestinationDeniesCustody:true,noPackageInstall:true,node:process.version,platform:process.platform,arch:process.arch}));
 `,
       workerStage,
     ],
@@ -177,7 +179,7 @@ assert.equal(
   false,
 );
 store.close();
-const keys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+const keys = generateKeyPairSync("ed25519");
 const privateKeyFile = join(stage, "synthetic-worker-private.pem");
 const publicKeyFile = join(stage, "synthetic-worker-public.pem");
 await writeFile(privateKeyFile, keys.privateKey.export({ type: "pkcs8", format: "pem" }), {
@@ -195,6 +197,7 @@ for (const mode of ["neutral", "cyrus", "signed"]) {
     ...(mode === "signed"
       ? {
           EXAMPLE_WORKER_ISSUER: "urn:example:worker",
+          EXAMPLE_WORKER_ALGORITHM: "EdDSA",
           EXAMPLE_WORKER_PUBLIC_KEY_FILE: publicKeyFile,
           EXAMPLE_WORKER_PRIVATE_KEY_FILE: privateKeyFile,
         }
@@ -224,6 +227,7 @@ for (const mode of ["neutral", "cyrus", "signed"]) {
       pathToFileURL(join(installedRoot, manifest.exports["./auth"].import)).href
     );
     const verify = createSignedWorkerAuthenticator({
+      algorithm: "EdDSA",
       issuer: config.EXAMPLE_WORKER_ISSUER,
       subject: "example:builder",
       audience: config.EXAMPLE_MCP_ENDPOINT,

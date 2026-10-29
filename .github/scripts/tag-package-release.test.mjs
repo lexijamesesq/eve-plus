@@ -30,10 +30,7 @@ test("tagged worker assets recover on later main, stay immutable, and refuse a l
     for (const path of [source, bin, assets, bundle, join(root, "home"), join(root, "template")])
       mkdirSync(path);
     // All Git routing is fixture-owned, including template and global/system configuration.
-    const env = Object.fromEntries(
-      Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
-    );
-    Object.assign(env, {
+    const env = {
       HOME: join(root, "home"),
       TMPDIR: root,
       RUNNER_TEMP: root,
@@ -43,7 +40,9 @@ test("tagged worker assets recover on later main, stay immutable, and refuse a l
       GIT_TEMPLATE_DIR: join(root, "template"),
       RELEASE_FIXTURE_ROOT: root,
       RELEASE_FIXTURE_BUNDLE: bundle,
-    });
+      GH_TOKEN: "synthetic-publisher-token",
+      GITHUB_TOKEN: "synthetic-publisher-token",
+    };
     function command(program, args, cwd = source, expected = 0) {
       const result = spawnSync(program, args, { cwd, env, encoding: "utf8" });
       assert.equal(
@@ -83,7 +82,7 @@ test("tagged worker assets recover on later main, stay immutable, and refuse a l
     );
     writeFileSync(
       join(bin, "pnpm"),
-      `#!${process.execPath}\nconst fs=require('node:fs'),p=require('node:path');const a=process.argv.slice(2),dir=a[a.indexOf('--dir')+1];if(a.includes('build:worker')){const out=p.join(dir,'.worker-build');fs.mkdirSync(out,{recursive:true});for(const n of ['index.js','licenses.txt'])fs.copyFileSync(p.join(process.env.RELEASE_FIXTURE_BUNDLE,n),p.join(out,n));}\n`,
+      `#!${process.execPath}\nconst fs=require('node:fs'),p=require('node:path');const a=process.argv.slice(2),dir=a[a.indexOf('--dir')+1];if(process.env.GH_TOKEN||process.env.GITHUB_TOKEN)throw new Error('Build received publishing credentials');if(fs.existsSync(p.join(process.env.RELEASE_FIXTURE_ROOT,'fail-build')))throw new Error('Completed release must not rebuild');if(a.includes('build:worker')){const out=p.join(dir,'.worker-build');fs.mkdirSync(out,{recursive:true});for(const n of ['index.js','licenses.txt'])fs.copyFileSync(p.join(process.env.RELEASE_FIXTURE_BUNDLE,n),p.join(out,n));fs.writeFileSync(p.join(process.env.RELEASE_FIXTURE_ROOT,'build-completed'),'ready');}\n`,
       { mode: 0o755 },
     );
     writeFileSync(
@@ -92,9 +91,9 @@ test("tagged worker assets recover on later main, stay immutable, and refuse a l
 const fs=require('node:fs'),p=require('node:path'),r=process.env.RELEASE_FIXTURE_ROOT,state=p.join(r,'release.json'),dest=p.join(r,'remote-assets');
 const a=process.argv.slice(2),s=fs.existsSync(state)?JSON.parse(fs.readFileSync(state)):null;
 if(a[0]!=='release')process.exit(2);
-if(a[1]==='view'){if(!s)process.exit(1);if(a.includes('--json'))console.log(fs.readdirSync(dest).join('\\n'));}
+if(a[1]==='view'){if(!s)process.exit(1);if(a.includes('--json')){const names=fs.readdirSync(dest);if(fs.existsSync(p.join(r,'publish-on-view'))&&fs.existsSync(p.join(r,'build-completed'))){fs.writeFileSync(p.join(dest,'commissioning-worker-v1.2.3.tar.gz'),'concurrent published bytes');fs.unlinkSync(p.join(r,'publish-on-view'));}console.log(names.join('\\n'));}}
 else if(a[1]==='create'){if(s)process.exit(1);fs.writeFileSync(state,JSON.stringify({tag:a[2]}));for(const f of a.slice(3))if(fs.existsSync(f)&&fs.statSync(f).isFile())fs.copyFileSync(f,p.join(dest,p.basename(f)));}
-else if(a[1]==='upload'){const f=a[3],to=p.join(dest,p.basename(f));if(fs.existsSync(to))process.exit(1);fs.copyFileSync(f,to);}
+else if(a[1]==='upload'){const f=a.slice(2).find(v=>fs.existsSync(v)&&fs.statSync(v).isFile());if(!f)process.exit(2);const to=p.join(dest,p.basename(f));if(fs.existsSync(to)&&!a.includes('--clobber'))process.exit(1);fs.copyFileSync(f,to);}
 else if(a[1]==='download'){const name=a[a.indexOf('--pattern')+1],to=a[a.indexOf('--dir')+1];if(!fs.existsSync(p.join(dest,name)))process.exit(1);fs.copyFileSync(p.join(dest,name),p.join(to,name));}
 else process.exit(2);
 `,
@@ -127,6 +126,21 @@ else process.exit(2);
     publish();
     assert.deepEqual(readFileSync(join(assets, name)), original);
     assert.ok(existsSync(join(assets, `${name}.sha256`)));
+    // A complete release validates its published pair without starting the external toolchain.
+    writeFileSync(join(root, "fail-build"), "must stay cold");
+    publish();
+    rmSync(join(root, "fail-build"));
+    // Publish conflicting bytes after the absence check and before upload, as another publisher can.
+    rmSync(join(assets, name));
+    rmSync(join(root, "build-completed"));
+    writeFileSync(join(root, "publish-on-view"), "race");
+    const assetRace = spawnSync(
+      "bash",
+      [".github/scripts/tag-package-release.sh", "packages/commissioning", "commissioning"],
+      { cwd: source, env, encoding: "utf8" },
+    );
+    assert.ok(readFileSync(join(assets, name)).equals(Buffer.from("concurrent published bytes")), "Concurrent published bytes must remain unchanged");
+    assert.notEqual(assetRace.status, 0);
     // Existing remote bytes are immutable even when they conflict with the authoritative build.
     writeFileSync(join(assets, name), "conflicting published bytes");
     const conflict = spawnSync(

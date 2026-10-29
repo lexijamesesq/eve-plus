@@ -24,7 +24,7 @@ Use a dedicated work issue owned by the commissioning flow during enrollment. In
 
 A worker host can use the `commissioning-worker-v<VERSION>.tar.gz` asset and its
 `.sha256` file from the same [commissioning release](https://github.com/lexijamesesq/eve-plus/releases).
-Portable assets begin with version 0.3.1; select a published release that contains
+Portable assets begin with version 0.4.0; select a published release that contains
 both files. Verify the archive against the pinned SHA256 before extraction.
 The archive needs Node 24 and includes its dependency licenses. It requires no
 package manager, Eve installation, SQLite binding or server process.

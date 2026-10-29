@@ -1,9 +1,13 @@
 import { importPKCS8, SignJWT } from "jose";
 
+export type SignedWorkerAlgorithm = "ES256" | "EdDSA";
+
 export interface SignedWorkerCredentialOptions {
+  /** Defaults to ES256; EdDSA uses an Ed25519 key. */
+  algorithm?: SignedWorkerAlgorithm;
   issuer: string;
   subject: string;
-  /** Resolve a dedicated ES256 PKCS8 key through the consumer's custody boundary. */
+  /** Resolve a dedicated PKCS8 key matching the selected algorithm through the consumer's custody boundary. */
   resolvePrivateKey(input: { endpoint: string; signal: AbortSignal }): string | Promise<string>;
   /** Positive seconds, matched to the server's maximum lifetime. Default: 300. */
   lifetimeSeconds?: number;
@@ -28,8 +32,15 @@ export function invalidConfiguration(): never {
 
 /** Opt-in credential callback for a worker, including runCyrusHeadersHelper.resolveCredential. */
 export function createSignedWorkerCredential(options: SignedWorkerCredentialOptions) {
-  const { issuer, subject, resolvePrivateKey, lifetimeSeconds = defaultLifetimeSeconds } = options;
+  const {
+    issuer,
+    subject,
+    resolvePrivateKey,
+    lifetimeSeconds = defaultLifetimeSeconds,
+    algorithm = "ES256",
+  } = options;
   if (
+    (algorithm !== "ES256" && algorithm !== "EdDSA") ||
     !text(issuer) ||
     !text(subject) ||
     typeof resolvePrivateKey !== "function" ||
@@ -48,10 +59,10 @@ export function createSignedWorkerCredential(options: SignedWorkerCredentialOpti
       signal.throwIfAborted();
       const pem = await resolvePrivateKey({ endpoint, signal });
       signal.throwIfAborted();
-      const key = await importPKCS8(pem, "ES256");
+      const key = await importPKCS8(pem, algorithm);
       const now = Math.floor(Date.now() / 1000);
       const credential = await new SignJWT({})
-        .setProtectedHeader({ alg: "ES256" })
+        .setProtectedHeader({ alg: algorithm })
         .setIssuer(issuer)
         .setSubject(subject)
         .setAudience(endpoint)
