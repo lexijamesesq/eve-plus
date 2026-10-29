@@ -1,37 +1,36 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import manifest from "../package.json" with { type: "json" };
 import type { CommissioningConfig } from "./config.js";
-import { verified } from "./config.js";
 import { consultSchema, readSchema, reportSchema } from "./schemas.js";
 import { CommissionError, type CommissionStore } from "./store.js";
-import type { Caller, ReportInput } from "./types.js";
 
-export { createDispatcher, type OwnerDelivery } from "./dispatch.js";
-
-export interface WorkerTransportOptions {
-  store: CommissionStore;
-  config: Pick<CommissioningConfig, "authenticateWorker" | "workerPrincipalId">;
-  /** Reconcile only after durable mutation; failures leave delivery pending. */
-  reconcile?: () => Promise<unknown>;
-}
-
-/** The worker has no owner operations, even when a credential is accidentally mapped to an owner. */
+/**
+ * The worker's endpoint: a stateless MCP server with three tools, read, consult and report. It has no owner
+ * operations, so a worker credential can never answer, accept or revise. The store opens only once the request is
+ * authenticated, so a refused request never touches the ledger. `reconcile` runs after a write commits.
+ */
 export async function handleWorkerRequest(
   request: Request,
-  options: WorkerTransportOptions,
+  options: {
+    store: () => CommissionStore;
+    authenticateWorker: CommissioningConfig["authenticateWorker"];
+    reconcile?: () => Promise<unknown>;
+  },
 ): Promise<Response> {
-  let caller: Caller;
+  let authenticated = false;
   try {
-    caller = verified(await options.config.authenticateWorker(request));
-    if (caller.principalId !== options.config.workerPrincipalId)
-      throw new Error("Wrong worker mapping");
+    authenticated = (await options.authenticateWorker(request)) === true;
   } catch {
+    // A failing check is a refusal.
+  }
+  if (!authenticated)
     return new Response("Unauthorized", {
       status: 401,
       headers: { "www-authenticate": 'Bearer realm="commissioning"', "cache-control": "no-store" },
     });
-  }
-  const server = new McpServer({ name: "eve-plus-commissioning", version: "0.1.0" });
+  const store = options.store();
+  const server = new McpServer({ name: "eve-plus-commissioning", version: manifest.version });
   const run = async (operation: () => unknown, mutation = false) => {
     try {
       const result = operation();
@@ -39,7 +38,7 @@ export async function handleWorkerRequest(
         try {
           await options.reconcile();
         } catch {
-          /* Durable outbox retries later. */
+          // The outbox keeps the notice; the schedule retries it.
         }
       }
       const body = { result, recorded: true };
@@ -48,14 +47,12 @@ export async function handleWorkerRequest(
         structuredContent: body,
       };
     } catch (error) {
-      const code = error instanceof CommissionError ? error.code : "internal";
-      // Only the store's fixed domain reasons are public; unknown exceptions remain opaque.
+      // Only the store's own reasons reach the worker; anything else stays opaque.
       const body = {
-        error: {
-          code,
-          message:
-            error instanceof CommissionError ? error.message : "Commissioning operation failed",
-        },
+        error:
+          error instanceof CommissionError
+            ? { code: error.code, message: error.message }
+            : { code: "internal", message: "Commissioning operation failed" },
       };
       return {
         isError: true,
@@ -68,28 +65,28 @@ export async function handleWorkerRequest(
     "commission_read",
     {
       description:
-        "Read this worker's commission and durable events after a cursor. Poll to discover commissioner answers; this does not start or resume a worker.",
+        "Read the commission and its events after a cursor. Poll it to find the commissioner's answers and decisions; it doesn't start or resume work.",
       inputSchema: readSchema,
     },
-    (input) => run(() => options.store.read(caller, input.commissionId, input.after)),
+    (input) => run(() => store.read(input.commissionId, input.after)),
   );
   server.registerTool(
     "commission_consult",
     {
       description:
-        "Record a bounded question for the commissioner. Retry the same question ID with identical content.",
+        "Ask the commissioner a bounded question. Retry with the same question ID and identical content; new content needs a new ID.",
       inputSchema: consultSchema,
     },
-    (input) => run(() => options.store.consult(caller, input), true),
+    (input) => run(() => store.consult(input), true),
   );
   server.registerTool(
     "commission_report",
     {
       description:
-        "Record a checkpoint, failure, immutable proposal, or delivery observation. Retry the same event ID with identical content.",
+        "Report a checkpoint, a failure, or an immutable proposal (repository, full commit, PR). Retry with the same event ID and identical content.",
       inputSchema: reportSchema,
     },
-    (input) => run(() => options.store.report(caller, input as ReportInput), true),
+    (input) => run(() => store.report(input), true),
   );
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

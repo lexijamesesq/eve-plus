@@ -174,9 +174,6 @@ importers:
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
-      jose:
-        specifier: 6.2.13
-        version: 6.2.13
       zod:
         specifier: 4.6.6
         version: 4.6.6
@@ -187,9 +184,6 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.5
-      '@vercel/ncc':
-        specifier: 0.44.1
-        version: 0.44.1
       eve:
         specifier: 0.83.2
         version: 0.83.2(ai@7.0.141(zod@4.6.6))
@@ -596,10 +590,6 @@ packages:
 
   '@types/readable-stream@4.0.25':
     resolution: {integrity: sha512-7GsxL8Wd5X3jh73/qgW7WCnbBvGSdD8U3E4Jiuus3/8I+PN20DtlkJtwFhr/sImXfDDQ2Z03i/9wNiIF3TVSsw==}
-
-  '@vercel/ncc@0.44.1':
-    resolution: {integrity: sha512-cUjIE5P2YY1n+Kt9rFIazMMpGoPn1Fic04rOmTkElMkiDP5oszGfERMpo2shVkFKDL7rVppdM2pqJKC59shQWQ==}
-    hasBin: true
 
   '@vercel/oidc@3.2.0':
     resolution: {integrity: sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug==}
@@ -1950,8 +1940,6 @@ snapshots:
   '@types/readable-stream@4.0.25':
     dependencies:
       '@types/node': 22.20.5
-
-  '@vercel/ncc@0.44.1': {}
 
   '@vercel/oidc@3.2.0': {}
 

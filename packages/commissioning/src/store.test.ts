@@ -1,19 +1,31 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { reportSchema } from "./schemas.js";
 import { CommissionError, CommissionStore } from "./store.js";
-import type { Caller, DecisionInput, ReportInput } from "./types.js";
+import type { Commissioner, DecisionInput, ReportInput } from "./types.js";
 
-const owner: Caller = { principalId: "owner", verified: true };
-const worker: Caller = { principalId: "worker", verified: true };
-const stranger: Caller = { principalId: "other", verified: true };
+const owner: Commissioner = { id: "felix", conversation: { channel: "C1", thread: "1.0" } };
 const open = {
   commissionId: "c1",
-  spec: { brief: "Build labels", acceptance: ["Trim blanks"], privateGuidance: "owner secret" },
+  spec: { brief: "Build labels", acceptance: ["Trim blanks"] },
+  workReference: { kind: "linear-issue", id: "ENG-1" },
+  connectorId: "test-worker",
+  binding: { issue: "ENG-1" },
 };
 const question = {
   commissionId: "c1",
   questionId: "q1",
   question: { text: "Keep blank labels?", options: ["yes", "no"] },
 };
+const answer = (
+  eventId = "a1",
+  questionId = "q1",
+): Extract<DecisionInput, { target: "question" }> => ({
+  commissionId: "c1",
+  eventId,
+  target: "question",
+  questionId,
+  decision: { answer: "No" },
+});
 const proposal = (eventId = "p1"): ReportInput => ({
   commissionId: "c1",
   eventId,
@@ -27,22 +39,27 @@ const proposal = (eventId = "p1"): ReportInput => ({
     },
   },
 });
-const accept = (
-  eventId = "d1",
+const verdict = (
+  eventId: string,
   proposalId = "p1",
-): Extract<DecisionInput, { target: "proposal" }> => ({
+  value: "accept" | "revise" = "accept",
+): DecisionInput => ({
   commissionId: "c1",
   eventId,
   target: "proposal",
   proposalId,
-  decision: { verdict: "accept", feedback: "Criteria met" },
+  decision: { verdict: value, feedback: "Reviewed" },
 });
 const stores: CommissionStore[] = [];
 function setup(now?: () => number): CommissionStore {
   const store = new CommissionStore(":memory:", { now });
   stores.push(store);
-  store.open(owner, open, worker);
+  store.open(owner, open);
   return store;
+}
+/** Claims every due outbox entry, as one dispatcher sweep would. */
+function claimAll(store: CommissionStore, leaseMs?: number) {
+  return store.pendingOutbox().flatMap((seq) => store.claimOutbox(seq, leaseMs) ?? []);
 }
 function code(run: () => unknown, expected: string): void {
   try {
@@ -58,607 +75,205 @@ afterEach(() => {
 });
 
 describe("commission ledger", () => {
-  it("re-engages pending review for a new delivery observation without replay or accepted-work churn", () => {
+  it("returns the first result for a retried open, without a second handoff, and refuses changed input", () => {
     const store = setup();
-    store.report(worker, proposal());
-    const initial = store.claimOutbox({ consumerId: "reviewer" });
-    for (const entry of initial) store.acknowledgeOutbox(entry.seq, entry.leaseToken);
-    const observation: ReportInput = {
+    expect(store.open(owner, { ...open, binding: { issue: "another prepared binding" } })).toEqual({
       commissionId: "c1",
-      eventId: "merged-once",
-      kind: "merged",
-      data: { summary: "Merge observed; commissioner must verify", proposalId: "p1" },
-    };
-    store.report(worker, observation);
-    expect(store.read(owner, "c1").status).toBe("needs_review");
-    const followup = store.claimOutbox({ consumerId: "reviewer" });
-    expect(followup).toMatchObject([{ recipient: "owner", kind: "merged" }]);
-    for (const entry of followup) store.acknowledgeOutbox(entry.seq, entry.leaseToken);
-    store.report(worker, observation);
-    store.report(worker, { ...observation, eventId: "same-observation-new-id" });
-    expect(store.claimOutbox({ consumerId: "reviewer" })).toEqual([]);
-    code(
-      () =>
-        store.report(worker, {
-          ...observation,
-          eventId: "stale",
-          data: { ...observation.data, proposalId: "old" },
-        }),
-      "stale_proposal",
-    );
-    store.decide(owner, accept());
-    store.report(worker, {
-      commissionId: "c1",
-      eventId: "deployed-after-accept",
-      kind: "deployed",
-      data: { summary: "Deployed", proposalId: "p1" },
+      status: "working",
     });
-    expect(store.claimOutbox({ consumerId: "reviewer" })).toEqual([]);
-  });
-  it("binds immutable prepared work to open retries without exposing its routing state", () => {
-    const store = new CommissionStore(":memory:");
-    stores.push(store);
-    const workReference = { kind: "test-issue", id: "WORK-1" };
-    const input = { ...open, workReference };
-    const workerBinding = {
-      commissionId: "c1",
-      connectorId: "test-worker",
-      reference: workReference,
-      binding: { version: "1", target: "canonical-work", endpoint: "https://worker.example/mcp" },
-    };
-    const receipt = store.open(owner, input, worker, undefined, { workerBinding });
-    expect(store.open(owner, input, worker, undefined, { workerBinding })).toEqual(receipt);
-    expect(store.workerBinding("c1")).toEqual(workerBinding);
-    for (const changed of [
-      { ...workerBinding, connectorId: "other-worker" },
-      { ...workerBinding, binding: { ...workerBinding.binding, target: "other-target" } },
-    ])
-      code(
-        () => store.open(owner, input, worker, undefined, { workerBinding: changed }),
-        "conflict",
-      );
+    expect(claimAll(store).map((entry) => entry.kind)).toEqual(["handoff"]);
     code(
-      () =>
-        store.open(
-          owner,
-          { ...input, workReference: { ...workReference, id: "WORK-2" } },
-          worker,
-          undefined,
-          { workerBinding },
-        ),
-      "invalid_input",
+      () => store.open(owner, { ...open, spec: { ...open.spec, brief: "Something else" } }),
+      "conflict",
     );
-    const copy = store.workerBinding("c1");
-    if (!copy) throw new Error("Expected persisted binding");
-    copy.reference.id = "mutated-copy";
-    expect(store.workerBinding("c1")?.reference).toEqual(workReference);
-    const packet = JSON.stringify({
-      view: store.read(worker, "c1"),
-      outbox: store.claimOutbox({ consumerId: "test" }),
-    });
-    for (const value of ["canonical-work", "https://worker.example/mcp", "owner secret"])
-      expect(packet).not.toContain(value);
-    expect(store.read(owner, "c1").notification?.pending).toBe(1);
-    code(
-      () => store.open(owner, { ...input, commissionId: "unprepared" }, worker),
-      "invalid_input",
-    );
-    code(
-      () =>
-        store.open(owner, { ...input, commissionId: "bad-binding" }, worker, undefined, {
-          workerBinding: {
-            ...workerBinding,
-            commissionId: "bad-binding",
-            binding: { field: "x".repeat(4097) },
-          },
-        }),
-      "invalid_input",
-    );
-    code(() => store.read(owner, "bad-binding"), "not_found");
-  });
-  it("uses host caller identity and hides private guidance from every worker view and envelope", () => {
-    const store = setup();
-    code(() => store.read(stranger, "c1"), "not_found");
-    code(
-      () => store.read({ principalId: "owner", verified: false } as unknown as Caller, "c1"),
-      "unverified_caller",
-    );
-    code(() => store.consult(owner, question), "forbidden");
-    store.report(worker, proposal());
-    code(() => store.decide(worker, accept()), "forbidden");
-    expect(store.read(owner, "c1").spec.privateGuidance).toBe("owner secret");
-    expect(JSON.stringify(store.read(worker, "c1"))).not.toContain("owner secret");
-    expect(JSON.stringify(store.claimOutbox({ consumerId: "host" }))).not.toContain("owner secret");
-    code(() => store.open(owner, { ...open, commissionId: "self" }, owner), "forbidden");
   });
 
-  it("canonicalizes retries, rejects changed question/event inputs and binds answers to commission+question", async () => {
+  it("lets the owner act only from the conversation the commission was opened in", () => {
+    const store = setup();
+    store.consult(question);
+    const elsewhere = { ...owner, conversation: { channel: "C1", thread: "2.0" } };
+    code(() => store.decide(elsewhere, answer()), "forbidden");
+    code(() => store.read("c1", 0, elsewhere), "forbidden");
+    code(() => store.decide({ ...owner, id: "zero" }, answer()), "not_found");
+    // Key order is not identity.
+    expect(
+      store.decide({ ...owner, conversation: { thread: "1.0", channel: "C1" } }, answer()).status,
+    ).toBe("working");
+  });
+
+  it("canonicalizes retries, rejects changed question and decision input, and binds answers to their question", async () => {
     const store = setup();
     await Promise.all(
-      Array.from({ length: 8 }, () =>
-        Promise.resolve().then(() => store.consult(worker, question)),
-      ),
+      Array.from({ length: 8 }, () => Promise.resolve().then(() => store.consult(question))),
     );
     expect(
-      store.consult(worker, {
+      store.consult({
         question: { options: ["yes", "no"], text: "Keep blank labels?" },
         questionId: "q1",
         commissionId: "c1",
       }).status,
     ).toBe("pending");
     code(
-      () => store.consult(worker, { ...question, question: { text: "Different question" } }),
+      () => store.consult({ ...question, question: { text: "Different question" } }),
       "conflict",
     );
-    const answer: DecisionInput = {
-      commissionId: "c1",
-      eventId: "a1",
-      target: "question",
-      questionId: "q1",
-      decision: { answer: "No" },
-    };
     await Promise.all(
-      Array.from({ length: 8 }, () => Promise.resolve().then(() => store.decide(owner, answer))),
+      Array.from({ length: 8 }, () => Promise.resolve().then(() => store.decide(owner, answer()))),
     );
-    expect(store.consult(worker, question)).toMatchObject({
-      status: "answered",
-      answer: { answer: "No" },
-    });
-    code(() => store.decide(owner, { ...answer, decision: { answer: "Yes" } }), "conflict");
-    store.open(owner, { ...open, commissionId: "c2" }, worker);
-    code(() => store.decide(owner, { ...answer, commissionId: "c2" }), "not_found");
-    expect(store.read(owner, "c1").events.map((event) => event.kind)).toEqual([
+    expect(store.consult(question)).toMatchObject({ status: "answered", answer: "No" });
+    code(() => store.decide(owner, { ...answer(), decision: { answer: "Yes" } }), "conflict");
+    store.open(owner, { ...open, commissionId: "c2" });
+    code(() => store.decide(owner, { ...answer(), commissionId: "c2" }), "not_found");
+    expect(store.read("c1").events.map((event) => event.kind)).toEqual([
       "opened",
+      "handoff",
       "question",
       "decision",
     ]);
   });
 
-  it("rejects reuse of a provided event ID across report and decision kinds", () => {
+  it("rejects reuse of an event ID across report and decision kinds", () => {
     const store = setup();
-    store.consult(worker, question);
-    store.report(worker, {
+    store.consult(question);
+    store.report({
       commissionId: "c1",
       eventId: "shared",
       kind: "checkpoint",
       data: { summary: "Progress" },
     });
-    code(
-      () =>
-        store.decide(owner, {
-          commissionId: "c1",
-          eventId: "shared",
-          target: "question",
-          questionId: "q1",
-          decision: { answer: "No" },
-        }),
-      "conflict",
-    );
-    expect(store.question(owner, "c1", "q1").status).toBe("pending");
+    code(() => store.decide(owner, { ...answer(), eventId: "shared" }), "conflict");
+    expect(store.read("c1").questions[0].status).toBe("pending");
   });
 
-  it("keeps pending review through consult and failure and rejects stale acceptance", () => {
+  it("keeps a proposal pending through a question and a failure, and refuses a stale decision", () => {
     const store = setup();
-    store.report(worker, proposal());
-    store.consult(worker, question);
-    store.report(worker, {
+    store.report(proposal());
+    store.consult(question);
+    store.report({
       commissionId: "c1",
       eventId: "failed",
       kind: "failure",
       data: { summary: "Build host lost" },
     });
-    expect(store.read(owner, "c1")).toMatchObject({
+    expect(store.read("c1")).toMatchObject({
       status: "awaiting_commissioner",
-      proposalPending: true,
+      currentProposal: { proposalId: "p1", pending: true },
     });
-    code(() => store.decide(owner, accept()), "conflict");
-    store.decide(owner, {
-      commissionId: "c1",
-      eventId: "answer",
-      target: "question",
-      questionId: "q1",
-      decision: { answer: "No" },
-    });
-    expect(store.read(owner, "c1").status).toBe("needs_review");
-    store.decide(owner, {
-      ...accept("revise"),
-      decision: { verdict: "revise", feedback: "Fix it" },
-    });
-    store.report(worker, proposal("p2"));
-    code(() => store.decide(owner, accept("stale")), "stale_proposal");
-    store.decide(owner, accept("accepted", "p2"));
-    expect(store.decide(owner, accept("accepted", "p2")).status).toBe("accepted");
+    code(() => store.decide(owner, verdict("early")), "conflict");
+    store.decide(owner, answer());
+    expect(store.read("c1").status).toBe("needs_review");
+    store.decide(owner, verdict("revise", "p1", "revise"));
+    store.report(proposal("p2"));
+    code(() => store.decide(owner, verdict("stale")), "stale_proposal");
+    store.decide(owner, verdict("accepted", "p2"));
+    expect(store.decide(owner, verdict("accepted", "p2")).status).toBe("accepted");
   });
 
-  it("resumes blocked work on an explicit checkpoint and restores overdue attention", () => {
+  it("resumes blocked work on a checkpoint, notifies a failure once, and restores overdue attention", () => {
     let now = 0;
     const store = setup(() => now);
-    store.report(worker, {
+    claimAll(store);
+    const failure: ReportInput = {
       commissionId: "c1",
       eventId: "failed",
       kind: "failure",
       data: { summary: "Host unavailable" },
-    });
-    expect(store.read(worker, "c1").status).toBe("blocked");
-    const failures = store.claimOutbox({ consumerId: "owner-notification" });
-    expect(failures).toMatchObject([{ recipient: "owner", kind: "failure" }]);
-    store.report(worker, {
-      commissionId: "c1",
-      eventId: "failed",
-      kind: "failure",
-      data: { summary: "Host unavailable" },
-    });
-    expect(store.claimOutbox({ consumerId: "retry-notification" })).toEqual([]);
-
+    };
+    store.report(failure);
+    expect(store.read("c1").status).toBe("blocked");
+    expect(claimAll(store).map((entry) => entry.kind)).toEqual(["failure"]);
+    store.report(failure);
+    expect(claimAll(store)).toEqual([]);
     now = 100;
-    store.report(worker, {
+    store.report({
       commissionId: "c1",
       eventId: "resumed",
       kind: "checkpoint",
-      data: { summary: "Host repaired, resumed work" },
+      data: { summary: "Resumed" },
     });
-    expect(store.read(worker, "c1").status).toBe("working");
+    expect(store.read("c1").status).toBe("working");
     now = 60_101;
-    expect(store.read(worker, "c1").attention).toMatchObject({
+    expect(store.read("c1").attention).toEqual({
       kind: "overdue_checkpoint",
       lastWorkerActivity: 100,
     });
     expect(store.reconcileOverdue()).toBe(1);
-    store.report(worker, proposal());
-    store.report(worker, {
+    store.report(proposal());
+    store.report({
       commissionId: "c1",
-      eventId: "review-progress",
+      eventId: "more",
       kind: "checkpoint",
-      data: { summary: "Additional checks complete" },
+      data: { summary: "More checks" },
     });
-    expect(store.read(worker, "c1")).toMatchObject({
+    expect(store.read("c1")).toMatchObject({
       status: "needs_review",
-      proposalPending: true,
+      currentProposal: { pending: true },
     });
   });
 
-  it("records reviewed, merged and deployed separately, including before acceptance", () => {
-    const store = setup();
-    store.report(worker, proposal());
-    for (const kind of ["reviewed", "merged", "deployed"] as const)
-      store.report(worker, {
-        commissionId: "c1",
-        eventId: kind,
-        kind,
-        data: { summary: kind, proposalId: "p1" },
-      });
-    expect(store.read(worker, "c1")).toMatchObject({
-      status: "needs_review",
-      delivery: { reviewed: true, merged: true, deployed: true },
-    });
-    store.decide(owner, accept());
-    expect(store.read(worker, "c1").status).toBe("accepted");
-    code(
-      () =>
-        store.report(worker, {
-          commissionId: "c1",
-          eventId: "other",
-          kind: "merged",
-          data: { summary: "merged", proposalId: "old" },
-        }),
-      "stale_proposal",
-    );
-  });
-
-  it("accepts immutable artifact references and rejects inline source, file paths and mismatched repositories", () => {
-    const store = setup();
-    const valid = proposal();
-    if (valid.kind !== "proposal") throw new Error("fixture");
-    for (const artifact of [
-      { ...valid.data.artifact, commit: "main" },
-      { ...valid.data.artifact, repository: "file:///etc/passwd" },
-      { ...valid.data.artifact, pullRequest: "https://github.com/other/repo/pull/1" },
-      { ...valid.data.artifact, source: "inline bytes" },
-      { ...valid.data.artifact, repository: "https://token@github.com/example/repo" },
-    ])
-      code(
-        () => store.report(worker, { ...valid, data: { ...valid.data, artifact } }),
-        "invalid_input",
-      );
-    expect(store.read(worker, "c1").proposalId).toBeNull();
-  });
-
-  it("returns unanswered owner work and overdue attention without declaring silence dead", () => {
+  it("notifies an overdue worker once per quiet spell, without changing its state", () => {
     let now = 0;
     const store = setup(() => now);
-    now = 60_001;
-    expect(store.read(worker, "c1")).toMatchObject({
-      status: "working",
-      attention: { kind: "overdue_checkpoint", lastWorkerActivity: 0 },
-    });
-    store.consult(worker, question);
-    expect(store.pending(owner)).toEqual([
-      { commissionId: "c1", kind: "question", id: "q1", owner: "owner", worker: "worker" },
-    ]);
-    expect(store.pending(stranger)).toEqual([]);
-    expect(store.read(worker, "c1").attention).toBeUndefined();
-    store.decide(owner, {
-      commissionId: "c1",
-      eventId: "answer",
-      target: "question",
-      questionId: "q1",
-      decision: { answer: "No" },
-    });
-    store.report(worker, proposal());
-    expect(store.pending(owner)[0]).toMatchObject({ kind: "proposal", id: "p1" });
-    code(() => store.pending(owner, 101), "invalid_input");
-  });
-
-  it("reconciles overdue checkpoints once per activity epoch without changing working state", () => {
-    let now = 0;
-    const store = setup(() => now);
+    claimAll(store);
     now = 60_001;
     expect(store.reconcileOverdue()).toBe(1);
     expect(store.reconcileOverdue()).toBe(0);
-    const attention = store.claimOutbox({ consumerId: "host" });
-    expect(attention).toMatchObject([
-      { kind: "overdue_checkpoint", recipient: "owner", payload: { lastWorkerActivity: 0 } },
+    expect(claimAll(store)).toMatchObject([
+      { kind: "overdue_checkpoint", payload: { lastWorkerActivity: 0 } },
     ]);
-    expect(store.read(worker, "c1").status).toBe("working");
-    store.report(worker, {
+    expect(store.read("c1").status).toBe("working");
+    store.report({
       commissionId: "c1",
-      eventId: "new-progress",
+      eventId: "progress",
       kind: "checkpoint",
       data: { summary: "Still working" },
     });
     now += 60_001;
     expect(store.reconcileOverdue()).toBe(1);
-    store.consult(worker, question);
+    store.consult(question);
     now += 60_001;
     expect(store.reconcileOverdue()).toBe(0);
   });
 
-  it("leases bounded outbox batches with explicit retry and stale receipt rejection", () => {
+  it("leases outbox entries one at a time, retries a released one, and rejects a stale receipt", () => {
     let now = 0;
     const store = setup(() => now);
-    store.consult(worker, question);
-    store.consult(worker, { ...question, questionId: "q2" });
-    const first = store.claimOutbox({ consumerId: "a", limit: 1, leaseMs: 10 })[0];
-    const second = store.claimOutbox({ consumerId: "b", limit: 1, leaseMs: 10 })[0];
-    expect(second.seq).not.toBe(first.seq);
-    expect(store.claimOutbox({ consumerId: "c" })).toEqual([]);
-    store.releaseOutbox(second.seq, second.leaseToken);
-    const retry = store.claimOutbox({ consumerId: "b", limit: 1 })[0];
+    const [handoff] = claimAll(store);
+    store.acknowledgeOutbox(handoff.seq, handoff.leaseToken);
+    store.consult(question);
+    store.consult({ ...question, questionId: "q2" });
+    const [firstSeq, secondSeq] = store.pendingOutbox();
+    const first = store.claimOutbox(firstSeq, 10);
+    const second = store.claimOutbox(secondSeq, 10);
+    if (!first || !second) throw new Error("Expected both entries to be claimed");
+    expect(store.claimOutbox(firstSeq)).toBeUndefined();
+    store.releaseOutbox(second.seq, second.leaseToken, "delivery_failed");
+    const retry = store.claimOutbox(secondSeq);
+    if (!retry) throw new Error("Expected the released entry to be due again");
     store.acknowledgeOutbox(retry.seq, retry.leaseToken);
     now = 10;
     code(() => store.acknowledgeOutbox(first.seq, first.leaseToken), "lease_lost");
-    const expired = store.claimOutbox({ consumerId: "c", limit: 1 })[0];
-    expect(expired.seq).toBe(first.seq);
-    expect(expired.leaseToken).not.toBe(first.leaseToken);
-    store.acknowledgeOutbox(expired.seq, expired.leaseToken);
-    expect(store.claimOutbox({ consumerId: "d" })).toEqual([]);
+    const expired = store.claimOutbox(firstSeq);
+    expect(expired?.leaseToken).not.toBe(first.leaseToken);
+    if (expired) store.acknowledgeOutbox(expired.seq, expired.leaseToken);
+    expect(store.pendingOutbox()).toEqual([]);
   });
 
-  it("persists a restricted commissioner snapshot privately and binds it to open idempotency", () => {
-    const store = new CommissionStore(":memory:");
-    stores.push(store);
-    const context = {
-      originSessionId: "origin",
-      messages: [{ role: "user" as const, content: "Private conversation" }],
-    };
-    store.open(owner, open, worker, context);
-    expect(store.context("c1")).toEqual(context);
-    expect(JSON.stringify(store.read(worker, "c1"))).not.toContain("Private conversation");
-    expect(JSON.stringify(store.claimOutbox({ consumerId: "host" }))).not.toContain(
-      "Private conversation",
-    );
-    code(
-      () => store.open(owner, open, worker, { ...context, originSessionId: "changed" }),
-      "conflict",
-    );
-    code(
-      () =>
-        store.open(owner, { ...open, commissionId: "bad" }, worker, {
-          ...context,
-          messages: [{ role: "system", content: "secret" }],
-        } as unknown as typeof context),
-      "invalid_input",
-    );
-  });
-  it("rebinds only the active pointer through verified owner CAS and exact source provenance", () => {
-    const store = new CommissionStore(":memory:");
-    stores.push(store);
-    const source = { channel: "future-channel", conversationId: "source-private" };
-    const context = {
-      originSessionId: "origin-private",
-      messages: [{ role: "user" as const, content: "Snapshot private" }],
-      source,
-      initiator: {
-        principalId: "initiator-private",
-        authenticator: "native-auth",
-        principalType: "future-human-type",
-      },
-    };
-    store.open(owner, open, worker, context);
-    const requestedBy: Caller = { verified: true, principalId: "actual-operator-private" };
-    const input = {
-      commissionId: "c1",
-      eventId: "recover-1",
-      expectedActiveSessionId: "origin-private",
-      activeSessionId: "new-private",
-      source,
-    };
-    code(() => store.rebindSession(worker, input, requestedBy), "forbidden");
-    code(() => store.rebindSession(stranger, input, requestedBy), "not_found");
-    code(
-      () =>
-        store.rebindSession(owner, input, { ...requestedBy, verified: false } as unknown as Caller),
-      "unverified_caller",
-    );
-    code(
-      () =>
-        store.rebindSession(
-          owner,
-          { ...input, source: { ...source, conversationId: "changed" } },
-          requestedBy,
-        ),
-      "forbidden",
-    );
-    expect(store.rebindSession(owner, input, requestedBy)).toEqual({
-      commissionId: "c1",
-      activeSessionId: "new-private",
+  it("accepts an immutable artifact and rejects moving, local or mismatched references", () => {
+    const report = proposal() as Extract<ReportInput, { kind: "proposal" }>;
+    const withArtifact = (artifact: Partial<typeof report.data.artifact>) => ({
+      ...report,
+      data: { ...report.data, artifact: { ...report.data.artifact, ...artifact } },
     });
-    expect(
-      store.rebindSession(
-        owner,
-        { ...input, source: { conversationId: "source-private", channel: "future-channel" } },
-        requestedBy,
-      ),
-    ).toEqual({ commissionId: "c1", activeSessionId: "new-private" });
-    expect(store.context("c1")).toEqual({ ...context, activeSessionId: "new-private" });
-    code(
-      () => store.rebindSession(owner, { ...input, activeSessionId: "other" }, requestedBy),
-      "conflict",
-    );
-    code(
-      () =>
-        store.rebindSession(owner, input, { ...requestedBy, principalId: "different-operator" }),
-      "conflict",
-    );
-    code(
-      () =>
-        store.rebindSession(
-          owner,
-          { ...input, eventId: "stale-cas", activeSessionId: "stale" },
-          requestedBy,
-        ),
-      "conflict",
-    );
-    store.rebindSession(
-      owner,
-      {
-        ...input,
-        eventId: "recover-2",
-        expectedActiveSessionId: "new-private",
-        activeSessionId: "newer-private",
-      },
-      requestedBy,
-    );
-    expect(store.context("c1")).toEqual({ ...context, activeSessionId: "newer-private" });
-    expect(store.rebindSession(owner, input, requestedBy).activeSessionId).toBe("new-private");
-    expect(store.context("c1")?.activeSessionId).toBe("newer-private");
-    expect(
-      store.read(owner, "c1").events.filter((event) => event.kind === "session_rebound"),
-    ).toHaveLength(2);
-    const workerView = JSON.stringify(store.read(worker, "c1"));
-    for (const privateValue of [
-      "source-private",
-      "origin-private",
-      "new-private",
-      "newer-private",
-      "initiator-private",
-      "actual-operator-private",
-      "Snapshot private",
+    expect(reportSchema.safeParse(report).success).toBe(true);
+    for (const artifact of [
+      { commit: "main" },
+      { repository: "file:///home/repo" },
+      { pullRequest: "https://github.com/example/other/pull/1" },
+      { repository: "https://token@github.com/example/repo" },
     ])
-      expect(workerView).not.toContain(privateValue);
-    expect(store.claimOutbox({ consumerId: "host" })).toEqual([]);
-    code(
-      () =>
-        store.report(worker, {
-          commissionId: "c1",
-          eventId: "recover-1",
-          kind: "checkpoint",
-          data: { summary: "Collision" },
-        }),
-      "conflict",
-    );
-  });
-
-  it("bounds captured provenance and permits explicit active pointers only through rebind", () => {
-    const store = new CommissionStore(":memory:");
-    stores.push(store);
-    const context = {
-      originSessionId: "original",
-      messages: [{ role: "user" as const, content: "Snapshot" }],
-    };
-    for (const extra of [
-      { activeSessionId: "injected" },
-      { source: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`field${i}`, "value"])) },
-      { source: { ["k".repeat(65)]: "value" } },
-      { source: { id: "v".repeat(1025) } },
-      {
-        initiator: {
-          principalId: "human",
-          authenticator: "native",
-          principalType: "human",
-          credentials: "forbidden",
-        },
-      },
-    ])
-      code(() => store.open(owner, open, worker, { ...context, ...extra }), "invalid_input");
-    store.open(owner, open, worker, context);
-    code(
-      () =>
-        store.rebindSession(
-          owner,
-          {
-            commissionId: "c1",
-            eventId: "no-source",
-            expectedActiveSessionId: "original",
-            activeSessionId: "new",
-            source: { id: "cannot-invent" },
-          },
-          owner,
-        ),
-      "forbidden",
-    );
-  });
-  it("atomically requests one public-safe owner activation only when the trusted host opts in", () => {
-    const store = new CommissionStore(":memory:");
-    stores.push(store);
-    const context = {
-      originSessionId: "private-origin",
-      messages: [{ role: "user" as const, content: "Private activation snapshot" }],
-      source: { workIssueId: "canonical-work-record" },
-    };
-    const receipt = store.open(owner, open, worker, context, { requestWorkerActivation: true });
-    expect(store.open(owner, open, worker, context, { requestWorkerActivation: true })).toEqual(
-      receipt,
-    );
-    expect(store.read(owner, "c1").events.map((event) => event.kind)).toEqual([
-      "opened",
-      "worker_activation_requested",
-    ]);
-    const intents = store.claimOutbox({ consumerId: "host" });
-    expect(intents).toMatchObject([
-      {
-        recipient: "owner",
-        eventId: "worker_activation:open",
-        kind: "worker_activation_requested",
-        payload: { commissionId: "c1" },
-      },
-    ]);
-    expect(intents).toHaveLength(1);
-    const packet = JSON.stringify(intents[0].payload);
-    for (const privateValue of [
-      "owner secret",
-      "Private activation snapshot",
-      "private-origin",
-      "canonical-work-record",
-    ])
-      expect(packet).not.toContain(privateValue);
-    code(
-      () => store.open(owner, open, worker, context, { requestWorkerActivation: false }),
-      "conflict",
-    );
-    code(() => store.open(owner, open, worker, context), "conflict");
-    const defaultInput = { ...open, commissionId: "default-open" };
-    const legacy = store.open(owner, defaultInput, worker);
-    expect(
-      store.open(owner, defaultInput, worker, undefined, { requestWorkerActivation: false }),
-    ).toEqual(legacy);
-    code(
-      () => store.open(owner, defaultInput, worker, undefined, { requestWorkerActivation: true }),
-      "conflict",
-    );
-    expect(store.read(worker, "default-open").events.map((event) => event.kind)).toEqual([
-      "opened",
-    ]);
-    expect(store.claimOutbox({ consumerId: "more" })).toEqual([]);
+      expect(reportSchema.safeParse(withArtifact(artifact)).success, JSON.stringify(artifact)).toBe(
+        false,
+      );
   });
 });

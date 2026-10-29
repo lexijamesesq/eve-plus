@@ -1,16 +1,12 @@
 import { defineTool } from "eve/tools";
+import { decideCommission, explain } from "../../src/owner.js";
 import { decideSchema } from "../../src/schemas.js";
-import type { DecisionInput } from "../../src/types.js";
-import { boundOwner } from "../lib/binding.js";
 import { runtime } from "../lib/runtime.js";
+
 export default defineTool({
   description:
-    "Explicitly answer a worker question or accept/request revision of the exact pending proposal. Final answer text never changes the ledger. The consuming application's acceptance requirements apply.",
+    "Answer the worker's question, or accept the pending proposal or ask for a revision of it. Only this tool records a decision: saying it in a reply doesn't. Give each decision its own event ID.",
   inputSchema: decideSchema,
-  async execute(input, ctx) {
-    const caller = boundOwner(ctx, input.commissionId);
-    const decision = input as DecisionInput;
-    const store = runtime().store;
-    return store.decide(caller, decision);
-  },
+  execute: (input, ctx) =>
+    explain("record the decision", () => decideCommission(runtime(), input, ctx)),
 });

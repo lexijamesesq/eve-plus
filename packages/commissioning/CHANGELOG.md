@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.5.0
+
+A breaking rework to what commissioning needs: the commissioner and the worker can talk, and nothing more. Stores
+from earlier versions aren't migrated; start 0.5.0 on an empty `dataDir`. The ledger is schema 4, and 0.5.0 refuses
+any other with a message naming it.
+
+**Rolling back:** 0.4.0 can't open a 0.5.0 ledger. Roll back by restoring the previous image with its previous
+`dataDir`, and never point 0.4.0 at a ledger 0.5.0 wrote.
+
+### Changed
+
+- **Worker auth is your check.** `authenticateWorker(request)` returns `true` for the worker. Pair it with one
+  long-lived token both sides hold. `workerPrincipalId` and the `./auth` signed-credential helpers are gone, and so
+  is the `jose` dependency.
+- **Notices go to the conversation the work was opened in.** `deliver(conversation)` names a channel, target and
+  auth, and the package sends each notice with eve's `to(channel, target)` as a queued turn. It checks that the
+  delivery's auth maps back to the commission's owner first. The separate continuation session and its recovery
+  recipe are gone.
+- **One authorization rule.** `commissioner(auth)` returns the commissioner and the conversation. An owner can act
+  only from the conversation a commission was opened in. It replaces `resolveSessionPrincipal`,
+  `resolveDeliveryAuth`, `captureSource` and `authorizeOwnerSession`.
+- **A worker is required.** Every commission names a work reference and is handed off through the configured
+  connector.
+- **The owner's tools answer in plain language.** `commissioning__read` takes only `commissionId`. A worker
+  that's briefly unreachable while a commission opens says to try again, and logs one fixed-field warning; any
+  other failure refuses the work reference.
+- **One store schema, with no migrations.**
+
+### Removed
+
+- Delivery observations (`reviewed`, `merged`, `deployed`) and owner-only `privateGuidance`.
+- The portable worker archive, the Cyrus headers helper and `createCyrusWorkerArtifacts`. A Cyrus host now reads
+  the token from its environment in a static MCP configuration; see `docs/usage.md`.
+- The `./store`, `./transport`, `./config` and `./auth` exports. A consumer configures the mount (`.`) and the
+  connector (`./cyrus`), which also exports the configuration types.
+- The native and Cyrus runtime proof harnesses and the shipped example.
+
+The peer range is `^0.83.2`, the version it's built and tested against.
+
 ## 0.4.0
 
 - Add explicit EdDSA (Ed25519) signed worker authentication using JOSE while preserving ES256 as the default and its native Eve verification path. Both algorithms retain strict issuer, subject, audience and bounded lifetime checks.

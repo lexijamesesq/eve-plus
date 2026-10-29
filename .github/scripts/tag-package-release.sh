@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # tag-package-release.sh <package_dir> <package_name>
-# Trusted-main release owner. Tags are immutable; worker assets are built from the
-# authoritative tagged tree on recovery, and existing assets are never replaced.
+# Trusted-main release owner. Tags are immutable and annotated; a Release is cut for the tag's own source.
 set -euo pipefail
 PACKAGE_DIR="$1"
 PACKAGE_NAME="$2"
@@ -25,37 +24,6 @@ confirm_tag_source() {
 		exit 1
 	}
 }
-ASSETS=()
-if [[ "$PACKAGE_NAME" == commissioning ]]; then
-	ASSET_ROOT=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/commissioning-assets.XXXXXXXX")
-	trap 'rm -rf "$ASSET_ROOT"' EXIT
-	ARCHIVE="commissioning-worker-v${CURRENT_VERSION}.tar.gz"
-	if [[ -n "$REMOTE" ]] && gh release view "$TAG" >/dev/null 2>&1; then
-		NAMES=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-		if grep -Fxq "$ARCHIVE" <<<"$NAMES" && grep -Fxq "$ARCHIVE.sha256" <<<"$NAMES"; then
-			for name in "$ARCHIVE" "$ARCHIVE.sha256"; do
-				gh release download "$TAG" --pattern "$name" --dir "$ASSET_ROOT"
-			done
-			# Consistency of the existing trusted asset pair and tag metadata, not a fresh rebuild.
-			python3 - "$ASSET_ROOT/$ARCHIVE" "$CURRENT_VERSION" "$SOURCE" <<'PYTHON'
-import hashlib, json, pathlib, sys, tarfile
-archive = pathlib.Path(sys.argv[1])
-digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-if pathlib.Path(str(archive) + ".sha256").read_text() != f"{digest}  {archive.name}\n":
-    raise SystemExit("FAIL: published worker checksum differs")
-with tarfile.open(archive) as bundle:
-    manifest = json.load(bundle.extractfile("package.json"))
-if (manifest.get("name"), manifest.get("version"), manifest.get("gitHead"), manifest.get("type")) != ("@eve-plus/commissioning-worker", sys.argv[2], sys.argv[3], "module"):
-    raise SystemExit("FAIL: published worker metadata differs from the annotated tag")
-PYTHON
-			confirm_tag_source
-			echo "$PACKAGE_NAME: verified existing $TAG assets without rebuilding"
-			exit 0
-		fi
-	fi
-	env -u GH_TOKEN -u GITHUB_TOKEN bash "$(dirname "$0")/build-worker-release.sh" "$SOURCE" "$ASSET_ROOT"
-	ASSETS=("$ASSET_ROOT/$ARCHIVE" "$ASSET_ROOT/$ARCHIVE.sha256")
-fi
 if [[ -z "$REMOTE" ]]; then
 	echo "$PACKAGE_NAME: tagging $TAG"
 	git tag -a "$TAG" "$SOURCE" -m "$TAG"
@@ -68,21 +36,8 @@ if ! gh release view "$TAG" >/dev/null 2>&1; then
 	PREV_TAG=$(git tag -l "${PACKAGE_NAME}--v*" --sort=-v:refname | grep -vxF "$TAG" | head -1 || true)
 	notes=(--generate-notes)
 	[[ -n "$PREV_TAG" ]] && notes+=(--notes-start-tag "$PREV_TAG")
-	if ! gh release create "$TAG" "${notes[@]}" "${ASSETS[@]}"; then
+	if ! gh release create "$TAG" "${notes[@]}"; then
 		gh release view "$TAG" >/dev/null
 	fi
 fi
-for asset in "${ASSETS[@]}"; do
-	name=$(basename "$asset")
-	if ! gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq "$name"; then
-		# A competing publisher can win this upload; only the verified remote bytes establish success.
-		gh release upload "$TAG" "$asset" || true
-	fi
-	RECEIVED=$(mktemp -d "$ASSET_ROOT/received.XXXXXXXX")
-	gh release download "$TAG" --pattern "$name" --dir "$RECEIVED"
-	cmp "$asset" "$RECEIVED/$name" || {
-		echo "FAIL: immutable release asset differs: $name" >&2
-		exit 1
-	}
-done
-echo "$PACKAGE_NAME: verified $TAG release${ASSETS:+ and worker assets}"
+echo "$PACKAGE_NAME: verified $TAG release"

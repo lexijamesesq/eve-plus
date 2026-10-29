@@ -1,26 +1,25 @@
 import type { CommissionSpec } from "./types.js";
 
-/** Public work coordinates. Credentials and commissioner context never belong here. */
+/** Where the worker finds the work, such as a Linear issue. Public coordinates only. */
 export interface WorkReference {
   kind: string;
   id: string;
 }
-/** Bounded, non-secret connector state persisted with the commission. */
+/** Bounded, non-secret connector state, persisted with the commission so a retry hands off to the same target. */
 export type WorkerBinding = Readonly<Record<string, string>>;
+/** The seam a worker integration implements. `cyrus()` is the one this package ships. */
 export interface WorkerConnector {
   readonly id: string;
-  /** Read-only preparation: resolve and validate the target without changing external state. */
+  /**
+   * Read-only: resolve and check the target without changing anything outside. Reject with an error carrying
+   * `retryable: true` when the failure is transient, such as the work system being unreachable; any other rejection
+   * refuses the work reference.
+   */
   prepare(input: { commissionId: string; reference: WorkReference }): Promise<WorkerBinding>;
-  /** Resolve only after observing the intended handoff; uncertain outcomes must reject. */
+  /** Resolve only once the handoff is observed; an uncertain outcome must reject so it's retried. */
   handoff(input: {
     commissionId: string;
-    spec: Pick<CommissionSpec, "brief" | "acceptance">;
+    spec: CommissionSpec;
     binding: WorkerBinding;
   }): Promise<void>;
-}
-export interface StoredWorkerBinding {
-  commissionId: string;
-  connectorId: string;
-  reference: WorkReference;
-  binding: WorkerBinding;
 }

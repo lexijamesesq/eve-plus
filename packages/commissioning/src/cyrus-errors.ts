@@ -12,10 +12,15 @@ const reasons = {
   timeout: "The Cyrus request timed out",
 } as const;
 
+const transient: ReadonlySet<keyof typeof reasons> = new Set(["provider_unavailable", "timeout"]);
+
 export class CyrusConnectorError extends Error {
+  /** Whether trying again later may succeed: the provider was unreachable or slow, not the request refused. */
+  readonly retryable: boolean;
   constructor(public readonly code: keyof typeof reasons) {
     super(reasons[code]);
     this.name = "CyrusConnectorError";
+    this.retryable = transient.has(code);
   }
 }
 

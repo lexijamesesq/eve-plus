@@ -1,14 +1,7 @@
-import { generateKeyPairSync } from "node:crypto";
-import { importSPKI, jwtVerify } from "jose";
+import type { RouteHandlerArgs } from "eve/channels";
 import { describe, expect, it, vi } from "vitest";
-import { createSignedWorkerCredential } from "./auth.js";
 import type { CyrusOptions } from "./cyrus.js";
-import {
-  CyrusConnectorError,
-  createCyrusWorkerArtifacts,
-  cyrus,
-  runCyrusHeadersHelper,
-} from "./cyrus.js";
+import { CyrusConnectorError, cyrus } from "./cyrus.js";
 import { createDispatcher } from "./dispatch.js";
 import { openSchema } from "./schemas.js";
 import { CommissionStore } from "./store.js";
@@ -147,7 +140,6 @@ describe("public Cyrus Linear connector", () => {
     const binding = await fixture.prepare();
     expect(fixture.mutations()).toHaveLength(0);
     expect(binding).toEqual({
-      version: "2",
       commissionId,
       issueId: canonicalId,
       issueUrl,
@@ -189,7 +181,10 @@ describe("public Cyrus Linear connector", () => {
       brief: "Work",
       acceptance: Array.from({ length: 33 }, () => "x".repeat(32768)),
     };
-    expect(openSchema.safeParse({ spec: large }).success).toBe(true);
+    expect(
+      openSchema.safeParse({ spec: large, workReference: { kind: "linear-issue", id: "ENG-123" } })
+        .success,
+    ).toBe(true);
     const requestsBefore = fixture.journal.length;
     await expect(fixture.connector.handoff({ commissionId, spec: large, binding })).rejects.toEqual(
       new CyrusConnectorError("contract_too_large"),
@@ -206,7 +201,10 @@ describe("public Cyrus Linear connector", () => {
       brief: "Work",
       acceptance: Array.from({ length: 31 }, () => "x".repeat(32768)),
     };
-    expect(openSchema.safeParse({ spec: large }).success).toBe(true);
+    expect(
+      openSchema.safeParse({ spec: large, workReference: { kind: "linear-issue", id: "ENG-123" } })
+        .success,
+    ).toBe(true);
     await fixture.connector.handoff({ commissionId, spec: large, binding });
     expect(fixture.comments[0].body.length).toBeGreaterThan(1_000_000);
     expect(fixture.comments[0].body.length).toBeLessThanOrEqual(1_048_576);
@@ -249,50 +247,39 @@ describe("public Cyrus Linear connector", () => {
         brief: `Document <!-- eve-commission: and <!-- eve-commission:${commissionId} --> exactly.`,
         acceptance: [`Quote <!-- /eve-commission:${commissionId} -->.`],
       };
-      const owner = { verified: true as const, principalId: "owner" };
-      const worker = { verified: true as const, principalId: "worker" };
       const store = new CommissionStore(":memory:");
       try {
         store.open(
-          owner,
+          { id: "felix", conversation: { thread: "1.0" } },
           {
             commissionId,
             spec: markerSpec,
             workReference: { kind: "linear-issue", id: "ENG-123" },
-          },
-          worker,
-          { originSessionId: "original", messages: [] },
-          {
-            workerBinding: {
-              commissionId,
-              connectorId: fixture.connector.id,
-              reference: { kind: "linear-issue", id: "ENG-123" },
-              binding,
-            },
+            connectorId: fixture.connector.id,
+            binding,
           },
         );
+        const unexpected = vi.fn(() => {
+          throw Error("Only the handoff should run");
+        });
         const drain = createDispatcher(store, {
-          dataDir: "/tmp/cyrus-regression",
+          dataDir: "/unused",
           namespace: "marker-regression",
-          workerPrincipalId: "worker",
-          authenticateWorker: () => null,
-          resolveSessionPrincipal: () => null,
-          resolveDeliveryAuth: () => null,
           worker: fixture.connector,
+          authenticateWorker: () => false,
+          commissioner: () => null,
+          deliver: unexpected,
         });
-        const unexpected = vi.fn(async () => {
-          throw Error("Owner path must not activate");
-        });
+        const to = unexpected as unknown as RouteHandlerArgs["to"];
         fixture.fault.afterDelegate = loseResponse;
-        await drain(unexpected);
+        await drain(to);
         if (loseResponse) {
-          expect(store.read(owner, commissionId).notification?.pending).toBe(1);
-          await drain(unexpected);
+          expect(store.read(commissionId).handoff.status).toBe("pending");
+          await drain(to);
         }
-        expect(store.read(owner, commissionId).notification).toMatchObject({
-          pending: 0,
-          attemptCount: loseResponse ? 2 : 1,
-          failureClass: null,
+        expect(store.read(commissionId).handoff).toEqual({
+          status: "confirmed",
+          lastFailure: null,
         });
         expect(unexpected).not.toHaveBeenCalled();
         expect(fixture.comments).toHaveLength(1);
@@ -431,11 +418,10 @@ describe("public Cyrus Linear connector", () => {
     },
   );
 
-  it("rejects old binding version, malformed comment identity and canonical target drift", async () => {
+  it("rejects a malformed comment identity and canonical target drift", async () => {
     const fixture = provider();
     const binding = await fixture.prepare();
     for (const changed of [
-      { ...binding, version: "1" },
       { ...binding, contractCommentId: "not-a-uuid" },
       { ...binding, commissionId: "other" },
       { ...binding, secret: "forbidden" },
@@ -451,18 +437,12 @@ describe("public Cyrus Linear connector", () => {
     expect(fixture.mutations()).toHaveLength(0);
   });
 
-  it("never serializes private host fields or raw provider errors into the contract", async () => {
+  it("keeps the Linear token and raw provider errors out of the binding, the requests' bodies and its errors", async () => {
     const fixture = provider();
     const binding = await fixture.prepare();
-    const wider = {
-      ...spec,
-      privateGuidance: "PRIVATE_GUIDANCE",
-      history: "PRIVATE_HISTORY",
-      source: "PRIVATE_SOURCE",
-    };
-    await fixture.connector.handoff({ commissionId, spec: wider, binding });
-    expect(JSON.stringify({ binding, journal: fixture.journal })).not.toMatch(
-      /PRIVATE_GUIDANCE|PRIVATE_HISTORY|PRIVATE_SOURCE|synthetic-linear-secret/,
+    await fixture.connector.handoff({ commissionId, spec, binding });
+    expect(JSON.stringify({ binding, journal: fixture.journal })).not.toContain(
+      "synthetic-linear-secret",
     );
     const broken = cyrus({
       ...fixture.options,
@@ -476,6 +456,22 @@ describe("public Cyrus Linear connector", () => {
     await expect(
       broken.prepare({ commissionId, reference: { kind: "linear-issue", id: "ENG-123" } }),
     ).rejects.toEqual(new CyrusConnectorError("provider_unavailable"));
+  });
+
+  it("refuses an endpoint that would put a credential or a remote plain-HTTP address in the contract", () => {
+    const options = provider().options;
+    for (const endpoint of [
+      "https://worker:secret@agent.example/commissioning/mcp",
+      "https://agent.example/commissioning/mcp?token=secret",
+      "https://agent.example/commissioning/mcp#secret",
+      "http://agent.example/commissioning/mcp",
+    ])
+      expect(() => cyrus({ ...options, mcp: { ...mcp, endpoint } }), endpoint).toThrow(
+        new CyrusConnectorError("invalid_configuration"),
+      );
+    expect(() =>
+      cyrus({ ...options, mcp: { ...mcp, endpoint: "http://127.0.0.1:3001/commissioning/mcp" } }),
+    ).not.toThrow();
   });
 
   it("rejects malformed canonical records safely", async () => {
@@ -532,272 +528,5 @@ describe("public Cyrus Linear connector", () => {
       cancelled.prepare({ commissionId, reference: { kind: "linear-issue", id: "ENG-123" } }),
     ).rejects.toEqual(new CyrusConnectorError("cancelled"));
     expect(actualSignal?.aborted).toBe(true);
-  });
-});
-
-const servers = { commissioner: mcp.endpoint };
-function helperOutput() {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  return {
-    stdout,
-    stderr,
-    streams: {
-      stdout: {
-        write: (value: string | Uint8Array) => {
-          stdout.push(String(value));
-          return true;
-        },
-      },
-      stderr: {
-        write: (value: string | Uint8Array) => {
-          stderr.push(String(value));
-          return true;
-        },
-      },
-    },
-  };
-}
-
-describe("public native Cyrus worker artifacts and helper", () => {
-  it("generates native HTTP configuration, exact three permissions, and usable worker protocol", () => {
-    const assets = createCyrusWorkerArtifacts({
-      servers: { commissioner: mcp.endpoint, other: "http://127.0.0.1:43123/mcp" },
-      headersHelperPath: "/tmp/example/headers-helper",
-    });
-    expect(assets.mcpConfig).toEqual({
-      mcpServers: {
-        commissioner: {
-          type: "http",
-          url: mcp.endpoint,
-          headersHelper: "/tmp/example/headers-helper",
-        },
-        other: {
-          type: "http",
-          url: "http://127.0.0.1:43123/mcp",
-          headersHelper: "/tmp/example/headers-helper",
-        },
-      },
-    });
-    expect(new Set(assets.allowedTools)).toEqual(
-      new Set(
-        ["commissioner", "other"].flatMap((server) =>
-          ["commission_read", "commission_consult", "commission_report"].map(
-            (tool) => `mcp__${server}__${tool}`,
-          ),
-        ),
-      ),
-    );
-    expect(assets.instructions).toContain("mcp__commissioner__commission_consult");
-    expect(assets.instructions).not.toContain("mcp__commissioner__commission_decide");
-  });
-
-  it.each<Parameters<typeof createCyrusWorkerArtifacts>[0]>([
-    { servers: {}, headersHelperPath: "/tmp/helper" },
-    { servers: { "bad name": mcp.endpoint }, headersHelperPath: "/tmp/helper" },
-    { servers: { commissioner: "http://remote.example/mcp" }, headersHelperPath: "/tmp/helper" },
-    {
-      servers: { commissioner: "https://secret@agent.example/mcp" },
-      headersHelperPath: "/tmp/helper",
-    },
-    {
-      servers: { commissioner: "https://agent.example/mcp?token=secret" },
-      headersHelperPath: "/tmp/helper",
-    },
-    { servers, headersHelperPath: "./relative-helper" },
-  ])("rejects invalid generated configuration without reflecting values", (options) => {
-    expect(() => createCyrusWorkerArtifacts(options)).toThrow(
-      "Invalid Cyrus connector configuration",
-    );
-  });
-
-  it("emits only SDK header JSON after exact owned destination validation", async () => {
-    const output = helperOutput();
-    const resolver = vi.fn(() => "synthetic-worker-secret");
-    expect(
-      await runCyrusHeadersHelper({
-        servers,
-        resolveCredential: resolver,
-        ...output.streams,
-        env: {
-          CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
-          CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
-        },
-      }),
-    ).toBe(0);
-    expect(resolver).toHaveBeenCalledOnce();
-    expect(resolver.mock.calls[0]).toMatchObject([
-      { serverName: "commissioner", endpoint: mcp.endpoint },
-    ]);
-    expect(JSON.parse(output.stdout.join(""))).toEqual({
-      Authorization: "Bearer synthetic-worker-secret",
-    });
-    expect(output.stderr).toEqual([]);
-  });
-
-  it.each(["ES256", "EdDSA"] as const)(
-    "uses the opt-in signer through the native helper with exact audience and configurable expiry (%s)",
-    async (algorithm) => {
-      const keys =
-        algorithm === "ES256"
-          ? generateKeyPairSync("ec", { namedCurve: "P-256" })
-          : generateKeyPairSync("ed25519");
-      const pem = keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-      const publicKey = await importSPKI(
-        keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
-        algorithm,
-      );
-      const output = helperOutput();
-      const signer = createSignedWorkerCredential({
-        issuer: "urn:example:worker",
-        subject: "worker",
-        lifetimeSeconds: 45,
-        algorithm: algorithm === "ES256" ? undefined : algorithm,
-        resolvePrivateKey: ({ signal }) => {
-          signal.throwIfAborted();
-          return pem;
-        },
-      });
-      expect(
-        await runCyrusHeadersHelper({
-          servers,
-          resolveCredential: signer,
-          ...output.streams,
-          env: {
-            CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
-            CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
-          },
-        }),
-      ).toBe(0);
-      const header = JSON.parse(output.stdout.join("")).Authorization as string;
-      const { payload } = await jwtVerify(header.slice("Bearer ".length), publicKey, {
-        algorithms: [algorithm],
-        issuer: "urn:example:worker",
-        subject: "worker",
-        audience: mcp.endpoint,
-      });
-      if (typeof payload.exp !== "number" || typeof payload.iat !== "number")
-        throw new Error("Missing token lifetime");
-      expect(payload.exp - payload.iat).toBe(45);
-      expect(output.stderr).toEqual([]);
-      expect(output.stdout.join("")).not.toContain("PRIVATE KEY");
-    },
-  );
-
-  it("refuses invalid signing identity or lifetime during configuration", () => {
-    const options = {
-      issuer: "urn:example:worker",
-      subject: "worker",
-      resolvePrivateKey: () => "unused",
-    };
-    for (const invalid of [
-      { ...options, issuer: "" },
-      { ...options, lifetimeSeconds: 0 },
-      { ...options, algorithm: "HS256" as "ES256" },
-    ]) {
-      expect(() => createSignedWorkerCredential(invalid)).toThrow(
-        new Error("Invalid signed worker authentication configuration"),
-      );
-    }
-  });
-
-  it("hides signing key failures through both the public signer and native helper", async () => {
-    const output = helperOutput();
-    const signer = createSignedWorkerCredential({
-      issuer: "urn:example:worker",
-      subject: "worker",
-      resolvePrivateKey: () => "PRIVATE_KEY_CANARY",
-    });
-    await expect(
-      signer({ endpoint: mcp.endpoint, signal: new AbortController().signal }),
-    ).rejects.toEqual(new Error("Signed worker credential unavailable"));
-    expect(
-      await runCyrusHeadersHelper({
-        servers,
-        resolveCredential: signer,
-        ...output.streams,
-        env: {
-          CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
-          CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
-        },
-      }),
-    ).toBe(1);
-    expect(output.stdout).toEqual([]);
-    expect(output.stderr).toEqual(["Commissioning authentication unavailable\n"]);
-  });
-
-  it.each([
-    {},
-    { CLAUDE_CODE_MCP_SERVER_NAME: "other", CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint },
-    {
-      CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
-      CLAUDE_CODE_MCP_SERVER_URL: "https://other.example/mcp",
-    },
-    { CLAUDE_CODE_MCP_SERVER_NAME: "commissioner", CLAUDE_CODE_MCP_SERVER_URL: `${mcp.endpoint}/` },
-  ])("never resolves credentials for missing or mismatched SDK context", async (env) => {
-    const output = helperOutput();
-    const resolver = vi.fn(() => "secret-must-not-escape");
-    expect(
-      await runCyrusHeadersHelper({ servers, env, resolveCredential: resolver, ...output.streams }),
-    ).toBe(1);
-    expect(resolver).not.toHaveBeenCalled();
-    expect(output.stdout).toEqual([]);
-    expect(output.stderr).toEqual(["Commissioning authentication unavailable\n"]);
-  });
-
-  it.each(["", "worker\nsecret", "worker secret", "x".repeat(4097)])(
-    "rejects invalid credentials through fixed errors without stdout",
-    async (credential) => {
-      const output = helperOutput();
-      expect(
-        await runCyrusHeadersHelper({
-          servers,
-          ...output.streams,
-          env: {
-            CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
-            CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
-          },
-          resolveCredential: () => credential,
-        }),
-      ).toBe(1);
-      expect(output.stdout).toEqual([]);
-      expect(output.stderr).toEqual(["Commissioning authentication unavailable\n"]);
-    },
-  );
-
-  it("hides provider exceptions and bounds header resolution below the native deadline", async () => {
-    const env = {
-      CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
-      CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
-    };
-    const failed = helperOutput();
-    expect(
-      await runCyrusHeadersHelper({
-        servers,
-        env,
-        ...failed.streams,
-        resolveCredential: () => {
-          throw new Error("secret-provider-detail");
-        },
-      }),
-    ).toBe(1);
-    expect(failed.stderr).toEqual(["Commissioning authentication unavailable\n"]);
-    const timed = helperOutput();
-    let actualSignal: AbortSignal | undefined;
-    expect(
-      await runCyrusHeadersHelper({
-        servers,
-        env,
-        ...timed.streams,
-        timeoutMs: 10,
-        resolveCredential: ({ signal }) => {
-          actualSignal = signal;
-          return new Promise<string>(() => {});
-        },
-      }),
-    ).toBe(1);
-    expect(actualSignal?.aborted).toBe(true);
-    expect(timed.stdout).toEqual([]);
-    expect(timed.stderr).toEqual(["Commissioning authentication unavailable\n"]);
   });
 });
