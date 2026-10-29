@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.2
+
+The worker endpoint's `commission_report` publishes its arguments. It was registered with a discriminated union,
+which the MCP SDK publishes as an empty object, so a worker was shown no arguments and every report failed. It now
+publishes one flat object: `commissionId`, `eventId`, `kind` (checkpoint, failure or proposal), and `data` with
+`summary` and an optional `artifact`. The per-kind rules still apply in the handler: a proposal needs an artifact,
+and a checkpoint or failure can't carry one. No other API or store change.
+
 ## 0.5.1
 
 The Cyrus contract comment no longer shows HTML-comment markers as text. Linear renders an HTML comment visibly, so
