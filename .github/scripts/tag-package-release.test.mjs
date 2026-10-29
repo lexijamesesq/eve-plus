@@ -139,7 +139,10 @@ else process.exit(2);
       [".github/scripts/tag-package-release.sh", "packages/commissioning", "commissioning"],
       { cwd: source, env, encoding: "utf8" },
     );
-    assert.ok(readFileSync(join(assets, name)).equals(Buffer.from("concurrent published bytes")), "Concurrent published bytes must remain unchanged");
+    assert.ok(
+      readFileSync(join(assets, name)).equals(Buffer.from("concurrent published bytes")),
+      "Concurrent published bytes must remain unchanged",
+    );
     assert.notEqual(assetRace.status, 0);
     // Existing remote bytes are immutable even when they conflict with the authoritative build.
     writeFileSync(join(assets, name), "conflicting published bytes");
