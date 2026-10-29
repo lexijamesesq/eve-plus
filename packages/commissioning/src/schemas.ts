@@ -81,6 +81,27 @@ export const reportSchema = z.discriminatedUnion("kind", [
     .object({ ...base, kind: z.literal("failure"), data: z.object({ summary: text }).strict() })
     .strict(),
 ]);
+// What the worker endpoint publishes for commission_report: one flat object, because an MCP client is shown no
+// arguments for a discriminated union. reportSchema then applies the per-kind rules inside the handler.
+export const reportToolSchema = z
+  .object({
+    commissionId: id,
+    eventId: id,
+    kind: z.enum(["checkpoint", "failure", "proposal"]),
+    data: z
+      .object({
+        summary: text,
+        artifact: z
+          .object({ repository: z.string(), commit: z.string(), pullRequest: z.string() })
+          .strict()
+          .optional()
+          .describe(
+            "Required for a proposal, and only for one: HTTPS repository, full 40-hex commit, and its PR",
+          ),
+      })
+      .strict(),
+  })
+  .strict();
 export const decideSchema = z.discriminatedUnion("target", [
   z
     .object({

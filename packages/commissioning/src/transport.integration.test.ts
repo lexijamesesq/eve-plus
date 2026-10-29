@@ -62,11 +62,44 @@ describe("the worker endpoint", () => {
     let authenticated = true;
     const open = vi.fn(() => store);
     const client = await clientFor(store, { authenticated: () => authenticated, open });
-    expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
       "commission_consult",
       "commission_read",
       "commission_report",
     ]);
+    // A client sees only what's published, so every tool must publish its arguments. A report built from the
+    // published schema alone has to be accepted.
+    type Published = {
+      properties?: Record<string, Published>;
+      enum?: string[];
+      required?: string[];
+    };
+    for (const tool of tools)
+      expect(Object.keys((tool.inputSchema as Published).properties ?? {}), tool.name).toContain(
+        "commissionId",
+      );
+    const report = tools.find((tool) => tool.name === "commission_report")
+      ?.inputSchema as Published;
+    const kinds = report.properties?.kind?.enum ?? [];
+    expect([...kinds].sort()).toEqual(["checkpoint", "failure", "proposal"]);
+    expect(Object.keys(report.properties?.data?.properties ?? {}).sort()).toEqual([
+      "artifact",
+      "summary",
+    ]);
+    const checkpoint = await client.callTool({
+      name: "commission_report",
+      arguments: {
+        commissionId: "one",
+        eventId: "published",
+        kind: kinds.find((kind) => kind === "checkpoint"),
+        data: { summary: "Started from the published schema" },
+      },
+    });
+    expect(checkpoint.structuredContent).toMatchObject({
+      recorded: true,
+      result: { status: "working" },
+    });
     const read = await client.callTool({
       name: "commission_read",
       arguments: { commissionId: "one" },
@@ -178,6 +211,24 @@ describe("the worker endpoint", () => {
       },
     });
     expect(moving.isError).toBe(true);
+    // The per-kind rules hold in the handler: a proposal needs its artifact, and only a proposal may carry one.
+    const artifact = {
+      repository: "https://github.com/example/repo",
+      commit: "c".repeat(40),
+      pullRequest: "https://github.com/example/repo/pull/1",
+    };
+    for (const args of [
+      { commissionId: "one", eventId: "bare", kind: "proposal", data: { summary: "Ready" } },
+      {
+        commissionId: "one",
+        eventId: "extra",
+        kind: "checkpoint",
+        data: { summary: "Busy", artifact },
+      },
+    ])
+      expect(await call(client, "commission_report", args), args.eventId).toMatchObject({
+        error: { code: "invalid_input" },
+      });
     expect(report).not.toHaveBeenCalled();
   });
 });

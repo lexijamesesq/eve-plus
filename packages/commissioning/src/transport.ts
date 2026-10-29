@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import manifest from "../package.json" with { type: "json" };
 import type { CommissioningConfig } from "./config.js";
-import { consultSchema, readSchema, reportSchema } from "./schemas.js";
+import { consultSchema, readSchema, reportSchema, reportToolSchema } from "./schemas.js";
 import { CommissionError, type CommissionStore } from "./store.js";
 
 /**
@@ -84,9 +84,18 @@ export async function handleWorkerRequest(
     {
       description:
         "Report a checkpoint, a failure, or an immutable proposal (repository, full commit, PR). Retry with the same event ID and identical content.",
-      inputSchema: reportSchema,
+      inputSchema: reportToolSchema,
     },
-    (input) => run(() => store.report(input), true),
+    (input) =>
+      run(() => {
+        const report = reportSchema.safeParse(input);
+        if (!report.success)
+          throw new CommissionError(
+            "invalid_input",
+            "A proposal needs an artifact (HTTPS repository, full 40-hex commit, and a PR of that repository); a checkpoint or failure takes only a summary",
+          );
+        return store.report(report.data);
+      }, true),
   );
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
