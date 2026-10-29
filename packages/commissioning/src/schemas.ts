@@ -1,7 +1,8 @@
 import { z } from "zod";
 
-// Every input is validated here, once, before it reaches the store: tool and MCP arguments, and what the
-// consumer's `commissioner` callback returns.
+// Every input is validated here before it reaches the store: tool and MCP arguments, and what the consumer's
+// `commissioner` callback returns. commission_report is checked twice: loosely by the flat schema it publishes, and
+// strictly by reportSchema in its handler, which is the check that counts.
 const id = z
   .string()
   .min(1)
@@ -83,17 +84,21 @@ export const reportSchema = z.discriminatedUnion("kind", [
 ]);
 // What the worker endpoint publishes for commission_report: one flat object, because an MCP client is shown no
 // arguments for a discriminated union. reportSchema then applies the per-kind rules inside the handler.
+type ReportKind = z.infer<typeof reportSchema>["kind"];
 export const reportToolSchema = z
   .object({
     commissionId: id,
     eventId: id,
-    kind: z.enum(["checkpoint", "failure", "proposal"]),
+    kind: z.enum(
+      reportSchema.options.map((option) => option.shape.kind.value) as [
+        ReportKind,
+        ...ReportKind[],
+      ],
+    ),
     data: z
       .object({
         summary: text,
-        artifact: z
-          .object({ repository: z.string(), commit: z.string(), pullRequest: z.string() })
-          .strict()
+        artifact: artifactSchema
           .optional()
           .describe(
             "Required for a proposal, and only for one: HTTPS repository, full 40-hex commit, and its PR",
