@@ -23,7 +23,11 @@ function fixture() {
 }
 async function clientFor(
   store: CommissionStore,
-  options: { reconcile?: () => Promise<unknown>; authenticated?: () => boolean } = {},
+  options: {
+    reconcile?: () => Promise<unknown>;
+    authenticated?: () => boolean;
+    open?: () => CommissionStore;
+  } = {},
 ) {
   const client = new Client({ name: "test-worker", version: "1.0.0" });
   clients.push(client);
@@ -32,7 +36,7 @@ async function clientFor(
       requestInit: { headers: { authorization: "Bearer worker-token" } },
       fetch: async (url, init) =>
         handleWorkerRequest(new Request(url, init), {
-          store,
+          store: options.open ?? (() => store),
           authenticateWorker: (request) =>
             (options.authenticated?.() ?? true) &&
             request.headers.get("authorization") === "Bearer worker-token",
@@ -53,10 +57,11 @@ afterEach(async () => {
 });
 
 describe("the worker endpoint", () => {
-  it("serves only the worker's tools, authenticates every request, and never shows the conversation", async () => {
+  it("serves only the worker's tools, authenticates every request before opening the store, and never shows the conversation", async () => {
     const store = fixture();
     let authenticated = true;
-    const client = await clientFor(store, { authenticated: () => authenticated });
+    const open = vi.fn(() => store);
+    const client = await clientFor(store, { authenticated: () => authenticated, open });
     expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([
       "commission_consult",
       "commission_read",
@@ -69,7 +74,9 @@ describe("the worker endpoint", () => {
     expect(JSON.stringify(read)).toContain("Update labels");
     expect(JSON.stringify(read)).not.toContain("C-private");
     authenticated = false;
+    const opened = open.mock.calls.length;
     await expect(client.listTools()).rejects.toThrow();
+    expect(open).toHaveBeenCalledTimes(opened);
   });
 
   it("carries a question, its answer, a proposal and a revision between worker and commissioner", async () => {

@@ -7,12 +7,13 @@ import { CommissionError, type CommissionStore } from "./store.js";
 
 /**
  * The worker's endpoint: a stateless MCP server with three tools, read, consult and report. It has no owner
- * operations, so a worker credential can never answer, accept or revise. `reconcile` runs after a write commits.
+ * operations, so a worker credential can never answer, accept or revise. The store opens only once the request is
+ * authenticated, so a refused request never touches the ledger. `reconcile` runs after a write commits.
  */
 export async function handleWorkerRequest(
   request: Request,
   options: {
-    store: CommissionStore;
+    store: () => CommissionStore;
     authenticateWorker: CommissioningConfig["authenticateWorker"];
     reconcile?: () => Promise<unknown>;
   },
@@ -28,6 +29,7 @@ export async function handleWorkerRequest(
       status: 401,
       headers: { "www-authenticate": 'Bearer realm="commissioning"', "cache-control": "no-store" },
     });
+  const store = options.store();
   const server = new McpServer({ name: "eve-plus-commissioning", version: manifest.version });
   const run = async (operation: () => unknown, mutation = false) => {
     try {
@@ -66,7 +68,7 @@ export async function handleWorkerRequest(
         "Read the commission and its events after a cursor. Poll it to find the commissioner's answers and decisions; it doesn't start or resume work.",
       inputSchema: readSchema,
     },
-    (input) => run(() => options.store.read(input.commissionId, input.after)),
+    (input) => run(() => store.read(input.commissionId, input.after)),
   );
   server.registerTool(
     "commission_consult",
@@ -75,7 +77,7 @@ export async function handleWorkerRequest(
         "Ask the commissioner a bounded question. Retry with the same question ID and identical content; new content needs a new ID.",
       inputSchema: consultSchema,
     },
-    (input) => run(() => options.store.consult(input), true),
+    (input) => run(() => store.consult(input), true),
   );
   server.registerTool(
     "commission_report",
@@ -84,7 +86,7 @@ export async function handleWorkerRequest(
         "Report a checkpoint, a failure, or an immutable proposal (repository, full commit, PR). Retry with the same event ID and identical content.",
       inputSchema: reportSchema,
     },
-    (input) => run(() => options.store.report(input), true),
+    (input) => run(() => store.report(input), true),
   );
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
