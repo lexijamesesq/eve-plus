@@ -29,6 +29,8 @@ This repository distributes packages through Git release tags. Choose an availab
 
 Use that dependency only after its tag appears in the releases. The normal main-branch workflow publishes package tags; use the tarball above to evaluate a checkout whose version is not yet released. Version 0.1.0 can fail during a clean pnpm Git install because its workspace permits an unnecessary native rebuild; use 0.1.1 or newer for that installation path.
 
+Worker hosts can use the [portable worker release archive](docs/cyrus.md#portable-worker-installation) with Node 24 and their existing credential custody. It exposes the existing worker functions without installing Eve or server dependencies.
+
 ## Optional signed worker authentication
 
 Select `@eve-plus/commissioning/auth` when short-lived ES256 worker tokens fit your integration.

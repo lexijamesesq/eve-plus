@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Publish a portable worker-side release archive with the existing Cyrus configuration/header helper and signed credential factory, bundled with their licenses and requiring only Node 24.
+- Keep worker code independent of Eve and SQLite while preserving the existing public module exports. Git preparation invokes the native build commands directly.
+
 ## 0.3.0
 
 - Add optional `./auth` signed-worker credential and authenticator factories using native Eve verification and standard JOSE signing, with configurable bounded lifetime, clock tolerance and public-key rotation trust.

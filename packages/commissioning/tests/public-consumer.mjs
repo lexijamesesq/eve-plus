@@ -8,6 +8,72 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const args = process.argv.slice(2);
+// Portable release consumption uses the same independent-consumer runner, without installing packages.
+const workerOption = args.indexOf("--worker-archive");
+if (workerOption >= 0) {
+  assert.ok(args[workerOption + 1], "--worker-archive requires a reviewed archive");
+  const archive = resolve(args[workerOption + 1]);
+  args.splice(workerOption, 2);
+  assert.ok(args.length <= 1, "Supply at most one clean worker stage");
+  const workerStage = args[0]
+    ? resolve(args[0])
+    : await mkdtemp(join(tmpdir(), "commissioning-worker-consumer-"));
+  await mkdir(workerStage, { recursive: true });
+  const unpack = spawnSync("tar", ["-xzf", archive, "-C", workerStage], { encoding: "utf8" });
+  assert.equal(unpack.status, 0, unpack.stderr);
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+import assert from "node:assert/strict";
+import { generateKeyPairSync, verify } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const root=process.argv[1];
+const worker=await import(pathToFileURL(join(root,"index.js")).href);
+assert.deepEqual(Object.keys(worker).sort(),["createCyrusWorkerArtifacts","createSignedWorkerCredential","runCyrusHeadersHelper"].sort());
+const manifest=JSON.parse(await readFile(join(root,"package.json"),"utf8"));
+assert.equal(manifest.name,"@eve-plus/commissioning-worker");
+assert.equal(manifest.type,"module");
+assert.match(manifest.gitHead,/^[0-9a-f]{40}$/);
+assert.ok(!(await readdir(root)).includes("node_modules"));
+assert.ok((await readFile(join(root,"LICENSE"),"utf8")).includes("MIT"));
+const notices=await readFile(join(root,"licenses.txt"),"utf8");
+assert.ok(notices.includes("jose") && notices.includes("zod"));
+const endpoint="http://127.0.0.1:43229/commissioning/mcp";
+const artifacts=worker.createCyrusWorkerArtifacts({servers:{commissioner:endpoint},headersHelperPath:"/synthetic/headers-helper"});
+assert.deepEqual(artifacts.allowedTools,["mcp__commissioner__commission_read","mcp__commissioner__commission_consult","mcp__commissioner__commission_report"]);
+const {privateKey,publicKey}=generateKeyPairSync("ec",{namedCurve:"P-256",privateKeyEncoding:{type:"pkcs8",format:"pem"},publicKeyEncoding:{type:"spki",format:"pem"}});
+const credential=worker.createSignedWorkerCredential({issuer:"urn:example:worker",subject:"synthetic-worker",resolvePrivateKey:()=>privateKey});
+let output="";let errors="";
+const code=await worker.runCyrusHeadersHelper({servers:{commissioner:endpoint},resolveCredential:credential,env:{CLAUDE_CODE_MCP_SERVER_NAME:"commissioner",CLAUDE_CODE_MCP_SERVER_URL:endpoint},stdout:{write(value){output+=value;}},stderr:{write(value){errors+=value;}}});
+assert.equal(code,0);assert.equal(errors,"");
+const token=JSON.parse(output).Authorization.slice(7);const [header,payload,signature]=token.split(".");
+assert.equal(JSON.parse(Buffer.from(header,"base64url")).alg,"ES256");
+assert.equal(verify("sha256",Buffer.from(header+"."+payload),{key:publicKey,dsaEncoding:"ieee-p1363"},Buffer.from(signature,"base64url")),true);
+const claims=JSON.parse(Buffer.from(payload,"base64url"));
+assert.equal(claims.iss,"urn:example:worker");assert.equal(claims.sub,"synthetic-worker");assert.equal(claims.aud,endpoint);assert.equal(claims.exp-claims.iat,300);
+let custodyReached=false;output="";
+assert.equal(await worker.runCyrusHeadersHelper({servers:{commissioner:endpoint},resolveCredential(){custodyReached=true;return "unused";},env:{CLAUDE_CODE_MCP_SERVER_NAME:"commissioner",CLAUDE_CODE_MCP_SERVER_URL:"https://wrong.example/mcp"},stdout:{write(value){output+=value;}},stderr:{write(){}}}),1);
+assert.equal(custodyReached,false);assert.equal(output,"");
+console.log(JSON.stringify({passed:true,version:manifest.version,gitHead:manifest.gitHead,standaloneWorker:true,exactWorkerGrants:true,realSignedHeader:true,wrongDestinationDeniesCustody:true,noPackageInstall:true,node:process.version,platform:process.platform,arch:process.arch}));
+`,
+      workerStage,
+    ],
+    {
+      cwd: workerStage,
+      env: { PATH: process.env.PATH, HOME: workerStage, TMPDIR: workerStage },
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  await writeFile(join(workerStage, "worker-consumer-result.json"), result.stdout);
+  process.stdout.write(result.stdout);
+  process.exit(0);
+}
 const tarballOption = args.indexOf("--tarball");
 let suppliedTarball;
 if (tarballOption >= 0) {
