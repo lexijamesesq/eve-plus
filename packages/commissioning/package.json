@@ -1,6 +1,6 @@
 {
   "name": "@eve-plus/commissioning",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Durable software commissioning for eve, with an optional Cyrus connector.",
   "license": "MIT",
   "type": "module",
@@ -57,14 +57,15 @@
   },
   "scripts": {
     "build": "eve extension build && tsc -p tsconfig.build.json",
-    "prepare": "pnpm run build",
+    "prepare": "eve extension build && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.check.json",
     "test": "pnpm run test:unit && pnpm run test:integration",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:consumer": "node tests/public-consumer.mjs",
     "test:native": "node tests/native-proof.mjs",
-    "test:cyrus": "node tests/cyrus-runtime-proof.mjs"
+    "test:cyrus": "node tests/cyrus-runtime-proof.mjs",
+    "build:worker": "tsc -p tsconfig.build.json && ncc build dist/src/worker-runtime.js --target es2022 --license licenses.txt --stats-out .worker-build/stats.json -o .worker-build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -75,6 +76,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.0.0",
+    "@vercel/ncc": "0.44.1",
     "eve": "0.83.2",
     "typescript": "^5.0.0",
     "vitest": "4.1.10"

@@ -10,6 +10,7 @@ process.exitCode = await runCyrusHeadersHelper({
   servers: settings.servers,
   resolveCredential: settings.signedCredential
     ? createSignedWorkerCredential({
+        algorithm: settings.signedCredential.algorithm,
         issuer: settings.signedCredential.issuer,
         subject: settings.signedCredential.subject,
         lifetimeSeconds: settings.signedCredential.lifetimeSeconds,

@@ -1,17 +1,24 @@
 import { extractBearerToken, verifyJwtEcdsa } from "eve/channels/auth";
-import { decodeJwt, importPKCS8, SignJWT } from "jose";
+import type { JWTPayload } from "jose";
+import { decodeJwt, importSPKI, jwtVerify } from "jose";
+import type { SignedWorkerAlgorithm } from "./signed-worker-credential.js";
+import {
+  defaultLifetimeSeconds,
+  duration,
+  invalidConfiguration,
+  text,
+} from "./signed-worker-credential.js";
 import type { Caller } from "./types.js";
 
-export interface SignedWorkerCredentialOptions {
-  issuer: string;
-  subject: string;
-  /** Resolve a dedicated ES256 PKCS8 key through the consumer's custody boundary. */
-  resolvePrivateKey(input: { endpoint: string; signal: AbortSignal }): string | Promise<string>;
-  /** Positive seconds, matched to the server's maximum lifetime. Default: 300. */
-  lifetimeSeconds?: number;
-}
+export type {
+  SignedWorkerAlgorithm,
+  SignedWorkerCredentialOptions,
+} from "./signed-worker-credential.js";
+export { createSignedWorkerCredential } from "./signed-worker-credential.js";
 
 export interface SignedWorkerAuthenticatorOptions {
+  /** Defaults to the native Eve ES256 verifier; EdDSA uses JOSE. */
+  algorithm?: SignedWorkerAlgorithm;
   issuer: string;
   subject: string;
   /** Exact worker endpoint audience. */
@@ -24,74 +31,20 @@ export interface SignedWorkerAuthenticatorOptions {
   clockToleranceSeconds?: number;
 }
 
-const defaultLifetimeSeconds = 300;
 const defaultClockToleranceSeconds = 30;
-function text(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.trim().length > 0 &&
-    Array.from(value).every(
-      (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
-    )
-  );
-}
-function duration(value: number, allowZero = false) {
-  return Number.isFinite(value) && (allowZero ? value >= 0 : value > 0);
-}
-function invalidConfiguration(): never {
-  throw new Error("Invalid signed worker authentication configuration");
-}
-
-/** Opt-in credential callback for a worker, including runCyrusHeadersHelper.resolveCredential. */
-export function createSignedWorkerCredential(options: SignedWorkerCredentialOptions) {
-  const { issuer, subject, resolvePrivateKey, lifetimeSeconds = defaultLifetimeSeconds } = options;
-  if (
-    !text(issuer) ||
-    !text(subject) ||
-    typeof resolvePrivateKey !== "function" ||
-    !duration(lifetimeSeconds)
-  )
-    invalidConfiguration();
-  return async ({
-    endpoint,
-    signal,
-  }: {
-    endpoint: string;
-    signal: AbortSignal;
-  }): Promise<string> => {
-    try {
-      if (!text(endpoint)) throw new Error();
-      signal.throwIfAborted();
-      const pem = await resolvePrivateKey({ endpoint, signal });
-      signal.throwIfAborted();
-      const key = await importPKCS8(pem, "ES256");
-      const now = Math.floor(Date.now() / 1000);
-      const credential = await new SignJWT({})
-        .setProtectedHeader({ alg: "ES256" })
-        .setIssuer(issuer)
-        .setSubject(subject)
-        .setAudience(endpoint)
-        .setIssuedAt(now)
-        .setExpirationTime(now + lifetimeSeconds)
-        .sign(key);
-      signal.throwIfAborted();
-      return credential;
-    } catch {
-      throw new Error("Signed worker credential unavailable");
-    }
-  };
-}
 
 /** Opt-in CommissioningConfig.authenticateWorker; never grants owner/decision authority. */
 export function createSignedWorkerAuthenticator(options: SignedWorkerAuthenticatorOptions) {
   const {
     issuer,
     subject,
+    algorithm = "ES256",
     audience,
     maxLifetimeSeconds = defaultLifetimeSeconds,
     clockToleranceSeconds = defaultClockToleranceSeconds,
   } = options;
   if (
+    (algorithm !== "ES256" && algorithm !== "EdDSA") ||
     !text(issuer) ||
     !text(subject) ||
     !text(audience) ||
@@ -106,18 +59,36 @@ export function createSignedWorkerAuthenticator(options: SignedWorkerAuthenticat
     const token = extractBearerToken(request.headers.get("authorization"));
     if (!token) return null;
     for (const publicKey of publicKeys) {
-      const result = await verifyJwtEcdsa(token, {
-        algorithm: "ES256",
-        publicKey,
-        issuer,
-        audiences: [audience],
-        subjects: [subject],
-        clockSkewSeconds: clockToleranceSeconds,
-      });
-      // Eve's subject matcher supports wildcard patterns. This policy requires literal identity.
-      if (!result.ok || result.sessionAuth.subject !== subject) continue;
-      // Only decode the SAME token after Eve verifies its signature, issuer, audience and expiry.
-      const { iat, exp } = decodeJwt(token);
+      let claims: JWTPayload;
+      if (algorithm === "ES256") {
+        const result = await verifyJwtEcdsa(token, {
+          algorithm,
+          publicKey,
+          issuer,
+          audiences: [audience],
+          subjects: [subject],
+          clockSkewSeconds: clockToleranceSeconds,
+        });
+        // Eve's subject matcher supports wildcards; configured identity remains literal.
+        if (!result.ok || result.sessionAuth.subject !== subject) continue;
+        claims = decodeJwt(token);
+      } else {
+        try {
+          const key = await importSPKI(publicKey, algorithm);
+          const result = await jwtVerify(token, key, {
+            algorithms: [algorithm],
+            issuer,
+            subject,
+            audience,
+            requiredClaims: ["iat", "exp"],
+            clockTolerance: clockToleranceSeconds,
+          });
+          claims = result.payload;
+        } catch {
+          continue;
+        }
+      }
+      const { iat, exp } = claims;
       if (
         typeof iat !== "number" ||
         !Number.isFinite(iat) ||

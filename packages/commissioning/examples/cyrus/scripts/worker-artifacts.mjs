@@ -9,6 +9,9 @@ if (!endpoint || !["bearer", "signed"].includes(mode))
 const credentialFile = process.env.EXAMPLE_WORKER_CREDENTIAL_FILE;
 const privateKeyFile = process.env.EXAMPLE_WORKER_PRIVATE_KEY_FILE;
 const issuer = process.env.EXAMPLE_WORKER_ISSUER;
+const algorithm = process.env.EXAMPLE_WORKER_ALGORITHM ?? "ES256";
+if (algorithm !== "ES256" && algorithm !== "EdDSA")
+  throw new Error("Supply a supported worker algorithm");
 if (mode === "signed" ? !privateKeyFile || !issuer : !credentialFile)
   throw new Error("Supply the selected worker authentication configuration");
 await writeFile(
@@ -20,6 +23,7 @@ await writeFile(
         ? {
             signedCredential: {
               issuer,
+              algorithm,
               subject: "example:builder",
               privateKeyFile: resolve(privateKeyFile),
               lifetimeSeconds: 300,

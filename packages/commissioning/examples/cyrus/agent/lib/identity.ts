@@ -23,9 +23,13 @@ const hash = (value: string) => createHash("sha256").update(value).digest();
 const workerAuthMode = process.env.EXAMPLE_WORKER_AUTH ?? "bearer";
 if (workerAuthMode !== "bearer" && workerAuthMode !== "signed")
   throw new Error("Unknown example worker auth mode");
+const signedAlgorithm = process.env.EXAMPLE_WORKER_ALGORITHM ?? "ES256";
+if (signedAlgorithm !== "ES256" && signedAlgorithm !== "EdDSA")
+  throw new Error("Unknown example worker algorithm");
 const authenticateWorker: CommissioningConfig["authenticateWorker"] =
   workerAuthMode === "signed"
     ? createSignedWorkerAuthenticator({
+        algorithm: signedAlgorithm,
         issuer: requiredEnv("EXAMPLE_WORKER_ISSUER"),
         subject: workerId,
         audience: requiredEnv("EXAMPLE_MCP_ENDPOINT"),

@@ -2,7 +2,7 @@
 
 Durable software commissioning for [eve](https://github.com/vercel/eve), with a worker-neutral core and an optional, included Cyrus connector. A commissioner defines work, an authenticated worker asks questions and proposes an immutable Git artifact, and the commissioner explicitly answers, accepts or requests revision.
 
-Version **0.3.0** adds optional signed worker credentials and authentication. Existing authentication callbacks and the strict owner-session default remain available unchanged. Local qualification uses synthetic services; it does not certify live service credentials or production operation.
+Version **0.4.0** adds optional Ed25519/EdDSA worker credentials and a portable worker archive; ES256 remains the default. Existing authentication callbacks and the strict owner-session default remain available unchanged. Local qualification uses synthetic services; it does not certify live service credentials or production operation.
 
 ## Install and try
 
@@ -16,12 +16,12 @@ pnpm --dir packages/commissioning pack --pack-destination /tmp/commissioning-pac
 
 Install the resulting tarball alongside published `eve@0.83.2` in your own project. The complete [Cyrus consumer](examples/cyrus/README.md) supplies its own identity adapter and selects the real connector. Qualification supplies synthetic external responses; ordinary configured use calls the real service. It imports no private application.
 
-This repository distributes packages through Git release tags. Choose an available tag from the [package releases](https://github.com/lexijamesesq/eve-plus/releases). For version 0.3.0, the dependency is:
+This repository distributes packages through Git release tags. Choose an available tag from the [package releases](https://github.com/lexijamesesq/eve-plus/releases). For version 0.4.0, the dependency is:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.3.0&path:packages/commissioning",
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.4.0&path:packages/commissioning",
     "eve": "0.83.2"
   }
 }
@@ -29,13 +29,16 @@ This repository distributes packages through Git release tags. Choose an availab
 
 Use that dependency only after its tag appears in the releases. The normal main-branch workflow publishes package tags; use the tarball above to evaluate a checkout whose version is not yet released. Version 0.1.0 can fail during a clean pnpm Git install because its workspace permits an unnecessary native rebuild; use 0.1.1 or newer for that installation path.
 
+Worker hosts can use the [portable worker release archive](docs/cyrus.md#portable-worker-installation) with Node 24 and their existing credential custody. It exposes the existing worker functions without installing Eve or server dependencies.
+
 ## Optional signed worker authentication
 
-Select `@eve-plus/commissioning/auth` when short-lived ES256 worker tokens fit your integration.
+Select `@eve-plus/commissioning/auth` when short-lived signed worker tokens fit your integration.
+The optional `algorithm` is `ES256` (the backward-compatible default) or `EdDSA` for Ed25519 keys.
 This is explicit configuration: omitting this helper preserves your existing authentication callback;
-there is no switch that turns authentication into anonymous access. It uses Eve's public
-`extractBearerToken` and `verifyJwtEcdsa` APIs, qualified with `eve@0.83.2`; an Eve version providing
-those APIs is required. This mode requires no authorization server or shared verifier secret.
+there is no switch that turns authentication into anonymous access. ES256 uses Eve's public
+`extractBearerToken` and `verifyJwtEcdsa` APIs, qualified with `eve@0.83.2`. EdDSA uses official
+JOSE verification through the same public `authenticateWorker` callback seam. This mode requires no authorization server or shared verifier secret.
 
 ```ts
 import { createSignedWorkerAuthenticator, createSignedWorkerCredential } from "@eve-plus/commissioning/auth";
@@ -44,18 +47,21 @@ import { createSignedWorkerAuthenticator, createSignedWorkerCredential } from "@
 const authenticateWorker = createSignedWorkerAuthenticator({
   issuer: "urn:example:worker", subject: "worker:builder",
   audience: "https://agent.example/commissioning/mcp", publicKeys: trustedPublicKeys,
-  maxLifetimeSeconds: 300, clockToleranceSeconds: 30,
+  algorithm: "EdDSA", maxLifetimeSeconds: 300, clockToleranceSeconds: 30,
 });
 // Assign this callback to CommissioningConfig.authenticateWorker and set
 // workerPrincipalId to the same exact subject. It grants worker tools only.
 
 // Worker: supply your existing custody resolver, without changing its scope.
 const resolveCredential = createSignedWorkerCredential({
-  issuer: "urn:example:worker", subject: "worker:builder", lifetimeSeconds: 300,
+  issuer: "urn:example:worker", subject: "worker:builder", algorithm: "EdDSA", lifetimeSeconds: 300,
   resolvePrivateKey: ({ signal }) => custody.readDedicatedPkcs8Key({ signal }),
 });
 // For Cyrus, pass resolveCredential to runCyrusHeadersHelper alongside servers.
 ```
+
+Supply a PKCS8 PEM private key and matching SPKI PEM public trust for the selected algorithm.
+These helpers do not parse OpenSSH key formats or generate or persist keys.
 
 The signer derives audience only from its callback's endpoint; Cyrus's header helper validates the exact
 configured server and URL before calling it. Other worker clients must establish the same destination
@@ -63,7 +69,7 @@ boundary before resolving key custody. No key or derived token is cached by thes
 and bearer values out of model arguments, MCP configuration JSON, logs and child environments.
 
 The verifier requires `iat` and `exp`, bounds their difference by `maxLifetimeSeconds`, rejects future
-issued-at beyond clock tolerance and delegates signature/issuer/audience/expiry checks to Eve.
+issued-at beyond clock tolerance and delegates signature/issuer/audience/expiry checks to the selected native Eve or JOSE verifier.
 Configured subject identity is literal, including `*`. Defaults are 300 seconds and 30 seconds of skew;
 lifetimes must be positive finite numbers, and clock tolerance may be zero. Configure signer lifetime
 no greater than the verifier maximum. Expiry can be accepted through the configured skew window.

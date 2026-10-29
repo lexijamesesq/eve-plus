@@ -635,47 +635,54 @@ describe("public native Cyrus worker artifacts and helper", () => {
     expect(output.stderr).toEqual([]);
   });
 
-  it("uses the opt-in signer through the native helper with exact audience and configurable expiry", async () => {
-    const keys = generateKeyPairSync("ec", { namedCurve: "P-256" });
-    const pem = keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-    const publicKey = await importSPKI(
-      keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
-      "ES256",
-    );
-    const output = helperOutput();
-    const signer = createSignedWorkerCredential({
-      issuer: "urn:example:worker",
-      subject: "worker",
-      lifetimeSeconds: 45,
-      resolvePrivateKey: ({ signal }) => {
-        signal.throwIfAborted();
-        return pem;
-      },
-    });
-    expect(
-      await runCyrusHeadersHelper({
-        servers,
-        resolveCredential: signer,
-        ...output.streams,
-        env: {
-          CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
-          CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
+  it.each(["ES256", "EdDSA"] as const)(
+    "uses the opt-in signer through the native helper with exact audience and configurable expiry (%s)",
+    async (algorithm) => {
+      const keys =
+        algorithm === "ES256"
+          ? generateKeyPairSync("ec", { namedCurve: "P-256" })
+          : generateKeyPairSync("ed25519");
+      const pem = keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+      const publicKey = await importSPKI(
+        keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+        algorithm,
+      );
+      const output = helperOutput();
+      const signer = createSignedWorkerCredential({
+        issuer: "urn:example:worker",
+        subject: "worker",
+        lifetimeSeconds: 45,
+        algorithm: algorithm === "ES256" ? undefined : algorithm,
+        resolvePrivateKey: ({ signal }) => {
+          signal.throwIfAborted();
+          return pem;
         },
-      }),
-    ).toBe(0);
-    const header = JSON.parse(output.stdout.join("")).Authorization as string;
-    const { payload } = await jwtVerify(header.slice("Bearer ".length), publicKey, {
-      algorithms: ["ES256"],
-      issuer: "urn:example:worker",
-      subject: "worker",
-      audience: mcp.endpoint,
-    });
-    if (typeof payload.exp !== "number" || typeof payload.iat !== "number")
-      throw new Error("Missing token lifetime");
-    expect(payload.exp - payload.iat).toBe(45);
-    expect(output.stderr).toEqual([]);
-    expect(output.stdout.join("")).not.toContain("PRIVATE KEY");
-  });
+      });
+      expect(
+        await runCyrusHeadersHelper({
+          servers,
+          resolveCredential: signer,
+          ...output.streams,
+          env: {
+            CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
+            CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
+          },
+        }),
+      ).toBe(0);
+      const header = JSON.parse(output.stdout.join("")).Authorization as string;
+      const { payload } = await jwtVerify(header.slice("Bearer ".length), publicKey, {
+        algorithms: [algorithm],
+        issuer: "urn:example:worker",
+        subject: "worker",
+        audience: mcp.endpoint,
+      });
+      if (typeof payload.exp !== "number" || typeof payload.iat !== "number")
+        throw new Error("Missing token lifetime");
+      expect(payload.exp - payload.iat).toBe(45);
+      expect(output.stderr).toEqual([]);
+      expect(output.stdout.join("")).not.toContain("PRIVATE KEY");
+    },
+  );
 
   it("refuses invalid signing identity or lifetime during configuration", () => {
     const options = {
@@ -686,6 +693,7 @@ describe("public native Cyrus worker artifacts and helper", () => {
     for (const invalid of [
       { ...options, issuer: "" },
       { ...options, lifetimeSeconds: 0 },
+      { ...options, algorithm: "HS256" as "ES256" },
     ]) {
       expect(() => createSignedWorkerCredential(invalid)).toThrow(
         new Error("Invalid signed worker authentication configuration"),

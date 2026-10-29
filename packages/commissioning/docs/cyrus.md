@@ -20,6 +20,31 @@ The unreleased description-based binding format is not reinterpreted. New bindin
 
 Use a dedicated work issue owned by the commissioning flow during enrollment. Independent concurrent commissioning writers are unsupported. Linear exposes no delegation compare-and-swap: a human or another application changing the delegate between the final read and update can still lose that delegation change. The delegate-only write preserves concurrent description edits, but no global compare-and-set, external-writer exclusion or exactly-once guarantee is claimed. A confirmed handoff is not evidence that a model turn started.
 
+## Portable worker installation
+
+A worker host can use the `commissioning-worker-v<VERSION>.tar.gz` asset and its
+`.sha256` file from the same [commissioning release](https://github.com/lexijamesesq/eve-plus/releases).
+Portable assets begin with version 0.4.0; select a published release that contains
+both files. Verify the archive against the pinned SHA256 before extraction.
+The archive needs Node 24 and includes its dependency licenses. It requires no
+package manager, Eve installation, SQLite binding or server process.
+
+The extracted `package.json` records the release version and source commit in
+`gitHead`. Its `index.js` exports the same three worker functions:
+
+```js
+import {
+  createCyrusWorkerArtifacts,
+  runCyrusHeadersHelper,
+  createSignedWorkerCredential,
+} from "./commissioning-worker/index.js";
+```
+
+Supply the same destination settings and application-owned credential resolver
+as a package consumer. The archive includes no identity, key, vault client or
+configuration installer. Eve server applications continue to consume the normal
+Git release package; the worker archive does not replace that module.
+
 ## Native MCP setup
 
 `createCyrusWorkerArtifacts({servers, headersHelperPath})` returns native HTTP MCP configuration, exact read/consult/report tool names and worker instructions. `servers` maps configured names to exact endpoints; the helper path is an absolute executable selected by the consumer.
