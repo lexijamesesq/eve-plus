@@ -409,13 +409,89 @@ describe("optional signed worker authentication through the real MCP transport",
     }
   });
 
+  it("admits expired and future-issued credentials within configured clock tolerance", async () => {
+    const { store, config } = fixture();
+    const key = await importPKCS8(privatePem, "ES256");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+      const now = Math.floor(Date.now() / 1000);
+      for (const claims of [
+        { iat: now - 100, exp: now - 20 },
+        { iat: now + 20, exp: now + 100 },
+      ]) {
+        const credential = await new SignJWT({
+          iss: issuer,
+          sub: worker.principalId,
+          aud: audience,
+          ...claims,
+        })
+          .setProtectedHeader({ alg: "ES256" })
+          .sign(key);
+        for (const tolerance of [30, 0]) {
+          config.authenticateWorker = createSignedWorkerAuthenticator({
+            issuer,
+            subject: worker.principalId,
+            audience,
+            publicKeys: [publicKey],
+            maxLifetimeSeconds: 180,
+            clockToleranceSeconds: tolerance,
+          });
+          const response = await handleWorkerRequest(
+            new Request(audience, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${credential}`,
+                "content-type": "application/json",
+                accept: "application/json, text/event-stream",
+              },
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "tools/call",
+                params: {
+                  name: "commission_read",
+                  arguments: { commissionId: "one" },
+                },
+              }),
+            }),
+            { store, config },
+          );
+          expect(response.status).toBe(tolerance === 30 ? 200 : 401);
+          if (response.status === 200) {
+            expect((await response.json()).result.structuredContent.result.commissionId).toBe(
+              "one",
+            );
+          }
+        }
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses invalid verification policy or trust during configuration", () => {
+    const options = { issuer, subject: worker.principalId, audience, publicKeys: [publicKey] };
+    for (const invalid of [
+      { ...options, maxLifetimeSeconds: Number.NaN },
+      { ...options, clockToleranceSeconds: -1 },
+      { ...options, publicKeys: ["   "] },
+    ]) {
+      expect(() => createSignedWorkerAuthenticator(invalid)).toThrow(
+        new Error("Invalid signed worker authentication configuration"),
+      );
+    }
+  });
+
   it("rejects distinct signature, identity, destination and age-policy failures without mutation", async () => {
     const { store, config } = fixture();
+    const maxLifetimeSeconds = 180;
     config.authenticateWorker = createSignedWorkerAuthenticator({
       issuer,
       subject: worker.principalId,
       audience,
       publicKeys: [publicKey],
+      maxLifetimeSeconds,
     });
     const key = await importPKCS8(privatePem, "ES256");
     const now = Math.floor(Date.now() / 1000);
@@ -425,7 +501,7 @@ describe("optional signed worker authentication through the real MCP transport",
         sub: worker.principalId,
         aud: audience,
         iat: now,
-        exp: now + 300,
+        exp: now + maxLifetimeSeconds,
         ...claims,
       })
         .setProtectedHeader({ alg: "ES256" })
@@ -439,7 +515,7 @@ describe("optional signed worker authentication through the real MCP transport",
       ["missing-expiry", await signed({ exp: undefined })],
       ["missing-issued-at", await signed({ iat: undefined })],
       ["future-issued-at", await signed({ iat: now + 60 })],
-      ["excessive-lifetime", await signed({ exp: now + 301 })],
+      ["excessive-lifetime", await signed({ exp: now + maxLifetimeSeconds + 1 })],
       ["nonpositive-lifetime", await signed({ exp: now })],
     ];
     for (const [boundary, credential] of invalid) {

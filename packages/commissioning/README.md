@@ -152,7 +152,7 @@ Identity resolvers return `{verified: true, principalId}` or `null`. Never put c
 - One worker and one eve process per mount with persistent local SQLite/WAL is the supported topology. This is a package constraint, not an eve-wide requirement; horizontal replicas/shared multi-host storage are unsupported.
 - Default owner continuations are private agent conversations. Human-visible routing is an application integration. Native progress renderers must not publish private tool arguments; see [operations](docs/operations.md).
 - With the default strict session binding, explicit recovery is host-authorized: verify the requester and original source, reset/create the canonical commission address, then CAS-rebind to that actual session ID with `store.rebindSession`. Delivery refuses a different current address owner. Original context stays immutable and old-session authority is revoked. See the [recovery recipe](docs/operations.md#session-and-worker-recovery).
-- `.` and `./tools` use eve-generated `.mjs`/`default` exports; `./store`, `./transport`, `./config` and `./cyrus` expose typed host APIs. Wildcard eve peer plus generated compatibility metadata follow the official extension scaffold. The qualification target is exactly eve 0.83.2, not every future runtime.
+- `.` and `./tools` use eve-generated `.mjs`/`default` exports; `./store`, `./transport`, `./config`, `./cyrus` and optional `./auth` expose typed host APIs. Wildcard eve peer plus generated compatibility metadata follow the official extension scaffold. The qualification target is exactly eve 0.83.2, not every future runtime.
 
 ## Validation and known limitations
 

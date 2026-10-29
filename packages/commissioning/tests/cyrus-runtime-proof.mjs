@@ -29,6 +29,25 @@ async function packageMetadata(requireFrom, name) {
   }
 }
 
+/** Shared control credential setup for these two synthetic native proof scripts only. */
+export async function createProbeControlCredential(stage, config) {
+  if (config.EXAMPLE_WORKER_AUTH !== "signed")
+    return () => Promise.resolve(config.EXAMPLE_WORKER_TOKEN);
+  const requireConsumer = createRequire(join(stage, "consumer/package.json"));
+  const root = dirname(dirname(requireConsumer.resolve("@eve-plus/commissioning")));
+  const manifest = await readJson(join(root, "package.json"));
+  const { createSignedWorkerCredential } = await import(
+    pathToFileURL(join(root, manifest.exports["./auth"].import)).href
+  );
+  const signer = createSignedWorkerCredential({
+    issuer: config.EXAMPLE_WORKER_ISSUER,
+    subject: "example:builder",
+    resolvePrivateKey: () => readFile(join(stage, "synthetic-worker-private.pem"), "utf8"),
+  });
+  return () =>
+    signer({ endpoint: config.EXAMPLE_MCP_ENDPOINT, signal: new AbortController().signal });
+}
+
 /** Metadata inspection imports no runner and starts no process or service. */
 export async function inspectCyrusRuntime(stage) {
   const requireRuntime = createRequire(join(resolve(stage), "cyrus-runtime/package.json"));
@@ -417,23 +436,14 @@ export async function runCyrusProbe(
     "Probe connects only to the synthetic loopback endpoint",
   );
   const signed = config.EXAMPLE_WORKER_AUTH === "signed";
-  const commissioningRoot = dirname(dirname(requireConsumer.resolve("@eve-plus/commissioning")));
-  const commissioningManifest = await readJson(join(commissioningRoot, "package.json"));
-  const signedControl = signed
-    ? (
-        await import(
-          pathToFileURL(join(commissioningRoot, commissioningManifest.exports["./auth"].import))
-            .href
-        )
-      ).createSignedWorkerCredential({
-        issuer: "urn:example:commissioning:worker",
-        subject: "example:builder",
-        resolvePrivateKey: () => readFile(join(stage, "synthetic-worker-private.pem"), "utf8"),
-      })
-    : undefined;
-  const controlBearer = signedControl
-    ? await signedControl({ endpoint, signal: new AbortController().signal })
-    : config.EXAMPLE_WORKER_TOKEN;
+  const resolveControlCredential = await createProbeControlCredential(stage, config);
+  const controlBearer = await resolveControlCredential();
+  const readAuthJournal = async () =>
+    (await readFile(config.FIXTURE_WORKER_AUTH_JOURNAL, "utf8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map(JSON.parse);
   const root = join(dirname(dataDir), "cyrus-runtime");
   await mkdir(root, { recursive: true });
   const connect = async () => {
@@ -677,11 +687,7 @@ export async function runCyrusProbe(
               commissionResults(body.messages).some((view) => view.commissionId === linkedId),
               "Signed runner must first complete a real authorized read",
             );
-            const authJournal = (await readFile(config.FIXTURE_WORKER_AUTH_JOURNAL, "utf8"))
-              .trim()
-              .split("\n")
-              .filter(Boolean)
-              .map(JSON.parse);
+            const authJournal = await readAuthJournal();
             const firstRead = authJournal.findLast(
               (entry) => entry.accepted && entry.tool === "commission_read",
             );
@@ -914,12 +920,7 @@ export async function runCyrusProbe(
         providerFailureClass: null,
         requestSummaries: [],
       };
-      const authBefore = signed
-        ? (await readFile(config.FIXTURE_WORKER_AUTH_JOURNAL, "utf8"))
-            .trim()
-            .split("\n")
-            .filter(Boolean).length
-        : 0;
+      const authBefore = signed ? (await readAuthJournal()).length : 0;
       const before = await read();
       const result = await child(process.execPath, [thisFile, "--runner-child", stage, caseRoot], {
         cwd: caseRoot,
@@ -967,12 +968,7 @@ export async function runCyrusProbe(
         assert.equal(active.providerFailure, false);
         assert.equal(runner.completed, true);
         assert.equal(runner.runnerError, false);
-        const authJournal = (await readFile(config.FIXTURE_WORKER_AUTH_JOURNAL, "utf8"))
-          .trim()
-          .split("\n")
-          .filter(Boolean)
-          .map(JSON.parse)
-          .slice(authBefore);
+        const authJournal = (await readAuthJournal()).slice(authBefore);
         const consultAttempts = authJournal.filter(
           (entry) =>
             entry.tool === "commission_consult" &&

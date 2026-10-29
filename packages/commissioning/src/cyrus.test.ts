@@ -677,6 +677,22 @@ describe("public native Cyrus worker artifacts and helper", () => {
     expect(output.stdout.join("")).not.toContain("PRIVATE KEY");
   });
 
+  it("refuses invalid signing identity or lifetime during configuration", () => {
+    const options = {
+      issuer: "urn:example:worker",
+      subject: "worker",
+      resolvePrivateKey: () => "unused",
+    };
+    for (const invalid of [
+      { ...options, issuer: "" },
+      { ...options, lifetimeSeconds: 0 },
+    ]) {
+      expect(() => createSignedWorkerCredential(invalid)).toThrow(
+        new Error("Invalid signed worker authentication configuration"),
+      );
+    }
+  });
+
   it("hides signing key failures through both the public signer and native helper", async () => {
     const output = helperOutput();
     const signer = createSignedWorkerCredential({
