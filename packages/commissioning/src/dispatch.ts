@@ -1,7 +1,7 @@
 import type { RouteHandlerArgs } from "eve/channels";
 import type { CommissioningConfig } from "./config.js";
-import { commissionerSchema } from "./schemas.js";
-import { type CommissionStore, canonical } from "./store.js";
+import { resolveCommissioner } from "./owner.js";
+import type { CommissionStore } from "./store.js";
 import type { OutboxEntry, OutboxFailureClass } from "./types.js";
 
 type To = RouteHandlerArgs["to"];
@@ -69,15 +69,9 @@ export function createDispatcher(store: CommissionStore, config: CommissioningCo
           } else {
             failure = "commissioner_unavailable";
             const route = config.deliver(commission.conversation);
-            // The delivered turn has to be able to answer: its auth must resolve to this commission's owner and
-            // conversation, or the notice would arrive somewhere the decide tool refuses.
-            const parsed = commissionerSchema.safeParse(config.commissioner(route.auth));
-            if (
-              !parsed.success ||
-              parsed.data.id !== commission.owner ||
-              canonical(parsed.data.conversation) !== canonical(commission.conversation)
-            )
-              throw new Error("The delivery auth doesn't resolve to this commission's owner");
+            // The delivered turn has to be able to answer, so its auth must pass the same owner rule the decide
+            // tool applies; otherwise the notice would arrive somewhere decide refuses.
+            store.owned(resolveCommissioner(config, route.auth), entry.commissionId);
             failure = "delivery_failed";
             await to(route.channel, route.target).send(notice(entry), {
               auth: route.auth,

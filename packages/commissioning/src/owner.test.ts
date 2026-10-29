@@ -60,7 +60,7 @@ describe("the commissioner's tools", () => {
     expect(store.read(id).handoff.status).toBe("pending");
   });
 
-  it("refuses a session that can't commission, and leaves nothing behind when the worker refuses the work", async () => {
+  it("refuses a session that can't commission, tells a refused work reference from a transient failure, and leaves nothing behind", async () => {
     const { owner, store, prepare } = setup();
     expect(
       await explain("open the commission", () =>
@@ -71,9 +71,21 @@ describe("the commissioner's tools", () => {
     const refused = await explain("open the commission", () =>
       openCommission(owner, input, context("1.0", "call-2") as unknown as Context),
     );
-    expect(refused).toBe(
-      "Couldn't open the commission: The worker couldn't accept that work reference.",
+    expect(refused).toBe("Couldn't open the commission: The worker refused that work reference.");
+    // A transient failure says to try again, and is logged with fixed fields only.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    prepare.mockRejectedValueOnce(Object.assign(new Error("provider detail"), { retryable: true }));
+    const unavailable = await explain("open the commission", () =>
+      openCommission(owner, input, context("1.0", "call-3") as unknown as Context),
     );
+    expect(unavailable).toBe(
+      "Couldn't open the commission: The worker is temporarily unavailable; try again.",
+    );
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(
+      /^\[commissioning\] work preparation failed: commission=[0-9a-f]{64} reason=worker_unavailable$/,
+    );
+    warn.mockRestore();
     expect(store.pendingOutbox()).toEqual([]);
   });
 

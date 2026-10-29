@@ -458,6 +458,22 @@ describe("public Cyrus Linear connector", () => {
     ).rejects.toEqual(new CyrusConnectorError("provider_unavailable"));
   });
 
+  it("refuses an endpoint that would put a credential or a remote plain-HTTP address in the contract", () => {
+    const options = provider().options;
+    for (const endpoint of [
+      "https://worker:secret@agent.example/commissioning/mcp",
+      "https://agent.example/commissioning/mcp?token=secret",
+      "https://agent.example/commissioning/mcp#secret",
+      "http://agent.example/commissioning/mcp",
+    ])
+      expect(() => cyrus({ ...options, mcp: { ...mcp, endpoint } }), endpoint).toThrow(
+        new CyrusConnectorError("invalid_configuration"),
+      );
+    expect(() =>
+      cyrus({ ...options, mcp: { ...mcp, endpoint: "http://127.0.0.1:3001/commissioning/mcp" } }),
+    ).not.toThrow();
+  });
+
   it("rejects malformed canonical records safely", async () => {
     for (const issue of [
       null,

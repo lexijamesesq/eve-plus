@@ -53,6 +53,7 @@ export type CommissionErrorCode =
   | "forbidden"
   | "conflict"
   | "stale_proposal"
+  | "unavailable"
   | "lease_lost";
 export interface MutationResult {
   commissionId: string;

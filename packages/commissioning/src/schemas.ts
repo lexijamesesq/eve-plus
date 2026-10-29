@@ -54,6 +54,7 @@ const artifactSchema = z
 export const openSchema = z
   .object({ spec: specSchema, workReference: workReferenceSchema })
   .strict();
+export const ownerReadSchema = z.object({ commissionId: id }).strict();
 export const readSchema = z
   .object({ commissionId: id, after: z.number().int().nonnegative().default(0) })
   .strict();

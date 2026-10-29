@@ -3,7 +3,11 @@
 ## 0.5.0
 
 A breaking rework to what commissioning needs: the commissioner and the worker can talk, and nothing more. Stores
-from earlier versions aren't migrated; start 0.5.0 on an empty `dataDir`.
+from earlier versions aren't migrated; start 0.5.0 on an empty `dataDir`. The ledger is schema 4, and 0.5.0 refuses
+any other with a message naming it.
+
+**Rolling back:** 0.4.0 can't open a 0.5.0 ledger. Roll back by restoring the previous image with its previous
+`dataDir`, and never point 0.4.0 at a ledger 0.5.0 wrote.
 
 ### Changed
 
@@ -19,7 +23,9 @@ from earlier versions aren't migrated; start 0.5.0 on an empty `dataDir`.
   `resolveDeliveryAuth`, `captureSource` and `authorizeOwnerSession`.
 - **A worker is required.** Every commission names a work reference and is handed off through the configured
   connector.
-- **The owner's tools answer in plain language.** `commissioning__read` takes only `commissionId`.
+- **The owner's tools answer in plain language.** `commissioning__read` takes only `commissionId`. A worker
+  that's briefly unreachable while a commission opens says to try again, and logs one fixed-field warning; any
+  other failure refuses the work reference.
 - **One store schema, with no migrations.**
 
 ### Removed

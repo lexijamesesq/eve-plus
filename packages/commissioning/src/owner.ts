@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { SessionAuthContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 import type { CommissioningConfig } from "./config.js";
 import { commissionerSchema } from "./schemas.js";
@@ -14,11 +15,17 @@ interface Owner {
   config: Pick<CommissioningConfig, "commissioner" | "worker">;
 }
 
-function commissioner(config: Owner["config"], ctx: Context): Commissioner {
-  const parsed = commissionerSchema.safeParse(config.commissioner(ctx.session.auth.current));
+/** Who the consumer says this auth commissions as, checked against the shared schema. */
+export function resolveCommissioner(
+  config: Pick<CommissioningConfig, "commissioner">,
+  auth: SessionAuthContext | null,
+): Commissioner {
+  const parsed = commissionerSchema.safeParse(config.commissioner(auth));
   if (!parsed.success) throw new CommissionError("forbidden", "This session can't commission work");
   return parsed.data;
 }
+const commissioner = (config: Owner["config"], ctx: Context) =>
+  resolveCommissioner(config, ctx.session.auth.current);
 
 /** A refusal the commissioner can act on comes back as a sentence; anything else is a tool error. */
 export async function explain(
@@ -44,12 +51,21 @@ export async function openCommission(
   // Preparing reads the work record; a retry reuses the binding the first call stored.
   const binding = store.exists(commissionId)
     ? {}
-    : await config.worker.prepare({ commissionId, reference: input.workReference }).catch(() => {
-        throw new CommissionError(
-          "invalid_input",
-          "The worker couldn't accept that work reference",
-        );
-      });
+    : await config.worker
+        .prepare({ commissionId, reference: input.workReference })
+        .catch((error: unknown) => {
+          // A connector marks a failure worth retrying; anything else is a refusal of this work reference.
+          if ((error as { retryable?: unknown } | null)?.retryable === true) {
+            console.warn(
+              `[commissioning] work preparation failed: commission=${commissionId} reason=worker_unavailable`,
+            );
+            throw new CommissionError(
+              "unavailable",
+              "The worker is temporarily unavailable; try again",
+            );
+          }
+          throw new CommissionError("invalid_input", "The worker refused that work reference");
+        });
   store.open(owner, {
     commissionId,
     spec: input.spec,

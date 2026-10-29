@@ -203,6 +203,20 @@ describe("on-disk commissioning ledger", () => {
     db.close();
   });
 
+  it("refuses a ledger from another schema, naming it, and leaves it unchanged", () => {
+    for (const version of [1, 3]) {
+      const file = path();
+      new CommissionStore(file).close();
+      const other = new Database(file);
+      other.pragma(`user_version = ${version}`);
+      other.close();
+      expect(() => new CommissionStore(file)).toThrow(`commissioning schema ${version}`);
+      const after = new Database(file, { readonly: true });
+      expect(after.pragma("user_version", { simple: true })).toBe(version);
+      after.close();
+    }
+  });
+
   it("rolls the state, question, event and outbox back when the operation can't commit", () => {
     const file = path();
     const store = new CommissionStore(file);

@@ -32,7 +32,7 @@ They keep identity and routing in your application; the package never derives th
 - **`commissioning__read`**: `{ commissionId }`. The status, whether the handoff is confirmed, the worker's questions and their answers, the current proposal and an overdue notice, in plain language.
 - **`commissioning__decide`**: answers a question (`target: "question"`, `questionId`, `decision: { answer }`) or decides the pending proposal (`target: "proposal"`, `proposalId`, `decision: { verdict: "accept" | "revise", feedback }`). Each decision has its own `eventId`. A proposal can't be decided while a question is unanswered, and only the current proposal can be decided.
 
-Refusals come back as a sentence the agent can act on, such as "Couldn't record the decision: Decide the current pending proposal."
+Refusals come back as a sentence the agent can act on, such as "Couldn't record the decision: Decide the current pending proposal." A failed delivery attempt logs `[commissioning] delivery failed: commission=<id> reason=<reason> attempt=<n>`.
 
 ## The worker's tools
 
@@ -75,4 +75,4 @@ Allow exactly `mcp__<server>__commission_read`, `mcp__<server>__commission_consu
 
 ## Writing your own connector
 
-A connector is `{ id, prepare, handoff }`. `prepare({ commissionId, reference })` checks the work item without changing anything and returns a small record of string fields, which is stored with the commission. `handoff({ commissionId, spec, binding })` makes the handoff and resolves only once it's observed; an uncertain outcome must reject, so the dispatcher retries it. Keep `id` stable: a pending handoff recorded under one `id` isn't sent through another.
+A connector is `{ id, prepare, handoff }`. `prepare({ commissionId, reference })` checks the work item without changing anything and returns a small record of string fields, which is stored with the commission. When it fails for a reason that may pass, such as the work system being unreachable, reject with an error carrying `retryable: true`: `open` then tells the commissioner to try again and logs `[commissioning] work preparation failed: commission=<id> reason=worker_unavailable`. Any other rejection refuses the work reference. `handoff({ commissionId, spec, binding })` makes the handoff and resolves only once it's observed; an uncertain outcome must reject, so the dispatcher retries it. Keep `id` stable: a pending handoff recorded under one `id` isn't sent through another.

@@ -53,6 +53,8 @@ function hash(value: unknown): string {
 }
 
 const WORKER = "worker";
+// No earlier release used 4; 0.4 ledgers are schema 3.
+const SCHEMA_VERSION = 4;
 const SCHEMA = `
 CREATE TABLE commissions(id TEXT PRIMARY KEY,owner TEXT NOT NULL,conversation TEXT NOT NULL,spec TEXT NOT NULL,
   work_reference TEXT NOT NULL,connector_id TEXT NOT NULL,binding TEXT NOT NULL,state TEXT NOT NULL,
@@ -69,7 +71,7 @@ CREATE TABLE outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT,commission_id TEXT NOT
   lease_token TEXT,lease_until INTEGER,attempt_count INTEGER NOT NULL DEFAULT 0,failure_class TEXT,
   UNIQUE(commission_id,event_id));
 CREATE INDEX outbox_pending ON outbox(delivered,lease_until,seq);
-PRAGMA user_version=1;`;
+PRAGMA user_version=4;`;
 
 interface CommissionRow {
   id: string;
@@ -115,8 +117,17 @@ export class CommissionStore {
       this.db.pragma("foreign_keys = ON");
       this.db.pragma("busy_timeout = 5000");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version === 0) this.db.transaction(() => this.db.exec(SCHEMA)).immediate();
-      else if (version !== 1) fail("invalid_input", `Unsupported commissioning schema ${version}`);
+      const empty =
+        version === 0 &&
+        this.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1")
+          .get() === undefined;
+      if (empty) this.db.transaction(() => this.db.exec(SCHEMA)).immediate();
+      else if (version !== SCHEMA_VERSION)
+        fail(
+          "invalid_input",
+          `This ledger is commissioning schema ${version}, and 0.5 reads only schema ${SCHEMA_VERSION} (0.4 wrote schema 3). Start 0.5 on an empty dataDir.`,
+        );
       this.db.pragma("journal_mode = WAL");
       this.db.pragma("synchronous = FULL");
     } catch (error) {
@@ -134,8 +145,8 @@ export class CommissionStore {
         | undefined) ?? fail("not_found", "Commission not found")
     );
   }
-  /** The owner may act only from the conversation the commission was opened in. */
-  private owned(commissioner: Commissioner, id: string): CommissionRow {
+  /** The one owner rule: the commission's own commissioner, from the conversation it was opened in. */
+  owned(commissioner: Commissioner, id: string): CommissionRow {
     const row = this.row(id);
     if (row.owner !== commissioner.id) fail("not_found", "Commission not found");
     if (row.conversation !== canonical(commissioner.conversation))
