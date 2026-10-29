@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { cp, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -111,14 +111,29 @@ assert.equal(
   false,
 );
 store.close();
+const keys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+const privateKeyFile = join(stage, "synthetic-worker-private.pem");
+const publicKeyFile = join(stage, "synthetic-worker-public.pem");
+await writeFile(privateKeyFile, keys.privateKey.export({ type: "pkcs8", format: "pem" }), {
+  mode: 0o600,
+});
+await writeFile(publicKeyFile, keys.publicKey.export({ type: "spki", format: "pem" }));
 const modes = [];
-for (const mode of ["neutral", "cyrus"]) {
+for (const mode of ["neutral", "cyrus", "signed"]) {
   const config = {
-    EXAMPLE_WORKER_MODE: mode,
+    EXAMPLE_WORKER_MODE: mode === "signed" ? "cyrus" : mode,
     EXAMPLE_DATA_DIR: join(stage, "application-data"),
     EXAMPLE_OWNER_PASSWORD: "synthetic-owner-only",
-    EXAMPLE_WORKER_TOKEN: "synthetic-worker-only",
-    ...(mode === "cyrus"
+    EXAMPLE_WORKER_TOKEN: mode === "signed" ? "" : "synthetic-worker-only",
+    EXAMPLE_WORKER_AUTH: mode === "signed" ? "signed" : "bearer",
+    ...(mode === "signed"
+      ? {
+          EXAMPLE_WORKER_ISSUER: "urn:example:worker",
+          EXAMPLE_WORKER_PUBLIC_KEY_FILE: publicKeyFile,
+          EXAMPLE_WORKER_PRIVATE_KEY_FILE: privateKeyFile,
+        }
+      : {}),
+    ...(mode !== "neutral"
       ? {
           EXAMPLE_LINEAR_TOKEN: "synthetic-linear-only",
           EXAMPLE_CYRUS_DELEGATE_ID: "synthetic-cyrus-delegate",
@@ -131,6 +146,28 @@ for (const mode of ["neutral", "cyrus"]) {
     if (mode === "neutral") config[key] = "";
   run("npm", ["run", "typecheck"], consumer, config);
   const build = run("npm", ["run", "build"], consumer, config);
+  if (mode === "signed") {
+    run(process.execPath, ["scripts/worker-artifacts.mjs"], consumer, config);
+    const headers = JSON.parse(
+      run(process.execPath, ["scripts/headers-helper.mjs"], consumer, {
+        CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
+        CLAUDE_CODE_MCP_SERVER_URL: config.EXAMPLE_MCP_ENDPOINT,
+      }),
+    );
+    const { createSignedWorkerAuthenticator } = await import(
+      pathToFileURL(join(installedRoot, manifest.exports["./auth"].import)).href
+    );
+    const verify = createSignedWorkerAuthenticator({
+      issuer: config.EXAMPLE_WORKER_ISSUER,
+      subject: "example:builder",
+      audience: config.EXAMPLE_MCP_ENDPOINT,
+      publicKeys: [await readFile(publicKeyFile, "utf8")],
+    });
+    assert.deepEqual(await verify(new Request(config.EXAMPLE_MCP_ENDPOINT, { headers })), {
+      verified: true,
+      principalId: "example:builder",
+    });
+  }
   await writeFile(join(stage, `build-${mode}.log`), build);
   const discovery = JSON.parse(await readFile(join(consumer, ".eve/agent-summary.json"), "utf8"));
   for (const name of ["commissioning__open", "commissioning__read", "commissioning__decide"])

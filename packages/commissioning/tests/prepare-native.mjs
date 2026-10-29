@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -87,6 +88,19 @@ const config = {
   EXAMPLE_GIT_DIR: gitRoot,
   FIXTURE_LINEAR_URL: "http://127.0.0.1:43230/graphql",
 };
+if (process.argv.includes("--signed-worker-auth")) {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", {
+    namedCurve: "P-256",
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  await writeFile(join(stage, "synthetic-worker-private.pem"), privateKey, { mode: 0o600 });
+  await writeFile(join(stage, "synthetic-worker-public.pem"), publicKey);
+  config.EXAMPLE_WORKER_AUTH = "signed";
+  config.EXAMPLE_WORKER_ISSUER = "urn:example:commissioning:worker";
+  config.EXAMPLE_WORKER_PUBLIC_KEY_FILE = join(stage, "synthetic-worker-public.pem");
+  config.FIXTURE_WORKER_AUTH_JOURNAL = join(stage, "worker-auth.jsonl");
+}
 const cyrusKeys = [
   "EXAMPLE_LINEAR_TOKEN",
   "EXAMPLE_CYRUS_DELEGATE_ID",
@@ -95,7 +109,8 @@ const cyrusKeys = [
 ];
 const neutralConfig = { ...config, EXAMPLE_WORKER_MODE: "neutral" };
 for (const key of cyrusKeys) delete neutralConfig[key];
-for (const modeConfig of [neutralConfig, config]) {
+const modeConfigs = config.EXAMPLE_WORKER_AUTH === "signed" ? [config] : [neutralConfig, config];
+for (const modeConfig of modeConfigs) {
   const buildEnv = { ...env, ...modeConfig };
   if (modeConfig.EXAMPLE_WORKER_MODE === "neutral")
     for (const key of cyrusKeys) delete buildEnv[key];
@@ -141,8 +156,13 @@ const receipt = {
     join(runtime, "node_modules/cyrus-claude-runner/package.json"),
   ),
   cyrusDependenciesInstalledThisRun: process.argv.includes("--install-cyrus"),
-  preparedModes: ["neutral", "cyrus"],
-  outputs: { neutral: "native-output/neutral", cyrus: "native-output/cyrus" },
+  preparedModes: modeConfigs.map((value) => value.EXAMPLE_WORKER_MODE),
+  outputs: Object.fromEntries(
+    modeConfigs.map((value) => [
+      value.EXAMPLE_WORKER_MODE,
+      `native-output/${value.EXAMPLE_WORKER_MODE}`,
+    ]),
+  ),
 };
 await writeFile(join(stage, "native-preparation.json"), `${JSON.stringify(receipt, null, 2)}\n`);
 console.log(JSON.stringify(receipt, null, 2));

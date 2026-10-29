@@ -3,15 +3,29 @@ import { resolve } from "node:path";
 import { createCyrusWorkerArtifacts } from "@eve-plus/commissioning/cyrus";
 
 const endpoint = process.env.EXAMPLE_MCP_ENDPOINT;
+const mode = process.env.EXAMPLE_WORKER_AUTH ?? "bearer";
+if (!endpoint || !["bearer", "signed"].includes(mode))
+  throw new Error("Supply a valid worker endpoint and auth mode");
 const credentialFile = process.env.EXAMPLE_WORKER_CREDENTIAL_FILE;
-if (!endpoint || !credentialFile)
-  throw new Error("Supply EXAMPLE_MCP_ENDPOINT and EXAMPLE_WORKER_CREDENTIAL_FILE");
+const privateKeyFile = process.env.EXAMPLE_WORKER_PRIVATE_KEY_FILE;
+const issuer = process.env.EXAMPLE_WORKER_ISSUER;
+if (mode === "signed" ? !privateKeyFile || !issuer : !credentialFile)
+  throw new Error("Supply the selected worker authentication configuration");
 await writeFile(
   "scripts/worker-settings.json",
   `${JSON.stringify(
     {
       servers: { commissioner: endpoint },
-      credentialFile: resolve(credentialFile),
+      ...(mode === "signed"
+        ? {
+            signedCredential: {
+              issuer,
+              subject: "example:builder",
+              privateKeyFile: resolve(privateKeyFile),
+              lifetimeSeconds: 300,
+            },
+          }
+        : { credentialFile: resolve(credentialFile) }),
     },
     null,
     2,

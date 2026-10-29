@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { runCyrusProbe } from "./cyrus-runtime-proof.mjs";
+import { createProbeControlCredential, runCyrusProbe } from "./cyrus-runtime-proof.mjs";
 import { readNativeStream } from "./read-native-stream.mjs";
 import { verifyNativeStream } from "./verify-native-stream.mjs";
 
@@ -39,6 +39,8 @@ const { StreamableHTTPClientTransport } = await load(
 );
 const Database = requireConsumer("better-sqlite3");
 const config = JSON.parse(await readFile(join(stage, "native-config.json"), "utf8"));
+const controlBearer = await createProbeControlCredential(stage, config);
+
 const cyrusEnvironmentKeys = [
   "EXAMPLE_LINEAR_TOKEN",
   "EXAMPLE_CYRUS_DELEGATE_ID",
@@ -227,7 +229,8 @@ async function stop(child) {
     }
   }
 }
-async function connect(token = config.EXAMPLE_WORKER_TOKEN) {
+async function connect(token) {
+  token ??= await controlBearer();
   const client = new Client({ name: "public-qualification-worker", version: "1" });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(config.EXAMPLE_MCP_ENDPOINT), {

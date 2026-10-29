@@ -3,7 +3,7 @@
 This application mounts the installed public package's ordinary tools, channel
 and schedule. Cyrus mode selects the real public connector. Its identity adapter
 is a small local demonstration using Eve's HTTP Basic verifier for the owner and
-a separate worker Bearer credential. Its deterministic `eve/evals` model opens a
+a separate worker Bearer credential, or the optional signed-worker configuration below. Its deterministic `eve/evals` model opens a
 commission, answers through the decide tool, and reviews a committed acceptance
 marker without a paid model request; select your own model and acceptance
 policy for real work.
@@ -29,7 +29,8 @@ Set these environment variables before both build and runtime:
 | --- | --- |
 | `EXAMPLE_DATA_DIR` | Absolute durable local application directory. |
 | `EXAMPLE_OWNER_PASSWORD` | Local owner's password; do not reuse a worker credential. |
-| `EXAMPLE_WORKER_TOKEN` | Worker endpoint credential, provided privately. |
+| `EXAMPLE_WORKER_TOKEN` | Bearer mode: worker endpoint credential, provided privately. |
+| `EXAMPLE_WORKER_AUTH` | `bearer` (default) or explicit `signed` mode below. |
 | `EXAMPLE_WORKER_MODE` | `cyrus` (default) or `neutral`. |
 | `EXAMPLE_LINEAR_TOKEN` | Cyrus mode: token for the configured Linear workspace. |
 | `EXAMPLE_CYRUS_DELEGATE_ID` | Cyrus mode: explicit enrolled Cyrus delegate ID. |
@@ -102,3 +103,20 @@ continuation after the worker parks.
 The public qualification harness stages this same application with synthetic
 external HTTP responses. Test-only routes and fault controls live under `tests`,
 not in this example. No private repository or global Cyrus installation is needed.
+
+## Signed worker mode
+
+The default example retains its existing opaque bearer callback. To explicitly select the optional
+public signer/verifier, set `EXAMPLE_WORKER_AUTH=signed` for the Eve application and artifact generator.
+On Eve, supply `EXAMPLE_WORKER_ISSUER`, `EXAMPLE_MCP_ENDPOINT` and
+`EXAMPLE_WORKER_PUBLIC_KEY_FILE` pointing to the dedicated worker's SPKI public key. The worker subject
+is the example's existing `example:builder`. No worker private key or token is required on Eve in this mode.
+
+For `scripts/worker-artifacts.mjs`, supply the same issuer and endpoint plus
+`EXAMPLE_WORKER_PRIVATE_KEY_FILE` pointing to a dedicated ES256 PKCS8 key under your worker's custody.
+Generated settings contain its path, not key material. The native headers helper reads that key and uses
+`createSignedWorkerCredential`; replace the example file reader with your existing custody provider as
+needed. Do not pass a live key or token into a model, ordinary environment variable or MCP JSON.
+Invalid signed configuration fails; it never falls back to the bearer mode. The example uses the helpers'
+300-second lifetime/maximum and 30-second skew defaults. See the package's
+[authentication policy and rotation guidance](../../README.md#optional-signed-worker-authentication).

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -27,6 +27,25 @@ async function packageMetadata(requireFrom, name) {
     assert.notEqual(parent, root, `Installed metadata unavailable: ${name}`);
     root = parent;
   }
+}
+
+/** Shared control credential setup for these two synthetic native proof scripts only. */
+export async function createProbeControlCredential(stage, config) {
+  if (config.EXAMPLE_WORKER_AUTH !== "signed")
+    return () => Promise.resolve(config.EXAMPLE_WORKER_TOKEN);
+  const requireConsumer = createRequire(join(stage, "consumer/package.json"));
+  const root = dirname(dirname(requireConsumer.resolve("@eve-plus/commissioning")));
+  const manifest = await readJson(join(root, "package.json"));
+  const { createSignedWorkerCredential } = await import(
+    pathToFileURL(join(root, manifest.exports["./auth"].import)).href
+  );
+  const signer = createSignedWorkerCredential({
+    issuer: config.EXAMPLE_WORKER_ISSUER,
+    subject: "example:builder",
+    resolvePrivateKey: () => readFile(join(stage, "synthetic-worker-private.pem"), "utf8"),
+  });
+  return () =>
+    signer({ endpoint: config.EXAMPLE_MCP_ENDPOINT, signal: new AbortController().signal });
 }
 
 /** Metadata inspection imports no runner and starts no process or service. */
@@ -66,9 +85,10 @@ async function child(command, args, options, timeoutMs = 60000) {
     }, 1000).unref();
   }, timeoutMs);
   try {
-    const [code] = await once(subprocess, "exit");
+    const [code, signal] = await once(subprocess, "exit");
     return {
       code,
+      signal,
       timedOut,
       stdout: Buffer.concat(buffers.stdout).toString(),
       stderr: Buffer.concat(buffers.stderr).toString(),
@@ -231,7 +251,11 @@ export async function buildNativeIntakePrompts(stage, { issue, initialComments }
 }
 
 /** The synthetic provider accepts answers only from its actual, matching SDK read call results. */
-export function hasRecoveredCommissionerAnswer(messages, commissionId) {
+export function hasRecoveredCommissionerAnswer(
+  messages,
+  commissionId,
+  questionId = "released-runner-question",
+) {
   const blocks = messages.flatMap((message) =>
     Array.isArray(message.content) ? message.content : [],
   );
@@ -253,7 +277,7 @@ export function hasRecoveredCommissionerAnswer(messages, commissionId) {
       view.commissionId === commissionId &&
       view.questions.some(
         (question) =>
-          question.questionId === "released-runner-question" &&
+          question.questionId === questionId &&
           question.status === "answered" &&
           question.answer?.answer === "Use the recorded acceptance criteria",
       ),
@@ -411,13 +435,22 @@ export async function runCyrusProbe(
     "127.0.0.1",
     "Probe connects only to the synthetic loopback endpoint",
   );
+  const signed = config.EXAMPLE_WORKER_AUTH === "signed";
+  const resolveControlCredential = await createProbeControlCredential(stage, config);
+  const controlBearer = await resolveControlCredential();
+  const readAuthJournal = async () =>
+    (await readFile(config.FIXTURE_WORKER_AUTH_JOURNAL, "utf8"))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map(JSON.parse);
   const root = join(dirname(dataDir), "cyrus-runtime");
   await mkdir(root, { recursive: true });
   const connect = async () => {
     const client = new Client({ name: "released-cyrus-probe-control", version: "1" });
     await client.connect(
       new StreamableHTTPClientTransport(new URL(endpoint), {
-        requestInit: { headers: { authorization: `Bearer ${config.EXAMPLE_WORKER_TOKEN}` } },
+        requestInit: { headers: { authorization: `Bearer ${controlBearer}` } },
       }),
     );
     return client;
@@ -569,14 +602,14 @@ export async function runCyrusProbe(
           (view) => view.commissionId === commissionId,
         ).length,
         targetQuestionPresent: diagnosticViews.some((view) =>
-          view.questions.some((question) => question.questionId === "released-runner-question"),
+          view.questions.some((question) => question.questionId === active.questionId),
         ),
         canonicalAnswerSeen: diagnosticViews.some(
           (view) =>
             view.commissionId === commissionId &&
             view.questions.some(
               (question) =>
-                question.questionId === "released-runner-question" &&
+                question.questionId === active.questionId &&
                 question.status === "answered" &&
                 question.answer?.answer === "Use the recorded acceptance criteria",
             ),
@@ -605,8 +638,22 @@ export async function runCyrusProbe(
           .filter((block) => block.name.startsWith("mcp__commissioner__"))
           .map((block) => block.id),
       );
+      const expectedRefreshFailure =
+        signed && active.mode === "jwt-refresh-failure"
+          ? called.find(
+              (block) =>
+                block.name === "mcp__commissioner__commission_consult" &&
+                block.input?.commissionId === commissionId &&
+                block.input?.questionId === active.questionId,
+            )
+          : undefined;
       assert.equal(
-        results.some((block) => workerIds.has(block.tool_use_id) && block.is_error),
+        results.some(
+          (block) =>
+            workerIds.has(block.tool_use_id) &&
+            block.is_error &&
+            block.tool_use_id !== expectedRefreshFailure?.id,
+        ),
         false,
         "Real commissioning tool failed",
       );
@@ -634,17 +681,70 @@ export async function runCyrusProbe(
             name: "mcp__commissioner__commission_read",
             input: { commissionId: linkedId },
           };
-        else if (!called.some((block) => block.name === "mcp__commissioner__commission_consult"))
+        else if (!called.some((block) => block.name === "mcp__commissioner__commission_consult")) {
+          if (signed && !active.expiryBoundary) {
+            assert.ok(
+              commissionResults(body.messages).some((view) => view.commissionId === linkedId),
+              "Signed runner must first complete a real authorized read",
+            );
+            const authJournal = await readAuthJournal();
+            const firstRead = authJournal.findLast(
+              (entry) => entry.accepted && entry.tool === "commission_read",
+            );
+            assert.ok(firstRead?.expiresAt);
+            active.firstIssuedAt = firstRead.issuedAt;
+            active.expiryBoundary = firstRead.expiresAt * 1000 + 30_000;
+            if (active.mode === "jwt-refresh-failure")
+              await rm(join(active.caseRoot, "signing-key.pem"));
+            // Genuine expiry under the production verifier's 30-second tolerance; no injected401 or clock.
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.max(0, active.expiryBoundary + 200 - Date.now())),
+            );
+          }
           action = {
             name: "mcp__commissioner__commission_consult",
             input: {
               commissionId: linkedId,
-              questionId: "released-runner-question",
+              questionId: active.questionId,
               question: { text: "Which behavior meets the recorded acceptance criteria?" },
             },
           };
-        else {
-          active.answerRecovered = hasRecoveredCommissionerAnswer(body.messages ?? [], linkedId);
+        } else if (signed) {
+          const consult = called.find(
+            (block) =>
+              block.name === "mcp__commissioner__commission_consult" &&
+              block.input?.commissionId === linkedId &&
+              block.input?.questionId === active.questionId,
+          );
+          assert.ok(consult, "Signed proof requires its matching consult call");
+          const result = results.find((block) => block.tool_use_id === consult.id);
+          assert.ok(result, "Signed proof requires its correlated consult result");
+          if (active.mode === "jwt-refresh-failure") {
+            active.refreshRejected = result.is_error === true;
+            assert.equal(
+              active.refreshRejected,
+              true,
+              "Failed signing custody must reject the tool",
+            );
+          } else {
+            assert.notEqual(result.is_error, true, "Refreshed consult must succeed");
+            active.consultAccepted =
+              sdkResultObjects(
+                result.content,
+                (value) => value.recorded === true && value.result?.commissionId === linkedId,
+              ).length > 0;
+            assert.equal(
+              active.consultAccepted,
+              true,
+              "Refreshed consult must return a valid recorded response",
+            );
+          }
+        } else {
+          active.answerRecovered = hasRecoveredCommissionerAnswer(
+            body.messages ?? [],
+            linkedId,
+            active.questionId,
+          );
           const reads = called.filter(
             (block) => block.name === "mcp__commissioner__commission_read",
           ).length;
@@ -701,17 +801,19 @@ export async function runCyrusProbe(
     provider.listen(0, "127.0.0.1");
     await once(provider, "listening");
     const providerUrl = `http://127.0.0.1:${provider.address().port}`;
-    for (const mode of [
-      "valid-label",
-      "valid-fallback",
-      "missing-expected",
-      "ambiguous",
-      "wrong-server",
-      "ordinary",
-      "comment-failure",
-      "wrong-credential",
-      "helper-failure",
-    ]) {
+    for (const mode of signed
+      ? ["valid-jwt-expiry", "jwt-refresh-failure"]
+      : [
+          "valid-label",
+          "valid-fallback",
+          "missing-expected",
+          "ambiguous",
+          "wrong-server",
+          "ordinary",
+          "comment-failure",
+          "wrong-credential",
+          "helper-failure",
+        ]) {
       const caseRoot = join(root, mode);
       await mkdir(join(caseRoot, "work"), { recursive: true });
       const tokenPath = join(caseRoot, "worker-token");
@@ -721,12 +823,26 @@ export async function runCyrusProbe(
           mode === "wrong-credential" ? "incorrect-synthetic-only" : config.EXAMPLE_WORKER_TOKEN,
           { mode: 0o600 },
         );
+      if (signed) {
+        await writeFile(
+          join(caseRoot, "signing-key.pem"),
+          await readFile(join(stage, "synthetic-worker-private.pem")),
+          { mode: 0o600 },
+        );
+      }
       const env = {
         PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
         HOME: caseRoot,
         TMPDIR: caseRoot,
         EXAMPLE_MCP_ENDPOINT: endpoint,
         EXAMPLE_WORKER_CREDENTIAL_FILE: tokenPath,
+        ...(signed
+          ? {
+              EXAMPLE_WORKER_AUTH: "signed",
+              EXAMPLE_WORKER_ISSUER: config.EXAMPLE_WORKER_ISSUER,
+              EXAMPLE_WORKER_PRIVATE_KEY_FILE: join(caseRoot, "signing-key.pem"),
+            }
+          : {}),
       };
       const generated = await child(
         process.execPath,
@@ -735,6 +851,13 @@ export async function runCyrusProbe(
       );
       assert.equal(generated.code, 0, "Canonical artifact generation failed");
       const mcp = await readJson(join(consumer, "mcp.json"));
+      if (signed) {
+        const settingsPath = join(consumer, "scripts/worker-settings.json");
+        const settings = await readJson(settingsPath);
+        // Ordinary public signer configuration, shortened only in this isolated fixture.
+        settings.signedCredential.lifetimeSeconds = 2;
+        await writeFile(settingsPath, JSON.stringify(settings));
+      }
       const commissionAllowedTools = await readJson(join(consumer, "worker-allowed-tools.json"));
       const allowedTools = [...commissionAllowedTools, "mcp__linear__list_comments"];
       const instructions = await readFile(join(consumer, "worker-instructions.md"), "utf8");
@@ -769,7 +892,7 @@ export async function runCyrusProbe(
         linearMcpPath,
         JSON.stringify({ mcpServers: { linear: { type: "http", url: linearPeerUrl } } }),
       );
-      const prompt = `${mode === "valid-fallback" ? prompts.fallback : prompts.label}\n\n${mode === "missing-expected" ? "Commissioned work is expected for this issue; stop if its contract is missing." : "Follow the commissioning discovery protocol before work."}\nFor this synthetic qualification, ask a bounded question, recover its explicit answer and report a checkpoint when a linked contract exists.`;
+      const prompt = `${mode === "valid-fallback" ? prompts.fallback : prompts.label}\n\n${mode === "missing-expected" ? "Commissioned work is expected for this issue; stop if its contract is missing." : "Follow the commissioning discovery protocol before work."}\n${signed ? "For this synthetic authentication qualification, complete a read and bounded consult, then report its result and finish. This case does not qualify the answer/checkpoint loop." : "For this synthetic qualification, ask a bounded question, recover its explicit answer and report a checkpoint when a linked contract exists."}`;
       await writeFile(
         join(caseRoot, "runner-settings.json"),
         JSON.stringify({
@@ -782,6 +905,7 @@ export async function runCyrusProbe(
       active = {
         caseRoot,
         mode,
+        questionId: signed ? `released-runner-${mode}` : "released-runner-question",
         allowedTools,
         instructions,
         modelRequests: 0,
@@ -791,10 +915,12 @@ export async function runCyrusProbe(
         discoveredCommissionId: null,
         disposition: null,
         answerRecovered: false,
+        consultAccepted: false,
         providerFailure: false,
         providerFailureClass: null,
         requestSummaries: [],
       };
+      const authBefore = signed ? (await readAuthJournal()).length : 0;
       const before = await read();
       const result = await child(process.execPath, [thisFile, "--runner-child", stage, caseRoot], {
         cwd: caseRoot,
@@ -838,6 +964,65 @@ export async function runCyrusProbe(
       assert.ok(runner, "Released runner receipt unavailable");
       assert.equal(runner.subprocessEnvironmentScrub, true);
       const after = await read();
+      if (signed) {
+        assert.equal(active.providerFailure, false);
+        assert.equal(runner.completed, true);
+        assert.equal(runner.runnerError, false);
+        const authJournal = (await readAuthJournal()).slice(authBefore);
+        const consultAttempts = authJournal.filter(
+          (entry) =>
+            entry.tool === "commission_consult" &&
+            entry.arguments?.questionId === active.questionId,
+        );
+        assert.ok(
+          consultAttempts.some(
+            (entry) => !entry.accepted && entry.time > entry.expiresAt * 1000 + 30_000,
+          ),
+          "Actual expired bearer must be refused by the real native verifier",
+        );
+        assert.ok(
+          consultAttempts.length <= 2,
+          "Native authentication recovery retries at most once",
+        );
+        for (const attempt of consultAttempts)
+          assert.deepEqual(
+            attempt.arguments,
+            consultAttempts[0].arguments,
+            "Authentication retry preserves the logical operation",
+          );
+        if (mode === "valid-jwt-expiry") {
+          assert.ok(
+            consultAttempts.some(
+              (entry) => entry.accepted && entry.issuedAt > active.firstIssuedAt,
+            ),
+            "Refreshed helper token must succeed with a fresh issuance",
+          );
+          assert.equal(
+            after.questions.filter((question) => question.questionId === active.questionId).length,
+            1,
+          );
+        } else {
+          assert.ok(consultAttempts.every((entry) => !entry.accepted));
+          assert.equal(active.refreshRejected, true);
+          assert.equal(
+            after.nextCursor,
+            before.nextCursor,
+            "Failed refresh must not mutate the ledger",
+          );
+        }
+        await writeFile(
+          join(caseRoot, "auth-observations.json"),
+          JSON.stringify(
+            {
+              expiryBoundary: active.expiryBoundary,
+              firstIssuedAt: active.firstIssuedAt,
+              consultAttempts,
+            },
+            null,
+            2,
+          ),
+        );
+      }
       if (mode.startsWith("valid")) {
         assert.equal(active.discoveredCommissionId, commissionId);
         assert.equal(active.commentToolRequests, 2);
@@ -846,15 +1031,18 @@ export async function runCyrusProbe(
         assert.ok(active.modelRequests > 0);
         assert.equal(runner.completed, true);
         assert.equal(runner.runnerError, false);
-        assert.equal(active.answerRecovered, true);
-        assert.ok(active.requestedTools.filter((name) => name === "commission_read").length >= 2);
-        assert.ok(
-          after.events.some(
-            (event) =>
-              event.eventId === "event:released-runner-checkpoint" && event.kind === "checkpoint",
-          ),
-        );
-      } else {
+        if (signed) assert.equal(active.consultAccepted, true);
+        else {
+          assert.equal(active.answerRecovered, true);
+          assert.ok(active.requestedTools.filter((name) => name === "commission_read").length >= 2);
+          assert.ok(
+            after.events.some(
+              (event) =>
+                event.eventId === "event:released-runner-checkpoint" && event.kind === "checkpoint",
+            ),
+          );
+        }
+      } else if (mode !== "jwt-refresh-failure") {
         assert.equal(active.providerFailure, false);
         if (mode === "ordinary") assert.deepEqual(active.disposition, { status: "ordinary" });
         else if (!["wrong-credential", "helper-failure"].includes(mode))
@@ -877,6 +1065,8 @@ export async function runCyrusProbe(
         disposition: active.disposition,
         initialPromptContainsCommissionId: prompt.includes(commissionId),
         answerRecovered: active.answerRecovered,
+        authenticationOnly: signed,
+        consultAccepted: active.consultAccepted,
         exactThreeToolPolicy: true,
         wrongHelperContextRejected: true,
         subprocessEnvironmentScrub: true,
@@ -893,7 +1083,7 @@ export async function runCyrusProbe(
         "Synthetic declared MCP tools, not hosted Linear schema or production OAuth qualification",
       executionPending: false,
       limits:
-        "Released runner and SDK; real installed Eve MCP endpoint; synthetic credentials and loopback model only. No live Cyrus webhook, paid model, external work message, automatic wake, or production execution-start claim.",
+        "Released runner and SDK; real installed Eve MCP endpoint; synthetic credentials and loopback model only. Signed cases qualify authentication expiry/refresh only, not the full answer/checkpoint loop. No live Cyrus webhook, paid model, external work message, automatic wake, or production execution-start claim.",
     };
     await writeFile(join(root, "result.json"), `${JSON.stringify(receipt, null, 2)}\n`);
     return receipt;
@@ -929,8 +1119,14 @@ if (process.argv[1] && resolve(process.argv[1]) === thisFile) {
       },
       240000,
     );
-    if (result.code !== 0 || result.timedOut)
+    if (result.code !== 0 || result.timedOut) {
+      // Bounded synthetic child output is retained even if startup failed before native run receipts.
+      await writeFile(
+        join(resolve(process.argv[2]), "cyrus-native-child-failure.json"),
+        `${JSON.stringify(result, null, 2)}\n`,
+      );
       throw new Error("Isolated Cyrus runtime proof failed; inspect the synthetic stage receipts");
+    }
     process.stdout.write(result.stdout);
   }
 }

@@ -24,6 +24,8 @@ Use a dedicated work issue owned by the commissioning flow during enrollment. In
 
 `createCyrusWorkerArtifacts({servers, headersHelperPath})` returns native HTTP MCP configuration, exact read/consult/report tool names and worker instructions. `servers` maps configured names to exact endpoints; the helper path is an absolute executable selected by the consumer.
 
+For optional short-lived credentials, compose the public [`createSignedWorkerCredential`](../README.md#optional-signed-worker-authentication) callback with the same helper. Key custody remains application-owned. Existing opaque credential providers remain supported.
+
 `runCyrusHeadersHelper({servers, resolveCredential})` implements the native callback protocol. It validates SDK server-name and exact URL before credential lookup, emits only header JSON to stdout and uses fixed safe errors. The consumer's thin executable supplies its credential provider. Do not put a resolved bearer in MCP JSON or setup output.
 
 Before work, the generated instructions require native Linear comment discovery even when the initial prompt has no commission ID. Cyrus 0.2.73 label-based intake omits comment threads; fallback intake can include only an initial page. The worker must discover the available native Linear tools and follow their actual result/pagination schema until the relevant comments are complete. The exact three commissioning grants do not provide native Linear access; retain that access in the consumer's existing reviewed native policy.

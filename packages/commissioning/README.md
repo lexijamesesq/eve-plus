@@ -2,7 +2,7 @@
 
 Durable software commissioning for [eve](https://github.com/vercel/eve), with a worker-neutral core and an optional, included Cyrus connector. A commissioner defines work, an authenticated worker asks questions and proposes an immutable Git artifact, and the commissioner explicitly answers, accepts or requests revision.
 
-Version **0.2.0** adds an optional owner-session policy; the strict default integration remains available without it. Local qualification uses synthetic services; it does not certify live service credentials or production operation.
+Version **0.3.0** adds optional signed worker credentials and authentication. Existing authentication callbacks and the strict owner-session default remain available unchanged. Local qualification uses synthetic services; it does not certify live service credentials or production operation.
 
 ## Install and try
 
@@ -16,18 +16,64 @@ pnpm --dir packages/commissioning pack --pack-destination /tmp/commissioning-pac
 
 Install the resulting tarball alongside published `eve@0.83.2` in your own project. The complete [Cyrus consumer](examples/cyrus/README.md) supplies its own identity adapter and selects the real connector. Qualification supplies synthetic external responses; ordinary configured use calls the real service. It imports no private application.
 
-This repository distributes packages through Git release tags. Choose an available tag from the [package releases](https://github.com/lexijamesesq/eve-plus/releases). For version 0.2.0, the dependency is:
+This repository distributes packages through Git release tags. Choose an available tag from the [package releases](https://github.com/lexijamesesq/eve-plus/releases). For version 0.3.0, the dependency is:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.2.0&path:packages/commissioning",
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.3.0&path:packages/commissioning",
     "eve": "0.83.2"
   }
 }
 ```
 
 Use that dependency only after its tag appears in the releases. The normal main-branch workflow publishes package tags; use the tarball above to evaluate a checkout whose version is not yet released. Version 0.1.0 can fail during a clean pnpm Git install because its workspace permits an unnecessary native rebuild; use 0.1.1 or newer for that installation path.
+
+## Optional signed worker authentication
+
+Select `@eve-plus/commissioning/auth` when short-lived ES256 worker tokens fit your integration.
+This is explicit configuration: omitting this helper preserves your existing authentication callback;
+there is no switch that turns authentication into anonymous access. It uses Eve's public
+`extractBearerToken` and `verifyJwtEcdsa` APIs, qualified with `eve@0.83.2`; an Eve version providing
+those APIs is required. This mode requires no authorization server or shared verifier secret.
+
+```ts
+import { createSignedWorkerAuthenticator, createSignedWorkerCredential } from "@eve-plus/commissioning/auth";
+
+// Server: only public SPKI PEM trust, never the worker's private key.
+const authenticateWorker = createSignedWorkerAuthenticator({
+  issuer: "urn:example:worker", subject: "worker:builder",
+  audience: "https://agent.example/commissioning/mcp", publicKeys: trustedPublicKeys,
+  maxLifetimeSeconds: 300, clockToleranceSeconds: 30,
+});
+// Assign this callback to CommissioningConfig.authenticateWorker and set
+// workerPrincipalId to the same exact subject. It grants worker tools only.
+
+// Worker: supply your existing custody resolver, without changing its scope.
+const resolveCredential = createSignedWorkerCredential({
+  issuer: "urn:example:worker", subject: "worker:builder", lifetimeSeconds: 300,
+  resolvePrivateKey: ({ signal }) => custody.readDedicatedPkcs8Key({ signal }),
+});
+// For Cyrus, pass resolveCredential to runCyrusHeadersHelper alongside servers.
+```
+
+The signer derives audience only from its callback's endpoint; Cyrus's header helper validates the exact
+configured server and URL before calling it. Other worker clients must establish the same destination
+boundary before resolving key custody. No key or derived token is cached by these factories. Keep keys
+and bearer values out of model arguments, MCP configuration JSON, logs and child environments.
+
+The verifier requires `iat` and `exp`, bounds their difference by `maxLifetimeSeconds`, rejects future
+issued-at beyond clock tolerance and delegates signature/issuer/audience/expiry checks to Eve.
+Configured subject identity is literal, including `*`. Defaults are 300 seconds and 30 seconds of skew;
+lifetimes must be positive finite numbers, and clock tolerance may be zero. Configure signer lifetime
+no greater than the verifier maximum. Expiry can be accepted through the configured skew window.
+Empty public trust denies every request. Invalid credentials produce the transport's existing 401.
+
+For rotation, add new public trust, switch the worker's dedicated signer, wait the old token lifetime
+plus tolerance, then remove old trust. Redeploy or reload consumers to apply new trust. A compromised
+signing key remains usable until removed from trust; short token expiry alone does not revoke that key.
+Use your existing private-key custody and revocation process. Never reuse unrelated service keys.
+The [complete example](examples/cyrus/README.md#signed-worker-mode) shows this optional configuration.
 
 ## Select a worker
 
@@ -106,7 +152,7 @@ Identity resolvers return `{verified: true, principalId}` or `null`. Never put c
 - One worker and one eve process per mount with persistent local SQLite/WAL is the supported topology. This is a package constraint, not an eve-wide requirement; horizontal replicas/shared multi-host storage are unsupported.
 - Default owner continuations are private agent conversations. Human-visible routing is an application integration. Native progress renderers must not publish private tool arguments; see [operations](docs/operations.md).
 - With the default strict session binding, explicit recovery is host-authorized: verify the requester and original source, reset/create the canonical commission address, then CAS-rebind to that actual session ID with `store.rebindSession`. Delivery refuses a different current address owner. Original context stays immutable and old-session authority is revoked. See the [recovery recipe](docs/operations.md#session-and-worker-recovery).
-- `.` and `./tools` use eve-generated `.mjs`/`default` exports; `./store`, `./transport`, `./config` and `./cyrus` expose typed host APIs. Wildcard eve peer plus generated compatibility metadata follow the official extension scaffold. The qualification target is exactly eve 0.83.2, not every future runtime.
+- `.` and `./tools` use eve-generated `.mjs`/`default` exports; `./store`, `./transport`, `./config`, `./cyrus` and optional `./auth` expose typed host APIs. Wildcard eve peer plus generated compatibility metadata follow the official extension scaffold. The qualification target is exactly eve 0.83.2, not every future runtime.
 
 ## Validation and known limitations
 

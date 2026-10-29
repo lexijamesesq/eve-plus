@@ -1,4 +1,7 @@
+import { generateKeyPairSync } from "node:crypto";
+import { importSPKI, jwtVerify } from "jose";
 import { describe, expect, it, vi } from "vitest";
+import { createSignedWorkerCredential } from "./auth.js";
 import type { CyrusOptions } from "./cyrus.js";
 import {
   CyrusConnectorError,
@@ -630,6 +633,89 @@ describe("public native Cyrus worker artifacts and helper", () => {
       Authorization: "Bearer synthetic-worker-secret",
     });
     expect(output.stderr).toEqual([]);
+  });
+
+  it("uses the opt-in signer through the native helper with exact audience and configurable expiry", async () => {
+    const keys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const pem = keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const publicKey = await importSPKI(
+      keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      "ES256",
+    );
+    const output = helperOutput();
+    const signer = createSignedWorkerCredential({
+      issuer: "urn:example:worker",
+      subject: "worker",
+      lifetimeSeconds: 45,
+      resolvePrivateKey: ({ signal }) => {
+        signal.throwIfAborted();
+        return pem;
+      },
+    });
+    expect(
+      await runCyrusHeadersHelper({
+        servers,
+        resolveCredential: signer,
+        ...output.streams,
+        env: {
+          CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
+          CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
+        },
+      }),
+    ).toBe(0);
+    const header = JSON.parse(output.stdout.join("")).Authorization as string;
+    const { payload } = await jwtVerify(header.slice("Bearer ".length), publicKey, {
+      algorithms: ["ES256"],
+      issuer: "urn:example:worker",
+      subject: "worker",
+      audience: mcp.endpoint,
+    });
+    if (typeof payload.exp !== "number" || typeof payload.iat !== "number")
+      throw new Error("Missing token lifetime");
+    expect(payload.exp - payload.iat).toBe(45);
+    expect(output.stderr).toEqual([]);
+    expect(output.stdout.join("")).not.toContain("PRIVATE KEY");
+  });
+
+  it("refuses invalid signing identity or lifetime during configuration", () => {
+    const options = {
+      issuer: "urn:example:worker",
+      subject: "worker",
+      resolvePrivateKey: () => "unused",
+    };
+    for (const invalid of [
+      { ...options, issuer: "" },
+      { ...options, lifetimeSeconds: 0 },
+    ]) {
+      expect(() => createSignedWorkerCredential(invalid)).toThrow(
+        new Error("Invalid signed worker authentication configuration"),
+      );
+    }
+  });
+
+  it("hides signing key failures through both the public signer and native helper", async () => {
+    const output = helperOutput();
+    const signer = createSignedWorkerCredential({
+      issuer: "urn:example:worker",
+      subject: "worker",
+      resolvePrivateKey: () => "PRIVATE_KEY_CANARY",
+    });
+    await expect(
+      signer({ endpoint: mcp.endpoint, signal: new AbortController().signal }),
+    ).rejects.toEqual(new Error("Signed worker credential unavailable"));
+    expect(
+      await runCyrusHeadersHelper({
+        servers,
+        resolveCredential: signer,
+        ...output.streams,
+        env: {
+          CLAUDE_CODE_MCP_SERVER_NAME: "commissioner",
+          CLAUDE_CODE_MCP_SERVER_URL: mcp.endpoint,
+        },
+      }),
+    ).toBe(1);
+    expect(output.stdout).toEqual([]);
+    expect(output.stderr).toEqual(["Commissioning authentication unavailable\n"]);
   });
 
   it.each([

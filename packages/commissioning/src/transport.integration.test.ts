@@ -1,6 +1,9 @@
+import { generateKeyPairSync } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { importPKCS8, type JWTPayload, SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSignedWorkerAuthenticator, createSignedWorkerCredential } from "./auth.js";
 import type { CommissioningConfig } from "./config.js";
 import { createDispatcher } from "./dispatch.js";
 import { CommissionStore } from "./store.js";
@@ -47,12 +50,13 @@ async function clientFor(
   store: CommissionStore,
   config: CommissioningConfig,
   reconcile?: () => Promise<unknown>,
+  credential = "fixture-secret",
 ) {
   const client = new Client({ name: "official-test-client", version: "1.0.0" });
   clients.push(client);
   await client.connect(
     new StreamableHTTPClientTransport(new URL("https://fixture.invalid/commissioning/mcp"), {
-      requestInit: { headers: { authorization: "Bearer fixture-secret" } },
+      requestInit: { headers: { authorization: `Bearer ${credential}` } },
       fetch: async (url, init) =>
         handleWorkerRequest(new Request(url, init), { store, config, reconcile }),
     }),
@@ -346,5 +350,227 @@ describe("official stateless MCP worker transport", () => {
     });
     expect(count).toBe(1);
     expect(store.read(owner, "one").notification?.pending).toBe(0);
+  });
+});
+
+describe("optional signed worker authentication through the real MCP transport", () => {
+  const issuer = "urn:example:worker";
+  const audience = "https://fixture.invalid/commissioning/mcp";
+  const keys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const publicKey = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const privatePem = keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+
+  it("accepts signer credentials, keeps worker projection private, and denies expired credentials", async () => {
+    const { store, config } = fixture();
+    config.authenticateWorker = createSignedWorkerAuthenticator({
+      issuer,
+      subject: worker.principalId,
+      audience,
+      publicKeys: [publicKey],
+      maxLifetimeSeconds: 45,
+      clockToleranceSeconds: 0,
+    });
+    const signer = createSignedWorkerCredential({
+      issuer,
+      subject: worker.principalId,
+      lifetimeSeconds: 45,
+      resolvePrivateKey: () => privatePem,
+    });
+    const credential = await signer({ endpoint: audience, signal: new AbortController().signal });
+    const client = await clientFor(store, config, undefined, credential);
+    const read = await client.callTool({
+      name: "commission_read",
+      arguments: { commissionId: "one" },
+    });
+    expect(JSON.stringify(read)).not.toContain("Owner only");
+    const consult = await client.callTool({
+      name: "commission_consult",
+      arguments: {
+        commissionId: "one",
+        questionId: "signed-question",
+        question: { text: "Which label?" },
+      },
+    });
+    expect(consult.isError).not.toBe(true);
+    expect(store.read(owner, "one").questions).toMatchObject([{ questionId: "signed-question" }]);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 46_000);
+      const response = await handleWorkerRequest(
+        new Request(audience, {
+          method: "POST",
+          headers: { authorization: `Bearer ${credential}` },
+        }),
+        { store, config },
+      );
+      expect(response.status).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("admits expired and future-issued credentials within configured clock tolerance", async () => {
+    const { store, config } = fixture();
+    const key = await importPKCS8(privatePem, "ES256");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+      const now = Math.floor(Date.now() / 1000);
+      for (const claims of [
+        { iat: now - 100, exp: now - 20 },
+        { iat: now + 20, exp: now + 100 },
+      ]) {
+        const credential = await new SignJWT({
+          iss: issuer,
+          sub: worker.principalId,
+          aud: audience,
+          ...claims,
+        })
+          .setProtectedHeader({ alg: "ES256" })
+          .sign(key);
+        for (const tolerance of [30, 0]) {
+          config.authenticateWorker = createSignedWorkerAuthenticator({
+            issuer,
+            subject: worker.principalId,
+            audience,
+            publicKeys: [publicKey],
+            maxLifetimeSeconds: 180,
+            clockToleranceSeconds: tolerance,
+          });
+          const response = await handleWorkerRequest(
+            new Request(audience, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${credential}`,
+                "content-type": "application/json",
+                accept: "application/json, text/event-stream",
+              },
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "tools/call",
+                params: {
+                  name: "commission_read",
+                  arguments: { commissionId: "one" },
+                },
+              }),
+            }),
+            { store, config },
+          );
+          expect(response.status).toBe(tolerance === 30 ? 200 : 401);
+          if (response.status === 200) {
+            expect((await response.json()).result.structuredContent.result.commissionId).toBe(
+              "one",
+            );
+          }
+        }
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses invalid verification policy or trust during configuration", () => {
+    const options = { issuer, subject: worker.principalId, audience, publicKeys: [publicKey] };
+    for (const invalid of [
+      { ...options, maxLifetimeSeconds: Number.NaN },
+      { ...options, clockToleranceSeconds: -1 },
+      { ...options, publicKeys: ["   "] },
+    ]) {
+      expect(() => createSignedWorkerAuthenticator(invalid)).toThrow(
+        new Error("Invalid signed worker authentication configuration"),
+      );
+    }
+  });
+
+  it("rejects distinct signature, identity, destination and age-policy failures without mutation", async () => {
+    const { store, config } = fixture();
+    const maxLifetimeSeconds = 180;
+    config.authenticateWorker = createSignedWorkerAuthenticator({
+      issuer,
+      subject: worker.principalId,
+      audience,
+      publicKeys: [publicKey],
+      maxLifetimeSeconds,
+    });
+    const key = await importPKCS8(privatePem, "ES256");
+    const now = Math.floor(Date.now() / 1000);
+    const signed = (claims: JWTPayload = {}) =>
+      new SignJWT({
+        iss: issuer,
+        sub: worker.principalId,
+        aud: audience,
+        iat: now,
+        exp: now + maxLifetimeSeconds,
+        ...claims,
+      })
+        .setProtectedHeader({ alg: "ES256" })
+        .sign(key);
+    const valid = await signed();
+    const invalid = [
+      ["signature", `${valid.slice(0, -12)}AAAAAAAAAAAA`],
+      ["issuer", await signed({ iss: "urn:foreign" })],
+      ["subject", await signed({ sub: "foreign-worker" })],
+      ["destination", await signed({ aud: "https://other.example/mcp" })],
+      ["missing-expiry", await signed({ exp: undefined })],
+      ["missing-issued-at", await signed({ iat: undefined })],
+      ["future-issued-at", await signed({ iat: now + 60 })],
+      ["excessive-lifetime", await signed({ exp: now + maxLifetimeSeconds + 1 })],
+      ["nonpositive-lifetime", await signed({ exp: now })],
+    ];
+    for (const [boundary, credential] of invalid) {
+      const response = await handleWorkerRequest(
+        new Request(audience, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${credential}`,
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: {
+              name: "commission_consult",
+              arguments: {
+                commissionId: "one",
+                questionId: "denied",
+                question: { text: "Not authorized" },
+              },
+            },
+          }),
+        }),
+        { store, config },
+      );
+      expect(response.status, boundary).toBe(401);
+    }
+    expect(store.read(owner, "one").questions).toEqual([]);
+  });
+
+  it("denies empty trust, supports overlapping rotation and treats configured subjects literally", async () => {
+    const key = await importPKCS8(privatePem, "ES256");
+    const now = Math.floor(Date.now() / 1000);
+    const credential = await new SignJWT({
+      iss: issuer,
+      sub: "worker:one",
+      aud: audience,
+      iat: now,
+      exp: now + 300,
+    })
+      .setProtectedHeader({ alg: "ES256" })
+      .sign(key);
+    const request = new Request(audience, { headers: { authorization: `Bearer ${credential}` } });
+    const otherKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const otherPublic = otherKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
+    const verify = (publicKeys: readonly string[], subject = "worker:one") =>
+      createSignedWorkerAuthenticator({ issuer, subject, audience, publicKeys });
+    expect(await verify([])(request)).toBeNull();
+    expect(await verify([otherPublic, publicKey])(request)).toEqual({
+      verified: true,
+      principalId: "worker:one",
+    });
+    expect(await verify([otherPublic])(request)).toBeNull();
+    expect(await verify([publicKey], "worker:*")(request)).toBeNull();
   });
 });
