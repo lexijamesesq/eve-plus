@@ -1,88 +1,97 @@
-import { randomUUID } from "node:crypto";
-import type { SessionHistoryMessage } from "eve/channels";
-import type { SessionAuthContext } from "eve/context";
+import type { RouteHandlerArgs } from "eve/channels";
 import type { CommissioningConfig } from "./config.js";
-import type { CommissionStore } from "./store.js";
-import type { CommissionerContext, OutboxEntry, OutboxFailureClass } from "./types.js";
+import { commissionerSchema } from "./schemas.js";
+import { type CommissionStore, canonical } from "./store.js";
+import type { OutboxEntry, OutboxFailureClass } from "./types.js";
 
-export interface OwnerDelivery {
-  entry: OutboxEntry;
-  auth: SessionAuthContext;
-  history: SessionHistoryMessage[];
-  message: string;
-  context: CommissionerContext | undefined;
+type To = RouteHandlerArgs["to"];
+
+/** The notice the commissioner's conversation receives, in the words the model reads. */
+export function notice(entry: OutboxEntry): string {
+  const { commissionId } = entry;
+  const payload = entry.payload as {
+    questionId?: string;
+    question?: { text: string; options?: string[] };
+    eventId?: string;
+    data?: {
+      summary: string;
+      artifact?: { repository: string; commit: string; pullRequest: string };
+    };
+  };
+  const read = `Read it with the commissioning read tool (commission ${commissionId}).`;
+  switch (entry.kind) {
+    case "question": {
+      const options = payload.question?.options?.length
+        ? `\nOptions: ${payload.question.options.join(" | ")}`
+        : "";
+      return `The worker asked a question on commission ${commissionId} (question ${payload.questionId}):\n${payload.question?.text}${options}\nAnswer it with the commissioning decide tool.`;
+    }
+    case "proposal": {
+      const artifact = payload.data?.artifact;
+      return `The worker proposed a change for commission ${commissionId} (proposal ${payload.eventId}):\n${payload.data?.summary}\nPR: ${artifact?.pullRequest}\nCommit: ${artifact?.commit}\nReview it, then accept it or ask for a revision with the commissioning decide tool.`;
+    }
+    case "failure":
+      return `The worker reported it's blocked on commission ${commissionId}:\n${payload.data?.summary}\n${read}`;
+    case "overdue_checkpoint":
+      return `The worker has gone quiet on commission ${commissionId}: no checkpoint, question or proposal within its grace interval. It may have stopped. ${read}`;
+    default:
+      return `Commission ${commissionId} has a new ${entry.kind} event. ${read}`;
+  }
 }
-/** One dispatcher per mount. Durable leases handle restart; eve's key window bounds dispatch deduplication. */
+
+/**
+ * One dispatcher per mount: hands new work to the worker and tells the commissioner, in the conversation the
+ * commission was opened in, what the worker asked, proposed or reported. Delivery is at least once: a crash after a
+ * send and before its acknowledgement sends it again.
+ */
 export function createDispatcher(store: CommissionStore, config: CommissioningConfig) {
-  const consumerId = randomUUID();
   let active: Promise<void> | undefined;
-  return (deliver: (delivery: OwnerDelivery) => Promise<unknown>): Promise<void> => {
+  return (to: To): Promise<void> => {
+    // A sweep already running covers this call too.
     if (active) return active;
     active = (async () => {
       store.reconcileOverdue();
-      for (const seq of store.pendingOutboxIds()) {
-        // Acquire a fresh lease immediately before each send, rather than aging an entire batch.
-        const entry = store.claimOutboxSeq({ seq, consumerId, leaseMs: 120000 });
+      for (const seq of store.pendingOutbox()) {
+        const entry = store.claimOutbox(seq);
         if (!entry) continue;
-        let failureClass: OutboxFailureClass = "identity_unavailable";
+        let failure: OutboxFailureClass = "delivery_failed";
         try {
-          const stored =
-            entry.kind === "worker_activation_requested"
-              ? store.workerBinding(entry.commissionId)
-              : undefined;
-          if (entry.kind === "worker_activation_requested" && (config.worker || stored)) {
-            failureClass = "worker_unavailable";
-            if (!config.worker) throw new Error("Worker connector unavailable");
-            failureClass = "worker_binding_mismatch";
-            if (!stored || stored.connectorId !== config.worker.id)
-              throw new Error("Worker binding unavailable or changed");
-            const commission = store.read(
-              { verified: true, principalId: config.workerPrincipalId },
-              entry.commissionId,
-            );
-            failureClass = "worker_handoff_failed";
+          const commission = store.delivery(entry.commissionId);
+          if (entry.kind === "handoff") {
+            failure = "handoff_failed";
+            if (commission.connectorId !== config.worker.id)
+              throw new Error("The worker connector changed since this commission was opened");
             await config.worker.handoff({
               commissionId: entry.commissionId,
-              spec: { brief: commission.spec.brief, acceptance: commission.spec.acceptance },
-              binding: stored.binding,
-            });
-            store.acknowledgeOutbox(entry.seq, entry.leaseToken);
-            continue;
-          }
-          const auth = await config.resolveDeliveryAuth(entry.recipient);
-          const caller = config.resolveSessionPrincipal(auth);
-          if (!auth || caller?.verified !== true || caller.principalId !== entry.recipient) {
-            throw new Error("Delivery principal unavailable");
-          }
-          const commission = store.read(caller, entry.commissionId);
-          if (commission.owner !== caller.principalId)
-            throw new Error("Delivery requires commissioner");
-          const context = store.context(entry.commissionId);
-          const history =
-            context?.messages.map((message) => ({ role: message.role, text: message.content })) ??
-            [];
-          failureClass = "dispatch_failed";
-          await deliver({
-            entry,
-            auth,
-            history,
-            context,
-            message: JSON.stringify({
-              commissionId: entry.commissionId,
-              eventId: entry.eventId,
-              kind: entry.kind,
-              payload: entry.payload,
               spec: commission.spec,
-            }),
-          });
+              binding: commission.binding,
+            });
+          } else {
+            failure = "commissioner_unavailable";
+            const route = config.deliver(commission.conversation);
+            // The delivered turn has to be able to answer: its auth must resolve to this commission's owner and
+            // conversation, or the notice would arrive somewhere the decide tool refuses.
+            const parsed = commissionerSchema.safeParse(config.commissioner(route.auth));
+            if (
+              !parsed.success ||
+              parsed.data.id !== commission.owner ||
+              canonical(parsed.data.conversation) !== canonical(commission.conversation)
+            )
+              throw new Error("The delivery auth doesn't resolve to this commission's owner");
+            failure = "delivery_failed";
+            await to(route.channel, route.target).send(notice(entry), {
+              auth: route.auth,
+              turnPolicy: "queue",
+            });
+          }
           store.acknowledgeOutbox(entry.seq, entry.leaseToken);
         } catch {
+          // Leave it for the next sweep. Callback and provider errors aren't kept: they can carry secrets.
           try {
-            store.releaseOutbox(entry.seq, entry.leaseToken, failureClass);
+            store.releaseOutbox(entry.seq, entry.leaseToken, failure);
           } catch {
-            /* Expired leases are already retryable. */
+            // An expired lease is already due again.
           }
-          // Continue unrelated commissions. Never log callback or worker content.
         }
       }
     })().finally(() => {

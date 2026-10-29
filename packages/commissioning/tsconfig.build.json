@@ -6,10 +6,5 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": [
-    "src/*.ts"
-  ],
-  "exclude": [
-    "src/*.test.ts"
-  ]
+  "include": ["src/cyrus.ts"]
 }

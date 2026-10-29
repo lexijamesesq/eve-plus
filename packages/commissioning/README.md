@@ -1,171 +1,79 @@
-# @eve-plus/commissioning
+# Eve-Plus Commissioning
 
-Durable software commissioning for [eve](https://github.com/vercel/eve), with a worker-neutral core and an optional, included Cyrus connector. A commissioner defines work, an authenticated worker asks questions and proposes an immutable Git artifact, and the commissioner explicitly answers, accepts or requests revision.
+An [eve](https://github.com/vercel/eve) extension that lets an agent commission software work from another agent, the worker, and talk with it until the work is done. The commissioner opens the work; the worker reads it, asks questions and proposes a change; the commissioner answers and accepts the proposal or asks for a revision. It's built on eve's public extension, tool, channel and schedule seams and uses no eve internals.
 
-Version **0.4.0** adds optional Ed25519/EdDSA worker credentials and a portable worker archive; ES256 remains the default. Existing authentication callbacks and the strict owner-session default remain available unchanged. Local qualification uses synthetic services; it does not certify live service credentials or production operation.
+The core is worker-neutral. The package ships one connector, for [Cyrus](https://www.atcyrus.com), which hands work off by delegating a Linear issue.
 
-## Install and try
+## Install
 
-Use Node 24 and the repository's pinned pnpm. From an eve-plus checkout:
-
-```sh
-pnpm install --frozen-lockfile
-pnpm --filter @eve-plus/commissioning run build
-pnpm --dir packages/commissioning pack --pack-destination /tmp/commissioning-package
-```
-
-Install the resulting tarball alongside published `eve@0.83.2` in your own project. The complete [Cyrus consumer](examples/cyrus/README.md) supplies its own identity adapter and selects the real connector. Qualification supplies synthetic external responses; ordinary configured use calls the real service. It imports no private application.
-
-This repository distributes packages through Git release tags. Choose an available tag from the [package releases](https://github.com/lexijamesesq/eve-plus/releases). For version 0.4.0, the dependency is:
+Install it from a release tag as a git dependency, next to eve 0.83.2 or later within 0.83:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.4.0&path:packages/commissioning",
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.5.0&path:packages/commissioning",
     "eve": "0.83.2"
   }
 }
 ```
 
-Use that dependency only after its tag appears in the releases. The normal main-branch workflow publishes package tags; use the tarball above to evaluate a checkout whose version is not yet released. Version 0.1.0 can fail during a clean pnpm Git install because its workspace permits an unnecessary native rebuild; use 0.1.1 or newer for that installation path.
+## Use
 
-Worker hosts can use the [portable worker release archive](docs/cyrus.md#portable-worker-installation) with Node 24 and their existing credential custody. It exposes the existing worker functions without installing Eve or server dependencies.
-
-## Optional signed worker authentication
-
-Select `@eve-plus/commissioning/auth` when short-lived signed worker tokens fit your integration.
-The optional `algorithm` is `ES256` (the backward-compatible default) or `EdDSA` for Ed25519 keys.
-This is explicit configuration: omitting this helper preserves your existing authentication callback;
-there is no switch that turns authentication into anonymous access. ES256 uses Eve's public
-`extractBearerToken` and `verifyJwtEcdsa` APIs, qualified with `eve@0.83.2`. EdDSA uses official
-JOSE verification through the same public `authenticateWorker` callback seam. This mode requires no authorization server or shared verifier secret.
-
-```ts
-import { createSignedWorkerAuthenticator, createSignedWorkerCredential } from "@eve-plus/commissioning/auth";
-
-// Server: only public SPKI PEM trust, never the worker's private key.
-const authenticateWorker = createSignedWorkerAuthenticator({
-  issuer: "urn:example:worker", subject: "worker:builder",
-  audience: "https://agent.example/commissioning/mcp", publicKeys: trustedPublicKeys,
-  algorithm: "EdDSA", maxLifetimeSeconds: 300, clockToleranceSeconds: 30,
-});
-// Assign this callback to CommissioningConfig.authenticateWorker and set
-// workerPrincipalId to the same exact subject. It grants worker tools only.
-
-// Worker: supply your existing custody resolver, without changing its scope.
-const resolveCredential = createSignedWorkerCredential({
-  issuer: "urn:example:worker", subject: "worker:builder", algorithm: "EdDSA", lifetimeSeconds: 300,
-  resolvePrivateKey: ({ signal }) => custody.readDedicatedPkcs8Key({ signal }),
-});
-// For Cyrus, pass resolveCredential to runCyrusHeadersHelper alongside servers.
-```
-
-Supply a PKCS8 PEM private key and matching SPKI PEM public trust for the selected algorithm.
-These helpers do not parse OpenSSH key formats or generate or persist keys.
-
-The signer derives audience only from its callback's endpoint; Cyrus's header helper validates the exact
-configured server and URL before calling it. Other worker clients must establish the same destination
-boundary before resolving key custody. No key or derived token is cached by these factories. Keep keys
-and bearer values out of model arguments, MCP configuration JSON, logs and child environments.
-
-The verifier requires `iat` and `exp`, bounds their difference by `maxLifetimeSeconds`, rejects future
-issued-at beyond clock tolerance and delegates signature/issuer/audience/expiry checks to the selected native Eve or JOSE verifier.
-Configured subject identity is literal, including `*`. Defaults are 300 seconds and 30 seconds of skew;
-lifetimes must be positive finite numbers, and clock tolerance may be zero. Configure signer lifetime
-no greater than the verifier maximum. Expiry can be accepted through the configured skew window.
-Empty public trust denies every request. Invalid credentials produce the transport's existing 401.
-
-For rotation, add new public trust, switch the worker's dedicated signer, wait the old token lifetime
-plus tolerance, then remove old trust. Redeploy or reload consumers to apply new trust. A compromised
-signing key remains usable until removed from trust; short token expiry alone does not revoke that key.
-Use your existing private-key custody and revocation process. Never reuse unrelated service keys.
-The [complete example](examples/cyrus/README.md#signed-worker-mode) shows this optional configuration.
-
-## Select a worker
-
-Select the public Cyrus module in an ordinary mount. It supplies actual supported Linear handoff and reconciliation; the application does not implement a replacement open tool, dispatcher or scheduler:
+Mount it in the commissioning agent, with your worker connector and three callbacks that keep identity and routing in your application:
 
 ```ts title="agent/extensions/commissioning.ts"
 import commissioning from "@eve-plus/commissioning";
 import { cyrus } from "@eve-plus/commissioning/cyrus";
-import { identity, getLinearAccessToken } from "../lib/identity.js";
+import slack from "../channels/slack";
 
 export default commissioning({
-  ...identity,
-  dataDir: "/var/lib/my-agent",
-  namespace: "commissions",
+  dataDir: "/data/commissioning",
+  namespace: "felix",
   worker: cyrus({
-    linear: { accessToken: getLinearAccessToken },
-    delegateId: "your-cyrus-linear-user-id",
-    mcp: {
-      serverName: "commissioner",
-      endpoint: "https://agent.example/commissioning/mcp",
-    },
+    linear: { accessToken: () => linearToken() },
+    delegateId: "<Cyrus's Linear user ID>",
+    mcp: { serverName: "eve_felix", endpoint: "https://agent.example/commissioning/mcp" },
   }),
+  // Is this request from the worker? Compare its bearer token with the one the worker holds.
+  authenticateWorker: (request) => matchesWorkerToken(request),
+  // Who may commission, as which commissioner, and which conversation the session is in.
+  commissioner: (auth) => commissionerFor(auth),
+  // Where to tell the commissioner about a commission: a channel, its target, and the auth to send as.
+  deliver: (conversation) => ({ channel: slack, target: { ...conversation }, auth: agentAuthIn(conversation) }),
 });
 ```
 
-The [reference consumer](examples/cyrus/README.md) includes a complete identity adapter, including its matching `workerPrincipalId`. Keep that configured principal consistent with the identity returned by worker authentication. The three trusted callbacks below are application-owned authentication, not hidden dependencies. Actual credentials, delegate IDs, destinations and acceptance policy remain your configuration.
+[`docs/usage.md`](./docs/usage.md) covers each option, the callbacks' contracts and the Cyrus setup.
 
-The mounted open tool accepts:
+## How it works
 
-```json
-{
-  "spec": {
-    "brief": "Implement the requested change",
-    "acceptance": ["The agreed behavior is verified"],
-    "privateGuidance": "Owner-only review notes"
-  },
-  "workReference": { "kind": "linear-issue", "id": "ENG-123" }
-}
-```
+1. **Open.** The commissioner calls `commissioning__open` with a brief, acceptance criteria and a work reference (a Linear issue for Cyrus). The connector checks the work item, and the commission and its handoff are recorded together. Then the dispatcher hands the work off: for Cyrus, a contract comment on the issue and a delegation, each confirmed by reading it back.
+2. **Talk.** The worker calls the mount's MCP endpoint (`/commissioning/mcp`) with three tools: `commission_read`, `commission_consult` to ask a question, and `commission_report` for a checkpoint, a failure or a proposal. A proposal names an exact commit and its pull request.
+3. **Hear about it.** What the worker asks, proposes or reports as a failure is delivered into the conversation the commission was opened in, through eve's `to(channel, target)`, as a queued turn. So is an overdue notice when the worker goes quiet past its grace interval.
+4. **Decide.** The commissioner reads with `commissioning__read` and records answers and verdicts only with `commissioning__decide`. Saying it in a reply records nothing. The worker finds the answer or verdict on its next `commission_read`.
 
-The connector resolves the issue and persists its canonical binding with the commission and activation intent. Shared dispatch preserves the issue's existing work criteria, appends a worker-redacted contract, delegates and confirms by readback. A lost response is reconciled before retrying. **Confirmed handoff does not prove Cyrus started.** See [Cyrus setup and lifecycle](docs/cyrus.md).
+## What it guarantees
 
-Omit `worker` for the neutral protocol. That mode requires no Cyrus configuration and makes no Cyrus/Linear service calls. It does not launch a worker: the application hands its commission ID and worker-visible specification to an existing worker integration.
+- **Decisions come only from the commissioner.** The worker endpoint has no owner operations. An owner can read or decide a commission only from the conversation it was opened in, as `commissioner(auth)` reports it from verified session auth, never from tool arguments.
+- **Retries are safe.** Every question, report and decision carries an ID; a retry with the same ID and content returns the first result, and the same ID with other content is refused. This holds across restarts, past eve's own delivery-key window.
+- **Nothing is lost between a write and its notice.** A notice is recorded in the same transaction as the write. The dispatcher delivers it at least once, and a crash after a send and before its acknowledgement sends it again. Entries that keep failing go to the back, so they can't hold up newer ones.
+- **Silence is noticed, not judged.** A worker that's working or revising and has been quiet past `overdueAfterMs` gets one notice per quiet spell. A pending question, a proposal under review, blocked work and accepted work aren't the worker's move, so they don't go overdue.
 
-## Commissioning loop
+**What it doesn't do:** it doesn't start, restart or cancel the worker. A confirmed handoff means the worker was given the work, not that it started. When a Cyrus session parks or stops, a person continues it in its Linear agent session.
 
-1. Native `commissioning__open` records the verified commissioner, textual history and specification. Model arguments never select owner identity.
-2. The fixed worker authenticates to `/commissioning/mcp` and uses `commission_read`, `commission_consult` and `commission_report`.
-3. Questions, proposals, failures, relevant new delivery observations and overdue attention enter the durable owner outbox. Default delivery creates a separate queued commissioner continuation per commission, seeded from the original history.
-4. Native `commissioning__decide` explicitly answers a question or accepts/requests revision of its exact proposal ID. Final prose or JSON never records a decision. Workers poll MCP read for the recorded answer/verdict.
+## Storage
 
-Proposals require a credential-free HTTPS repository URL, full lowercase 40-hex Git commit and matching GitHub/GitLab-shaped PR URL. This version supports software proposals, not arbitrary document/research artifacts. Reviewed, merged and deployed reports are observations; acceptance is a separate decision. The application defines acceptance timing.
+One SQLite file per mount, at `<dataDir>/<namespace>/commissions.sqlite`, in WAL mode, read and written by one agent process. Keep it on a durable volume outside the sandbox, and back it up with SQLite's WAL-aware backup or with the agent stopped.
 
-## Configuration
+## Changes
 
-| Setting | Responsibility |
-| --- | --- |
-| `dataDir` | Absolute durable local storage, outside sandbox and deployment output. |
-| `namespace` | Unique lowercase storage namespace, up to 64 characters. |
-| `workerPrincipalId` | Fixed authenticated worker for the mount. |
-| `authenticateWorker(request)` | Return a host-verified worker principal or `null`. A verified owner credential is still denied at the worker endpoint. |
-| `resolveSessionPrincipal(auth)` | Validate native identity and map to commissioner authority; exclude the worker. |
-| `resolveDeliveryAuth(principalId)` | Supply current eve auth that maps back to the commissioner. |
-| `worker` | Optional connector, such as `cyrus(...)`; selected connectors require a work reference on open. |
-| `captureSource(ctx)` | Optional trusted capture of bounded, non-secret conversation coordinates, kept private. |
-| `authorizeOwnerSession({session, context})` | Optional synchronous host policy replacing session binding only for the verified stored owner. Requires captured source and explicit `true`; see [owner-session policy](docs/operations.md#optional-owner-session-policy). |
-| `overdueAfterMs` | Worker grace interval after activity or commissioner hand-back, default one minute. |
-| `reconcileCron` | Native handler cron, default every minute. Application maintenance policy remains external. |
-| `mcpPath` | Unique literal route, default `/commissioning/mcp`; mount filenames namespace tools, not routes. |
+See [CHANGELOG.md](./CHANGELOG.md). 0.5.0 is a breaking rework: one worker token in place of signed credentials, delivery into the original conversation, and a single-schema store. Read it before upgrading.
 
-Identity resolvers return `{verified: true, principalId}` or `null`. Never put credentials in attributes, references, model arguments or errors. Worker projections omit owner guidance, source, initiator and conversation history. Connector handoff receives only its prepared binding and worker-visible specification.
+## Testing
 
-## Integration boundaries
+- **Unit tests** (`npm run test:unit`) cover the ledger on an in-memory store, the commissioner's tools, and the Cyrus connector against a synthetic Linear API.
+- **Integration tests** (`npm run test:integration`) cover the on-disk ledger across restarts and competing handles, the dispatcher's handoff, delivery and retry fairness, and the worker endpoint through the official MCP client.
 
-- Uses published eve extension/tools/channel/schedule/state APIs and the official MCP SDK; no separate server or private runtime imports.
-- One worker and one eve process per mount with persistent local SQLite/WAL is the supported topology. This is a package constraint, not an eve-wide requirement; horizontal replicas/shared multi-host storage are unsupported.
-- Default owner continuations are private agent conversations. Human-visible routing is an application integration. Native progress renderers must not publish private tool arguments; see [operations](docs/operations.md).
-- With the default strict session binding, explicit recovery is host-authorized: verify the requester and original source, reset/create the canonical commission address, then CAS-rebind to that actual session ID with `store.rebindSession`. Delivery refuses a different current address owner. Original context stays immutable and old-session authority is revoked. See the [recovery recipe](docs/operations.md#session-and-worker-recovery).
-- `.` and `./tools` use eve-generated `.mjs`/`default` exports; `./store`, `./transport`, `./config`, `./cyrus` and optional `./auth` expose typed host APIs. Wildcard eve peer plus generated compatibility metadata follow the official extension scaffold. The qualification target is exactly eve 0.83.2, not every future runtime.
+## License
 
-## Validation and known limitations
-
-See the [validation guide](docs/validation.md) for routine tests, clean packaged-consumer checks, native eve evidence and released-Cyrus conformance. Synthetic services do not prove real credentials, webhook intake or worker execution start.
-
-Dispatch snapshots at most 100 eligible entries by durable attempt count and sequence, then claims each immediately before sending. Failed work is attempted once per sweep; later unattempted work can progress across retries and restart. Working and revision-requested commissions get overdue attention only after a full grace interval following worker activity or commissioner hand-back. Pending questions/review, blocked and accepted work do not get that attention.
-
-Worker reads do not trigger reconciliation. Mutations commit first; the native route tracks their subsequent reconciliation through Eve's `waitUntil`, and cron retries pending work. Low-level callers supplying `reconcile` directly retain its awaited callback semantics. A newly recorded current-proposal delivery observation can notify a pending reviewer; duplicate observations and accepted work do not cause repeated review turns. Acceptance remains an explicit commissioner decision after application verification.
-
-This public-consumer increment does not certify production deployment, live-model judgment, arbitrary identity adapters or a complete security/performance audit. See [operations and recovery](docs/operations.md) before adopting the package.
+MIT.

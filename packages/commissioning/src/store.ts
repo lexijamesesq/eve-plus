@@ -3,28 +3,23 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type {
-  Caller,
+  ArtifactReference,
   CommissionErrorCode,
-  CommissionerContext,
-  CommissionSource,
+  Commissioner,
   CommissionSpec,
   CommissionStatus,
   CommissionView,
+  Conversation,
   DecisionInput,
   MutationResult,
-  OpenInput,
-  OpenOptions,
   OutboxEntry,
   OutboxFailureClass,
-  PendingWork,
   QuestionInput,
   QuestionView,
-  RebindSessionInput,
-  RebindSessionResult,
   ReportInput,
   StoreOptions,
 } from "./types.js";
-import type { StoredWorkerBinding, WorkReference } from "./worker.js";
+import type { WorkerBinding, WorkReference } from "./worker.js";
 
 export class CommissionError extends Error {
   constructor(
@@ -38,41 +33,15 @@ export class CommissionError extends Error {
 function fail(code: CommissionErrorCode, message: string): never {
   throw new CommissionError(code, message);
 }
-function object(
-  value: unknown,
-  keys: string[],
-  required = keys,
-): asserts value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    fail("invalid_input", "Expected an object");
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).some((key) => !keys.includes(key)) ||
-    required.some((key) => !Object.hasOwn(record, key))
-  )
-    fail("invalid_input", "Missing or unsupported input field");
-}
-function text(value: unknown): asserts value is string {
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > 100_000)
-    fail("invalid_input", "Expected nonempty bounded text");
-}
-function identifier(value: unknown): asserts value is string {
-  text(value);
-  if (value.length > 256 || Array.from(value).some((character) => character.charCodeAt(0) < 32))
-    fail("invalid_input", "Invalid identifier");
-}
-function caller(value: Caller): void {
-  if (value?.verified !== true) fail("unverified_caller", "A host-verified caller is required");
-  identifier(value.principalId);
-}
-/** Stable, recursive JSON representation: object key ordering cannot change an operation's identity. */
-function canonical(value: unknown): string {
+/** Stable JSON: key order can't change an operation's identity or a conversation's equality. */
+export function canonical(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean")
     return JSON.stringify(value);
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (typeof value === "object" && value && Object.getPrototypeOf(value) === Object.prototype) {
+  if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
     return `{${Object.keys(value)
+      .filter((key) => (value as Record<string, unknown>)[key] !== undefined)
       .sort()
       .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`)
       .join(",")}}`;
@@ -82,136 +51,56 @@ function canonical(value: unknown): string {
 function hash(value: unknown): string {
   return createHash("sha256").update(canonical(value)).digest("hex");
 }
-function limit(value: number): number {
-  if (!Number.isInteger(value) || value < 1 || value > 100)
-    fail("invalid_input", "Batch limit must be from 1 to 100");
-  return value;
-}
-function spec(value: CommissionSpec): void {
-  object(value, ["brief", "acceptance", "privateGuidance"], ["brief", "acceptance"]);
-  text(value.brief);
-  if (
-    !Array.isArray(value.acceptance) ||
-    value.acceptance.length < 1 ||
-    value.acceptance.length > 100
-  )
-    fail("invalid_input", "Acceptance criteria are required");
-  value.acceptance.forEach(text);
-  if (Object.hasOwn(value, "privateGuidance")) text(value.privateGuidance);
-}
-function source(value: unknown): asserts value is CommissionSource {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    fail("invalid_input", "Invalid commission source");
-  const entries = Object.entries(value);
-  if (!entries.length || entries.length > 16)
-    fail("invalid_input", "Commission source must have 1 to 16 fields");
-  for (const [key, item] of entries) {
-    identifier(key);
-    text(item);
-    if (key.length > 64 || item.length > 1024)
-      fail("invalid_input", "Commission source field exceeds bounds");
-  }
-}
-function artifact(value: unknown): void {
-  object(value, ["repository", "commit", "pullRequest"]);
-  text(value.repository);
-  text(value.commit);
-  text(value.pullRequest);
-  if (!/^[a-f0-9]{40}$/.test(value.commit))
-    fail("invalid_input", "Artifact commit must be a full lowercase 40-hex commit");
-  let repository: URL;
-  let pullRequest: URL;
-  try {
-    repository = new URL(value.repository);
-    pullRequest = new URL(value.pullRequest);
-  } catch {
-    fail("invalid_input", "Artifact references must be HTTPS repository and pull request URLs");
-  }
-  if (
-    repository.protocol !== "https:" ||
-    pullRequest.protocol !== "https:" ||
-    repository.username ||
-    repository.password ||
-    pullRequest.username ||
-    pullRequest.password ||
-    repository.search ||
-    repository.hash ||
-    pullRequest.search ||
-    pullRequest.hash
-  )
-    fail(
-      "invalid_input",
-      "Artifact references must be credential-free HTTPS URLs without queries or fragments",
-    );
-  const repoPath = repository.pathname.replace(/\.git$/, "").replace(/\/$/, "");
-  if (
-    !repoPath ||
-    repoPath === "/" ||
-    pullRequest.origin !== repository.origin ||
-    !new RegExp(
-      `^${repoPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:pull|merge_requests|-/merge_requests)/[1-9][0-9]*/?$`,
-    ).test(pullRequest.pathname)
-  )
-    fail("invalid_input", "Pull request must belong to the artifact repository");
-}
-function workReference(value: unknown): asserts value is WorkReference {
-  object(value, ["kind", "id"]);
-  identifier(value.kind);
-  identifier(value.id);
-}
-function workerBinding(value: unknown): asserts value is StoredWorkerBinding {
-  object(value, ["commissionId", "connectorId", "reference", "binding"]);
-  identifier(value.commissionId);
-  identifier(value.connectorId);
-  workReference(value.reference);
-  if (!value.binding || typeof value.binding !== "object" || Array.isArray(value.binding))
-    fail("invalid_input", "Invalid worker binding");
-  const entries = Object.entries(value.binding);
-  if (!entries.length || entries.length > 32)
-    fail("invalid_input", "Worker binding must have 1 to 32 fields");
-  for (const [key, item] of entries) {
-    identifier(key);
-    text(item);
-    if (key.length > 64 || item.length > 4096)
-      fail("invalid_input", "Worker binding field exceeds bounds");
-  }
-  if (Buffer.byteLength(canonical(value.binding)) > 32768)
-    fail("invalid_input", "Worker binding exceeds 32 KiB");
-}
+
+const WORKER = "worker";
+const SCHEMA = `
+CREATE TABLE commissions(id TEXT PRIMARY KEY,owner TEXT NOT NULL,conversation TEXT NOT NULL,spec TEXT NOT NULL,
+  work_reference TEXT NOT NULL,connector_id TEXT NOT NULL,binding TEXT NOT NULL,state TEXT NOT NULL,
+  proposal_id TEXT,proposal_pending INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL,heartbeat INTEGER NOT NULL);
+CREATE TABLE questions(commission_id TEXT NOT NULL REFERENCES commissions(id),id TEXT NOT NULL,question TEXT NOT NULL,
+  answer TEXT,PRIMARY KEY(commission_id,id));
+CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,commission_id TEXT NOT NULL REFERENCES commissions(id),
+  id TEXT NOT NULL,actor TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,created INTEGER NOT NULL,
+  UNIQUE(commission_id,id));
+CREATE TABLE operations(commission_id TEXT NOT NULL REFERENCES commissions(id),id TEXT NOT NULL,hash TEXT NOT NULL,
+  result TEXT NOT NULL,PRIMARY KEY(commission_id,id));
+CREATE TABLE outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT,commission_id TEXT NOT NULL REFERENCES commissions(id),
+  event_id TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,
+  lease_token TEXT,lease_until INTEGER,attempt_count INTEGER NOT NULL DEFAULT 0,failure_class TEXT,
+  UNIQUE(commission_id,event_id));
+CREATE INDEX outbox_pending ON outbox(delivered,lease_until,seq);
+PRAGMA user_version=1;`;
+
 interface CommissionRow {
   id: string;
   owner: string;
-  worker: string;
+  conversation: string;
   spec: string;
+  work_reference: string;
+  connector_id: string;
+  binding: string;
   state: "working" | "revision_requested" | "blocked" | "accepted";
   proposal_id: string | null;
   proposal_pending: number;
   updated: number;
   heartbeat: number;
 }
-interface QuestionRow {
-  id: string;
-  question: string;
-  answer: string | null;
-}
 interface OutboxRow {
   seq: number;
   commission_id: string;
   event_id: string;
-  recipient: string;
   kind: string;
   payload: string;
-  lease_token: string | null;
-  attempt_count: number;
 }
 
-// updated changes only on open, worker activity, and commissioner hand-back; recovery leaves it intact.
-// Keep worker heartbeat distinct from the shared grace/deduplication epoch.
+// `updated` moves on worker activity and on the commissioner's hand-back (an answer, a revision request), so a late
+// answer earns the worker a full new interval; `heartbeat` is worker activity alone. Review, blocked and accepted work
+// is waiting on someone other than the worker, so it can't be overdue.
 const overdueEligibility = `c.state IN ('working','revision_requested') AND c.proposal_pending=0
   AND max(c.updated,c.heartbeat)<?
   AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.commission_id=c.id AND q.answer IS NULL)`;
 
-/** One persistent SQLite mount, one host dispatcher. Leases recover receipts lost across process restarts. */
+/** The commissioning ledger: one SQLite file per mount, read and written by one process. */
 export class CommissionStore {
   private readonly db: Database.Database;
   private readonly now: () => number;
@@ -219,63 +108,14 @@ export class CommissionStore {
   constructor(path: string, options: StoreOptions = {}) {
     this.now = options.now ?? Date.now;
     this.overdueAfterMs = options.overdueAfterMs ?? 60_000;
-    if (!Number.isFinite(this.overdueAfterMs) || this.overdueAfterMs <= 0)
-      fail("invalid_input", "overdueAfterMs must be positive");
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
     try {
       this.db.pragma("foreign_keys = ON");
       this.db.pragma("busy_timeout = 5000");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3)
-        fail("unsupported_schema", `Unsupported commissioning schema version ${version}`);
-      this.db
-        .transaction(() => {
-          if (version === 0) {
-            const tables = this.db
-              .prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-              )
-              .all();
-            if (tables.length)
-              fail(
-                "unsupported_schema",
-                "Unversioned nonempty database cannot be migrated automatically",
-              );
-            this.db.exec(`
-          CREATE TABLE commissions(id TEXT PRIMARY KEY,owner TEXT NOT NULL,worker TEXT NOT NULL,spec TEXT NOT NULL,
-            state TEXT NOT NULL,proposal_id TEXT,proposal_pending INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL,heartbeat INTEGER NOT NULL);
-          CREATE TABLE contexts(commission_id TEXT PRIMARY KEY REFERENCES commissions(id),value TEXT NOT NULL);
-          CREATE TABLE questions(commission_id TEXT NOT NULL REFERENCES commissions(id),id TEXT NOT NULL,question TEXT NOT NULL,answer TEXT,
-            PRIMARY KEY(commission_id,id));
-          CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,commission_id TEXT NOT NULL REFERENCES commissions(id),id TEXT NOT NULL,
-            actor TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,created INTEGER NOT NULL,UNIQUE(commission_id,id));
-          CREATE TABLE operations(commission_id TEXT NOT NULL REFERENCES commissions(id),id TEXT NOT NULL,hash TEXT NOT NULL,result TEXT NOT NULL,
-            PRIMARY KEY(commission_id,id));
-          CREATE TABLE delivery(commission_id TEXT NOT NULL REFERENCES commissions(id),proposal_id TEXT NOT NULL,kind TEXT NOT NULL,
-            PRIMARY KEY(commission_id,proposal_id,kind));
-          CREATE TABLE outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT,commission_id TEXT NOT NULL REFERENCES commissions(id),event_id TEXT NOT NULL,
-            recipient TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,delivered INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,
-            attempt_count INTEGER NOT NULL DEFAULT 0,last_attempt_at INTEGER,failure_class TEXT,
-            UNIQUE(commission_id,event_id));
-          CREATE INDEX outbox_pending ON outbox(delivered,lease_until,seq);
-          PRAGMA user_version=2;
-        `);
-          }
-          if (version === 1) {
-            this.db.exec(`ALTER TABLE outbox ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE outbox ADD COLUMN last_attempt_at INTEGER;
-          ALTER TABLE outbox ADD COLUMN failure_class TEXT;
-          PRAGMA user_version=2;`);
-          }
-          if (version < 3) {
-            this.db.exec(`CREATE TABLE worker_bindings(
-              commission_id TEXT PRIMARY KEY REFERENCES commissions(id),
-              connector_id TEXT NOT NULL,reference TEXT NOT NULL,binding TEXT NOT NULL);
-              PRAGMA user_version=3;`);
-          }
-        })
-        .immediate();
+      if (version === 0) this.db.transaction(() => this.db.exec(SCHEMA)).immediate();
+      else if (version !== 1) fail("invalid_input", `Unsupported commissioning schema ${version}`);
       this.db.pragma("journal_mode = WAL");
       this.db.pragma("synchronous = FULL");
     } catch (error) {
@@ -286,70 +126,71 @@ export class CommissionStore {
   close(): void {
     this.db.close();
   }
-  private row(id: string): CommissionRow | undefined {
-    return this.db.prepare("SELECT * FROM commissions WHERE id=?").get(id) as
-      | CommissionRow
-      | undefined;
+  private row(id: string): CommissionRow {
+    return (
+      (this.db.prepare("SELECT * FROM commissions WHERE id=?").get(id) as
+        | CommissionRow
+        | undefined) ?? fail("not_found", "Commission not found")
+    );
   }
-  private requireRow(id: string): CommissionRow {
-    return this.row(id) ?? fail("not_found", "Commission not found");
-  }
-  private authorized(actor: Caller, id: string, role?: "owner" | "worker"): CommissionRow {
-    caller(actor);
-    identifier(id);
+  /** The owner may act only from the conversation the commission was opened in. */
+  private owned(commissioner: Commissioner, id: string): CommissionRow {
     const row = this.row(id);
-    if (!row || ![row.owner, row.worker].includes(actor.principalId))
-      fail("not_found", "Commission not found or unavailable to this caller");
-    if (role && row[role] !== actor.principalId)
-      fail("forbidden", `Only the assigned ${role} may perform this operation`);
+    if (row.owner !== commissioner.id) fail("not_found", "Commission not found");
+    if (row.conversation !== canonical(commissioner.conversation))
+      fail("forbidden", "Act on a commission from the conversation it was opened in");
     return row;
   }
+  // A retried call with the same ID and input returns its first result; the same ID with other input is refused.
   private operation<T>(
-    actor: Caller,
     id: string,
-    eventId: string,
+    key: string,
+    actor: string,
     input: unknown,
     execute: () => T,
   ): T {
     return this.db
       .transaction(() => {
-        const digest = hash({ actor: actor.principalId, input });
+        const digest = hash({ actor, input });
         const previous = this.db
           .prepare("SELECT hash,result FROM operations WHERE commission_id=? AND id=?")
-          .get(id, eventId) as { hash: string; result: string } | undefined;
+          .get(id, key) as { hash: string; result: string } | undefined;
         if (previous) {
           if (previous.hash !== digest)
-            fail("conflict", "Event ID was already used with different input");
+            fail("conflict", "This ID was already used with different input");
           return JSON.parse(previous.result) as T;
         }
         const result = execute();
         this.db
           .prepare("INSERT INTO operations VALUES(?,?,?,?)")
-          .run(id, eventId, digest, canonical(result));
+          .run(id, key, digest, canonical(result));
         return result;
       })
       .immediate();
   }
   private event(
-    actor: Caller,
     id: string,
     eventId: string,
+    actor: string,
     kind: string,
     payload: unknown,
-    recipient?: string,
-  ): void {
+    notify: boolean,
+  ) {
     const encoded = canonical(payload);
     this.db
       .prepare(
         "INSERT INTO events(commission_id,id,actor,kind,payload,created) VALUES(?,?,?,?,?,?)",
       )
-      .run(id, eventId, actor.principalId, kind, encoded, this.now());
-    if (recipient)
+      .run(id, eventId, actor, kind, encoded, this.now());
+    if (notify)
       this.db
-        .prepare(
-          "INSERT INTO outbox(commission_id,event_id,recipient,kind,payload) VALUES(?,?,?,?,?)",
-        )
-        .run(id, eventId, recipient, kind, encoded);
+        .prepare("INSERT INTO outbox(commission_id,event_id,kind,payload) VALUES(?,?,?,?)")
+        .run(id, eventId, kind, encoded);
+  }
+  private touch(id: string, worker: boolean): void {
+    this.db
+      .prepare(`UPDATE commissions SET updated=?${worker ? ",heartbeat=?" : ""} WHERE id=?`)
+      .run(...(worker ? [this.now(), this.now(), id] : [this.now(), id]));
   }
   private unanswered(id: string): number {
     return (
@@ -365,287 +206,159 @@ export class CommissionStore {
     return row.state;
   }
   private result(id: string): MutationResult {
-    return { commissionId: id, status: this.status(this.requireRow(id)) };
+    return { commissionId: id, status: this.status(this.row(id)) };
   }
-  private overdueEpoch(id: string): number | undefined {
-    return (
-      this.db
-        .prepare(`SELECT max(c.updated,c.heartbeat) AS epoch FROM commissions c
-      WHERE c.id=? AND ${overdueEligibility}`)
-        .get(id, this.now() - this.overdueAfterMs) as { epoch: number } | undefined
-    )?.epoch;
+  exists(id: string): boolean {
+    return this.db.prepare("SELECT 1 FROM commissions WHERE id=?").get(id) !== undefined;
   }
+  /** Records the commission and its handoff together, so a handoff is never lost or requested twice. */
   open(
-    actor: Caller,
-    input: OpenInput,
-    worker: Caller,
-    context?: CommissionerContext,
-    options: OpenOptions = {},
+    commissioner: Commissioner,
+    input: {
+      commissionId: string;
+      spec: CommissionSpec;
+      workReference: WorkReference;
+      connectorId: string;
+      binding: WorkerBinding;
+    },
   ): MutationResult {
-    caller(actor);
-    caller(worker);
-    object(options, ["requestWorkerActivation", "workerBinding"], []);
-    if (
-      options.requestWorkerActivation !== undefined &&
-      typeof options.requestWorkerActivation !== "boolean"
-    )
-      fail("invalid_input", "Worker activation option must be a boolean");
-    object(input, ["commissionId", "spec", "workReference"], ["commissionId", "spec"]);
-    identifier(input.commissionId);
-    spec(input.spec);
-    if (input.workReference !== undefined) workReference(input.workReference);
-    if (options.workerBinding !== undefined) {
-      workerBinding(options.workerBinding);
-      if (
-        options.workerBinding.commissionId !== input.commissionId ||
-        canonical(options.workerBinding.reference) !== canonical(input.workReference ?? null)
-      )
-        fail("invalid_input", "Worker binding must match the commission and original reference");
-      if (options.requestWorkerActivation === false)
-        fail("invalid_input", "A worker binding requires activation");
-    } else if (input.workReference !== undefined)
-      fail("invalid_input", "A work reference requires a prepared worker binding");
-    const preparedBinding = options.workerBinding as StoredWorkerBinding | undefined;
-    if (context !== undefined) {
-      object(
-        context,
-        ["originSessionId", "messages", "source", "initiator"],
-        ["originSessionId", "messages"],
+    const { commissionId, spec, workReference, connectorId, binding } = input;
+    const fingerprint = { commissioner, spec, workReference, connectorId };
+    if (this.exists(commissionId)) {
+      this.owned(commissioner, commissionId);
+      return this.operation(commissionId, "open", commissioner.id, fingerprint, () =>
+        fail("conflict", "This commission was opened with different input"),
       );
-      if (context.source !== undefined) source(context.source);
-      if (context.initiator !== undefined) {
-        object(context.initiator, ["principalId", "authenticator", "principalType"]);
-        identifier(context.initiator.principalId);
-        identifier(context.initiator.authenticator);
-        identifier(context.initiator.principalType);
-      }
-      identifier(context.originSessionId);
-      if (!Array.isArray(context.messages)) fail("invalid_input", "Invalid commissioner messages");
-      for (const message of context.messages) {
-        object(message, ["role", "content"]);
-        if (message.role !== "user" && message.role !== "assistant")
-          fail("invalid_input", "Only commissioner conversation text can be captured");
-        text(message.content);
-      }
-      if (Buffer.byteLength(canonical(context)) > 131_072)
-        fail("invalid_input", "Commissioner context exceeds 128 KiB");
     }
-    if (actor.principalId === worker.principalId)
-      fail("forbidden", "The commissioner and assigned worker must be different principals");
-    const existing = this.row(input.commissionId);
-    if (existing && existing.owner !== actor.principalId)
-      fail("not_found", "Commission not found or unavailable to this caller");
-    return this.operation(
-      actor,
-      input.commissionId,
-      "open",
-      {
-        ...input,
-        worker: worker.principalId,
-        context: context ?? null,
-        ...(options.requestWorkerActivation === true ? { requestWorkerActivation: true } : {}),
-        ...(preparedBinding ? { workerBinding: preparedBinding } : {}),
-      },
-      () => {
+    return this.db
+      .transaction(() => {
         this.db
           .prepare(
-            "INSERT INTO commissions(id,owner,worker,spec,state,updated,heartbeat) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO commissions(id,owner,conversation,spec,work_reference,connector_id,binding,state,updated,heartbeat) VALUES(?,?,?,?,?,?,?,?,?,?)",
           )
           .run(
-            input.commissionId,
-            actor.principalId,
-            worker.principalId,
-            canonical(input.spec),
+            commissionId,
+            commissioner.id,
+            canonical(commissioner.conversation),
+            canonical(spec),
+            canonical(workReference),
+            connectorId,
+            canonical(binding),
             "working",
             this.now(),
             this.now(),
           );
-        if (context)
-          this.db
-            .prepare("INSERT INTO contexts VALUES(?,?)")
-            .run(input.commissionId, canonical(context));
-        if (preparedBinding)
-          this.db
-            .prepare("INSERT INTO worker_bindings VALUES(?,?,?,?)")
-            .run(
-              input.commissionId,
-              preparedBinding.connectorId,
-              canonical(preparedBinding.reference),
-              canonical(preparedBinding.binding),
-            );
-        this.event(actor, input.commissionId, "open", "opened", {
-          spec: { brief: input.spec.brief, acceptance: input.spec.acceptance },
-        });
-        if (options.requestWorkerActivation === true || preparedBinding)
-          this.event(
-            actor,
-            input.commissionId,
-            "worker_activation:open",
-            "worker_activation_requested",
-            { commissionId: input.commissionId },
-            actor.principalId,
+        const result = this.result(commissionId);
+        this.db
+          .prepare("INSERT INTO operations VALUES(?,?,?,?)")
+          .run(
+            commissionId,
+            "open",
+            hash({ actor: commissioner.id, input: fingerprint }),
+            canonical(result),
           );
-        return this.result(input.commissionId);
-      },
-    );
+        this.event(commissionId, "open", commissioner.id, "opened", { spec }, false);
+        this.event(commissionId, "handoff", commissioner.id, "handoff", {}, true);
+        return result;
+      })
+      .immediate();
   }
-  consult(actor: Caller, input: QuestionInput): QuestionView {
-    object(input, ["commissionId", "questionId", "question"]);
-    identifier(input.questionId);
-    object(input.question, ["text", "options"], ["text"]);
-    text(input.question.text);
-    if (Object.hasOwn(input.question, "options")) {
-      if (!Array.isArray(input.question.options) || input.question.options.length > 100)
-        fail("invalid_input", "Invalid question options");
-      input.question.options.forEach(text);
-    }
-    this.authorized(actor, input.commissionId, "worker");
-    this.operation(actor, input.commissionId, `question:${input.questionId}`, input, () => {
-      const row = this.requireRow(input.commissionId);
-      if (row.state === "accepted") fail("conflict", "Commission is already accepted");
+  consult(input: QuestionInput): QuestionView {
+    const key = `question:${input.questionId}`;
+    this.operation(input.commissionId, key, WORKER, input, () => {
+      const row = this.row(input.commissionId);
+      if (row.state === "accepted") fail("conflict", "The commission is already accepted");
       this.db
         .prepare("INSERT INTO questions(commission_id,id,question) VALUES(?,?,?)")
-        .run(input.commissionId, input.questionId, canonical(input.question));
-      this.db
-        .prepare("UPDATE commissions SET updated=?,heartbeat=? WHERE id=?")
-        .run(this.now(), this.now(), input.commissionId);
+        .run(row.id, input.questionId, canonical(input.question));
+      this.touch(row.id, true);
       this.event(
-        actor,
-        input.commissionId,
-        `question:${input.questionId}`,
+        row.id,
+        key,
+        WORKER,
         "question",
         { questionId: input.questionId, question: input.question },
-        row.owner,
+        true,
       );
       return { questionId: input.questionId };
     });
-    return this.question(actor, input.commissionId, input.questionId);
+    return this.question(input.commissionId, input.questionId);
   }
-  question(actor: Caller, id: string, questionId: string): QuestionView {
-    this.authorized(actor, id);
-    identifier(questionId);
+  private question(id: string, questionId: string): QuestionView {
     const row = this.db
-      .prepare("SELECT * FROM questions WHERE commission_id=? AND id=?")
-      .get(id, questionId) as QuestionRow | undefined;
+      .prepare("SELECT question,answer FROM questions WHERE commission_id=? AND id=?")
+      .get(id, questionId) as { question: string; answer: string | null } | undefined;
     if (!row) fail("not_found", "Question not found");
-    const base = {
-      commissionId: id,
-      questionId,
-      question: JSON.parse(row.question) as QuestionInput["question"],
-    };
+    const question = JSON.parse(row.question) as QuestionInput["question"];
     return row.answer === null
-      ? { ...base, status: "pending" }
-      : { ...base, status: "answered", answer: JSON.parse(row.answer) as { answer: string } };
+      ? { questionId, question, status: "pending" }
+      : { questionId, question, status: "answered", answer: JSON.parse(row.answer) as string };
   }
-  report(actor: Caller, input: ReportInput): MutationResult {
-    object(input, ["commissionId", "eventId", "kind", "data"]);
-    identifier(input.eventId);
-    if (
-      !["proposal", "checkpoint", "failure", "reviewed", "merged", "deployed"].includes(input.kind)
-    )
-      fail("invalid_input", "Unsupported report kind");
-    object(
-      input.data,
-      input.kind === "proposal"
-        ? ["summary", "artifact"]
-        : ["reviewed", "merged", "deployed"].includes(input.kind)
-          ? ["summary", "proposalId"]
-          : ["summary"],
-    );
-    text(input.data.summary);
-    if (input.kind === "proposal") artifact(input.data.artifact);
-    else if (input.kind !== "checkpoint" && input.kind !== "failure")
-      identifier(input.data.proposalId);
-    this.authorized(actor, input.commissionId, "worker");
-    return this.operation(actor, input.commissionId, `event:${input.eventId}`, input, () => {
-      const row = this.requireRow(input.commissionId);
-      let notifyOwner = input.kind === "proposal" || input.kind === "failure";
+  report(input: ReportInput): MutationResult {
+    return this.operation(input.commissionId, `event:${input.eventId}`, WORKER, input, () => {
+      const row = this.row(input.commissionId);
+      if (row.state === "accepted") fail("conflict", "The commission is already accepted");
       if (input.kind === "proposal") {
-        if (row.state === "accepted" || row.proposal_pending || this.unanswered(row.id))
+        if (row.proposal_pending || this.unanswered(row.id))
           fail("conflict", "Settle pending questions and the prior proposal before proposing");
         this.db
           .prepare("UPDATE commissions SET proposal_id=?,proposal_pending=1 WHERE id=?")
           .run(input.eventId, row.id);
-      } else if (input.kind === "checkpoint" || input.kind === "failure") {
-        if (row.state === "accepted") fail("conflict", "Commission is already accepted");
-        // A checkpoint is the worker's explicit statement that active work has resumed.
+      } else {
+        // A checkpoint is the worker saying active work has resumed; a failure says it's blocked.
         this.db
           .prepare("UPDATE commissions SET state=? WHERE id=?")
           .run(input.kind === "failure" ? "blocked" : "working", row.id);
-      } else {
-        if (row.proposal_id !== input.data.proposalId)
-          fail("stale_proposal", "Delivery observation must refer to the current proposal");
-        const recorded = this.db
-          .prepare("INSERT OR IGNORE INTO delivery VALUES(?,?,?)")
-          .run(row.id, input.data.proposalId, input.kind);
-        notifyOwner =
-          recorded.changes > 0 && Boolean(row.proposal_pending) && row.state !== "accepted";
       }
-      this.db
-        .prepare("UPDATE commissions SET updated=?,heartbeat=? WHERE id=?")
-        .run(this.now(), this.now(), row.id);
+      this.touch(row.id, true);
       this.event(
-        actor,
         row.id,
         `event:${input.eventId}`,
+        WORKER,
         input.kind,
         { eventId: input.eventId, data: input.data },
-        notifyOwner ? row.owner : undefined,
+        input.kind !== "checkpoint",
       );
       return this.result(row.id);
     });
   }
-  decide(actor: Caller, input: DecisionInput): MutationResult {
-    object(
+  decide(commissioner: Commissioner, input: DecisionInput): MutationResult {
+    this.owned(commissioner, input.commissionId);
+    return this.operation(
+      input.commissionId,
+      `event:${input.eventId}`,
+      commissioner.id,
       input,
-      input.target === "question"
-        ? ["commissionId", "eventId", "target", "questionId", "decision"]
-        : ["commissionId", "eventId", "target", "proposalId", "decision"],
+      () => {
+        const row = this.row(input.commissionId);
+        if (row.state === "accepted") fail("conflict", "The commission is already accepted");
+        if (input.target === "question") {
+          const question = this.db
+            .prepare("SELECT answer FROM questions WHERE commission_id=? AND id=?")
+            .get(row.id, input.questionId) as { answer: string | null } | undefined;
+          if (!question) fail("not_found", "Question not found in this commission");
+          if (question.answer !== null) fail("conflict", "That question is already answered");
+          this.db
+            .prepare("UPDATE questions SET answer=? WHERE commission_id=? AND id=?")
+            .run(canonical(input.decision.answer), row.id, input.questionId);
+        } else {
+          if (!row.proposal_pending || row.proposal_id !== input.proposalId)
+            fail("stale_proposal", "Decide the current pending proposal");
+          if (this.unanswered(row.id))
+            fail("conflict", "Answer pending questions before deciding the proposal");
+          this.db
+            .prepare("UPDATE commissions SET proposal_pending=0,state=? WHERE id=?")
+            .run(input.decision.verdict === "accept" ? "accepted" : "revision_requested", row.id);
+        }
+        this.touch(row.id, false);
+        this.event(row.id, `event:${input.eventId}`, commissioner.id, "decision", input, false);
+        return this.result(row.id);
+      },
     );
-    identifier(input.eventId);
-    if (input.target === "question") {
-      identifier(input.questionId);
-      object(input.decision, ["answer"]);
-      text(input.decision.answer);
-    } else if (input.target === "proposal") {
-      identifier(input.proposalId);
-      object(input.decision, ["verdict", "feedback"]);
-      text(input.decision.feedback);
-      if (input.decision.verdict !== "accept" && input.decision.verdict !== "revise")
-        fail("invalid_input", "Unsupported verdict");
-    } else fail("invalid_input", "Unsupported decision target");
-    this.authorized(actor, input.commissionId, "owner");
-    return this.operation(actor, input.commissionId, `event:${input.eventId}`, input, () => {
-      const row = this.requireRow(input.commissionId);
-      if (row.state === "accepted") fail("conflict", "Commission is already accepted");
-      if (input.target === "question") {
-        const question = this.db
-          .prepare("SELECT answer FROM questions WHERE commission_id=? AND id=?")
-          .get(row.id, input.questionId) as { answer: string | null } | undefined;
-        if (!question) fail("not_found", "Question not found in this commission");
-        if (question.answer !== null) fail("conflict", "Question already has a decision");
-        this.db
-          .prepare("UPDATE questions SET answer=? WHERE commission_id=? AND id=?")
-          .run(canonical(input.decision), row.id, input.questionId);
-      } else {
-        if (!row.proposal_pending || row.proposal_id !== input.proposalId)
-          fail("stale_proposal", "Decision must refer to the current pending proposal");
-        if (this.unanswered(row.id))
-          fail("conflict", "Answer pending questions before deciding the proposal");
-        this.db
-          .prepare("UPDATE commissions SET proposal_pending=0,state=? WHERE id=?")
-          .run(input.decision.verdict === "accept" ? "accepted" : "revision_requested", row.id);
-      }
-      this.db.prepare("UPDATE commissions SET updated=? WHERE id=?").run(this.now(), row.id);
-      this.event(actor, row.id, `event:${input.eventId}`, "decision", input);
-      return this.result(row.id);
-    });
   }
-  read(actor: Caller, id: string, after = 0): CommissionView {
-    const row = this.authorized(actor, id);
-    if (!Number.isSafeInteger(after) || after < 0) fail("invalid_input", "Invalid event cursor");
-    const publicSpec = JSON.parse(row.spec) as CommissionSpec;
-    if (actor.principalId !== row.owner) delete publicSpec.privateGuidance;
+  /** The worker's view, and the owner's once `commissioner` has been checked against the commission. */
+  read(id: string, after = 0, commissioner?: Commissioner): CommissionView {
+    const row = commissioner ? this.owned(commissioner, id) : this.row(id);
     const events = (
       this.db
         .prepare(
@@ -662,97 +375,73 @@ export class CommissionStore {
       cursor: event.seq,
       eventId: event.id,
       kind: event.kind,
-      payload:
-        actor.principalId !== row.owner && event.kind === "session_rebound"
-          ? { redacted: true }
-          : (JSON.parse(event.payload) as unknown),
+      payload: JSON.parse(event.payload) as unknown,
       createdAt: event.created,
     }));
-    const observations = new Set(
-      (
-        this.db
-          .prepare("SELECT kind FROM delivery WHERE commission_id=? AND proposal_id=?")
-          .all(id, row.proposal_id) as { kind: string }[]
-      ).map((value) => value.kind),
-    );
-    const status = this.status(row);
-    const activityEpoch = this.overdueEpoch(id);
     const proposal = row.proposal_id
       ? (this.db
           .prepare("SELECT payload FROM events WHERE commission_id=? AND id=? AND kind='proposal'")
-          .get(id, `event:${row.proposal_id}`) as { payload: string } | undefined)
+          .get(id, `event:${row.proposal_id}`) as { payload: string })
       : undefined;
-    const proposalData = proposal
-      ? (
-          JSON.parse(proposal.payload) as {
-            data: { summary: string; artifact: import("./types.js").ArtifactReference };
-          }
-        ).data
-      : undefined;
-    const notification =
-      actor.principalId === row.owner
-        ? (this.db
-            .prepare(
-              "SELECT count(CASE WHEN delivered=0 THEN 1 END) AS pending,coalesce(sum(attempt_count),0) AS attemptCount,max(last_attempt_at) AS lastAttemptAt FROM outbox WHERE commission_id=?",
-            )
-            .get(id) as { pending: number; attemptCount: number; lastAttemptAt: number | null })
-        : undefined;
-    const failure =
-      actor.principalId === row.owner
-        ? (this.db
-            .prepare(
-              "SELECT failure_class AS failureClass FROM outbox WHERE commission_id=? AND delivered=0 AND failure_class IS NOT NULL ORDER BY last_attempt_at DESC,seq DESC LIMIT 1",
-            )
-            .get(id) as { failureClass: OutboxFailureClass } | undefined)
-        : undefined;
+    const handoff = this.db
+      .prepare(
+        "SELECT delivered,failure_class FROM outbox WHERE commission_id=? AND event_id='handoff'",
+      )
+      .get(id) as { delivered: number; failure_class: OutboxFailureClass | null };
+    const overdue = this.db
+      .prepare(`SELECT 1 FROM commissions c WHERE c.id=? AND ${overdueEligibility}`)
+      .get(id, this.now() - this.overdueAfterMs);
+    const questions = this.db
+      .prepare("SELECT id FROM questions WHERE commission_id=? ORDER BY rowid")
+      .all(id) as { id: string }[];
     return {
       commissionId: id,
-      status,
-      owner: row.owner,
-      worker: row.worker,
-      spec: publicSpec,
-      proposalId: row.proposal_id,
-      proposalPending: Boolean(row.proposal_pending),
-      currentProposal:
-        proposalData && row.proposal_id ? { proposalId: row.proposal_id, ...proposalData } : null,
-      ...(notification
-        ? { notification: { ...notification, failureClass: failure?.failureClass ?? null } }
-        : {}),
-      delivery: {
-        reviewed: observations.has("reviewed"),
-        merged: observations.has("merged"),
-        deployed: observations.has("deployed"),
+      status: this.status(row),
+      spec: JSON.parse(row.spec) as CommissionSpec,
+      workReference: JSON.parse(row.work_reference) as WorkReference,
+      handoff: {
+        status: handoff.delivered ? "confirmed" : "pending",
+        lastFailure: handoff.delivered ? null : handoff.failure_class,
       },
-      questions: (
-        this.db
-          .prepare("SELECT id FROM questions WHERE commission_id=? ORDER BY rowid")
-          .all(id) as { id: string }[]
-      ).map((value) => this.question(actor, id, value.id)),
+      currentProposal:
+        proposal && row.proposal_id
+          ? {
+              proposalId: row.proposal_id,
+              pending: Boolean(row.proposal_pending),
+              ...(
+                JSON.parse(proposal.payload) as {
+                  data: { summary: string; artifact: ArtifactReference };
+                }
+              ).data,
+            }
+          : null,
+      questions: questions.map((question) => this.question(id, question.id)),
       events,
       nextCursor: events.at(-1)?.cursor ?? after,
-      ...(activityEpoch !== undefined
-        ? {
-            attention: {
-              kind: "overdue_checkpoint" as const,
-              lastWorkerActivity: row.heartbeat,
-              activityEpoch,
-            },
-          }
+      ...(overdue
+        ? { attention: { kind: "overdue_checkpoint" as const, lastWorkerActivity: row.heartbeat } }
         : {}),
     };
   }
-  pending(actor: Caller, batchLimit = 100): PendingWork[] {
-    caller(actor);
-    limit(batchLimit);
-    return this.db
-      .prepare(`SELECT c.id AS commissionId,'question' AS kind,q.id AS id,c.owner,c.worker FROM questions q JOIN commissions c ON q.commission_id=c.id
-      WHERE q.answer IS NULL AND c.owner=? UNION ALL SELECT id AS commissionId,'proposal' AS kind,proposal_id AS id,owner,worker FROM commissions
-      WHERE proposal_pending=1 AND owner=? ORDER BY commissionId,kind,id LIMIT ?`)
-      .all(actor.principalId, actor.principalId, batchLimit) as PendingWork[];
+  /** What the dispatcher needs for one entry: the owner's conversation, and the worker binding for a handoff. */
+  delivery(id: string): {
+    owner: string;
+    conversation: Conversation;
+    spec: CommissionSpec;
+    connectorId: string;
+    binding: WorkerBinding;
+  } {
+    const row = this.row(id);
+    return {
+      owner: row.owner,
+      conversation: JSON.parse(row.conversation) as Conversation,
+      spec: JSON.parse(row.spec) as CommissionSpec,
+      connectorId: row.connector_id,
+      binding: JSON.parse(row.binding) as WorkerBinding,
+    };
   }
-  /** Trusted host schedule: one attention event per worker-activity/hand-back epoch, never a dead verdict. */
+  /** One notice per quiet spell: a new one only after the worker or the commissioner acts again. */
   reconcileOverdue(batchLimit = 100): number {
-    limit(batchLimit);
     return this.db
       .transaction(() => {
         const rows = this.db
@@ -760,222 +449,73 @@ export class CommissionStore {
         AND NOT EXISTS (SELECT 1 FROM events e WHERE e.commission_id=c.id AND e.id='overdue:' || max(c.updated,c.heartbeat))
         ORDER BY max(c.updated,c.heartbeat),id LIMIT ?`)
           .all(this.now() - this.overdueAfterMs, batchLimit) as CommissionRow[];
-        for (const row of rows) {
+        for (const row of rows)
           this.event(
-            { principalId: "commissioning:reconciler", verified: true },
             row.id,
             `overdue:${Math.max(row.updated, row.heartbeat)}`,
+            "commissioning",
             "overdue_checkpoint",
-            {
-              lastWorkerActivity: row.heartbeat,
-              activityEpoch: Math.max(row.updated, row.heartbeat),
-            },
-            row.owner,
+            { lastWorkerActivity: row.heartbeat },
+            true,
           );
-        }
         return rows.length;
       })
       .immediate();
   }
-  /** Explicit trusted-host recovery only. The host derives source, new session and requestedBy from authenticated context. */
-  rebindSession(
-    owner: Caller,
-    input: RebindSessionInput,
-    requestedBy: Caller,
-  ): RebindSessionResult {
-    this.authorized(owner, input.commissionId, "owner");
-    caller(requestedBy);
-    object(input, [
-      "commissionId",
-      "eventId",
-      "expectedActiveSessionId",
-      "activeSessionId",
-      "source",
-    ]);
-    identifier(input.eventId);
-    identifier(input.expectedActiveSessionId);
-    identifier(input.activeSessionId);
-    source(input.source);
-    return this.operation(
-      owner,
-      input.commissionId,
-      `event:${input.eventId}`,
-      { ...input, requestedBy: requestedBy.principalId },
-      () => {
-        const context = this.context(input.commissionId);
-        if (!context?.source || canonical(context.source) !== canonical(input.source))
-          fail("forbidden", "Rebind requires the original captured source");
-        const priorSessionId = context.activeSessionId ?? context.originSessionId;
-        if (priorSessionId !== input.expectedActiveSessionId)
-          fail("conflict", "Commission session changed since recovery was requested");
-        this.db
-          .prepare("UPDATE contexts SET value=? WHERE commission_id=?")
-          .run(
-            canonical({ ...context, activeSessionId: input.activeSessionId }),
-            input.commissionId,
-          );
-        this.event(requestedBy, input.commissionId, `event:${input.eventId}`, "session_rebound", {
-          priorSessionId,
-          activeSessionId: input.activeSessionId,
-          requestedByPrincipalId: requestedBy.principalId,
-        });
-        return { commissionId: input.commissionId, activeSessionId: input.activeSessionId };
-      },
-    );
-  }
-  /** Trusted host only: this method is never registered as a worker tool. */
-  context(id: string): CommissionerContext | undefined {
-    identifier(id);
-    const row = this.db.prepare("SELECT value FROM contexts WHERE commission_id=?").get(id) as
-      | { value: string }
-      | undefined;
-    return row ? (JSON.parse(row.value) as CommissionerContext) : undefined;
-  }
-  /** Trusted host only. Never registered as a worker tool or added to event envelopes. */
-  workerBinding(id: string): StoredWorkerBinding | undefined {
-    identifier(id);
-    const row = this.db
-      .prepare("SELECT connector_id,reference,binding FROM worker_bindings WHERE commission_id=?")
-      .get(id) as { connector_id: string; reference: string; binding: string } | undefined;
-    if (!row) return undefined;
-    const stored = {
-      commissionId: id,
-      connectorId: row.connector_id,
-      reference: JSON.parse(row.reference) as unknown,
-      binding: JSON.parse(row.binding) as unknown,
-    };
-    workerBinding(stored);
-    return stored;
-  }
-  /** Trusted dispatcher: bounded fair snapshot, without leasing entries before their send. */
-  pendingOutboxIds(batchLimit = 100): number[] {
-    limit(batchLimit);
+  /**
+   * Entries due for delivery, fewest attempts first, so entries that keep failing can't hold back newer ones.
+   * Nothing is leased here; the dispatcher claims each entry just before sending it.
+   */
+  pendingOutbox(batchLimit = 100): number[] {
     return (
       this.db
-        .prepare(`SELECT seq FROM outbox WHERE delivered=0
-      AND (lease_until IS NULL OR lease_until<=?) ORDER BY attempt_count,seq LIMIT ?`)
+        .prepare(`SELECT seq FROM outbox WHERE delivered=0 AND (lease_until IS NULL OR lease_until<=?)
+      ORDER BY attempt_count,seq LIMIT ?`)
         .all(this.now(), batchLimit) as { seq: number }[]
     ).map((row) => row.seq);
   }
-  /** Claim one snapshotted entry only if it is still pending and its prior lease has expired. */
-  claimOutboxSeq(input: {
-    seq: number;
-    consumerId: string;
-    leaseMs?: number;
-  }): OutboxEntry | undefined {
-    identifier(input.consumerId);
-    if (!Number.isSafeInteger(input.seq) || input.seq < 1)
-      fail("invalid_input", "Invalid outbox sequence");
-    const leaseMs = input.leaseMs ?? 30000;
-    if (!Number.isSafeInteger(leaseMs) || leaseMs < 1 || leaseMs > 300000)
-      fail("invalid_input", "Lease must be from 1 to 300000 milliseconds");
+  /** Claims one entry if it's still due; another process holding a live lease keeps it. */
+  claimOutbox(seq: number, leaseMs = 120_000): OutboxEntry | undefined {
     return this.db
       .transaction(() => {
         const now = this.now();
-        const token = `${input.consumerId}:${randomUUID()}`;
+        const token = randomUUID();
         const changed = this.db
-          .prepare(`UPDATE outbox SET lease_token=?,lease_until=?,attempt_count=attempt_count+1,last_attempt_at=?
+          .prepare(`UPDATE outbox SET lease_token=?,lease_until=?,attempt_count=attempt_count+1
         WHERE seq=? AND delivered=0 AND (lease_until IS NULL OR lease_until<=?)`)
-          .run(token, now + leaseMs, now, input.seq, now);
+          .run(token, now + leaseMs, seq, now);
         if (!changed.changes) return undefined;
-        const row = this.db.prepare("SELECT * FROM outbox WHERE seq=?").get(input.seq) as OutboxRow;
+        const row = this.db.prepare("SELECT * FROM outbox WHERE seq=?").get(seq) as OutboxRow;
         return {
           seq: row.seq,
           commissionId: row.commission_id,
           eventId: row.event_id,
-          recipient: row.recipient,
           kind: row.kind,
           payload: JSON.parse(row.payload) as unknown,
           leaseToken: token,
-          attemptCount: row.attempt_count,
-          lastAttemptAt: now,
         };
       })
       .immediate();
   }
-  claimOutbox(input: {
-    consumerId: string;
-    limit?: number;
-    leaseMs?: number;
-    afterSeq?: number;
-  }): OutboxEntry[] {
-    identifier(input.consumerId);
-    const batchLimit = limit(input.limit ?? 100);
-    const leaseMs = input.leaseMs ?? 30_000;
-    const afterSeq = input.afterSeq ?? 0;
-    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0)
-      fail("invalid_input", "Invalid outbox cursor");
-    if (!Number.isSafeInteger(leaseMs) || leaseMs < 1 || leaseMs > 300_000)
-      fail("invalid_input", "Lease must be from 1 to 300000 milliseconds");
-    return this.db
-      .transaction(() => {
-        const now = this.now();
-        const rows = this.db
-          .prepare(
-            "SELECT * FROM outbox WHERE delivered=0 AND seq>? AND (lease_until IS NULL OR lease_until<=?) ORDER BY seq LIMIT ?",
-          )
-          .all(afterSeq, now, batchLimit) as OutboxRow[];
-        return rows.map((row) => {
-          const token = `${input.consumerId}:${randomUUID()}`;
-          this.db
-            .prepare(
-              "UPDATE outbox SET lease_token=?,lease_until=?,attempt_count=attempt_count+1,last_attempt_at=? WHERE seq=?",
-            )
-            .run(token, now + leaseMs, now, row.seq);
-          return {
-            seq: row.seq,
-            commissionId: row.commission_id,
-            eventId: row.event_id,
-            recipient: row.recipient,
-            kind: row.kind,
-            payload: JSON.parse(row.payload) as unknown,
-            leaseToken: token,
-            attemptCount: row.attempt_count + 1,
-            lastAttemptAt: now,
-          };
-        });
-      })
-      .immediate();
-  }
   acknowledgeOutbox(seq: number, leaseToken: string): void {
-    this.finishLease(seq, leaseToken, true);
+    this.finishLease(seq, leaseToken, null);
   }
-  releaseOutbox(
-    seq: number,
-    leaseToken: string,
-    failureClass: OutboxFailureClass = "dispatch_failed",
-  ): void {
-    if (
-      ![
-        "identity_unavailable",
-        "dispatch_failed",
-        "worker_unavailable",
-        "worker_binding_mismatch",
-        "worker_handoff_failed",
-      ].includes(failureClass)
-    )
-      fail("invalid_input", "Invalid outbox failure class");
-    this.finishLease(seq, leaseToken, false, failureClass);
+  releaseOutbox(seq: number, leaseToken: string, failure: OutboxFailureClass): void {
+    this.finishLease(seq, leaseToken, failure);
   }
-  private finishLease(
-    seq: number,
-    leaseToken: string,
-    delivered: boolean,
-    failureClass?: OutboxFailureClass,
-  ): void {
-    if (!Number.isSafeInteger(seq) || seq < 1) fail("invalid_input", "Invalid outbox sequence");
-    text(leaseToken);
-    const result = this.db
-      .prepare(
-        delivered
-          ? "UPDATE outbox SET delivered=1,failure_class=NULL WHERE seq=? AND lease_token=? AND lease_until>?"
-          : "UPDATE outbox SET lease_token=NULL,lease_until=NULL,failure_class=? WHERE seq=? AND lease_token=? AND lease_until>?",
-      )
-      .run(
-        ...(delivered
-          ? [seq, leaseToken, this.now()]
-          : [failureClass, seq, leaseToken, this.now()]),
-      );
-    if (!result.changes) fail("lease_lost", "Outbox lease expired or was replaced");
+  private finishLease(seq: number, leaseToken: string, failure: OutboxFailureClass | null): void {
+    const result =
+      failure === null
+        ? this.db
+            .prepare(
+              "UPDATE outbox SET delivered=1,failure_class=NULL WHERE seq=? AND lease_token=? AND lease_until>?",
+            )
+            .run(seq, leaseToken, this.now())
+        : this.db
+            .prepare(
+              "UPDATE outbox SET lease_token=NULL,lease_until=NULL,failure_class=? WHERE seq=? AND lease_token=? AND lease_until>?",
+            )
+            .run(failure, seq, leaseToken, this.now());
+    if (!result.changes) fail("lease_lost", "The outbox lease expired or was replaced");
   }
 }

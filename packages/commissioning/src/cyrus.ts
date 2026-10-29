@@ -2,16 +2,39 @@ import { randomUUID } from "node:crypto";
 import { callLinearGraphQL } from "eve/channels/linear";
 import { z } from "zod";
 import { CyrusConnectorError, failCyrus as fail } from "./cyrus-errors.js";
-import { endpoint, hasControlCharacters, serverName } from "./cyrus-worker.js";
 import type { WorkerConnector } from "./worker.js";
 
+export type { CommissioningConfig, Delivery } from "./config.js";
 export { CyrusConnectorError } from "./cyrus-errors.js";
-export type {
-  CyrusHeadersHelperOptions,
-  CyrusServers,
-  CyrusWorkerArtifacts,
-} from "./cyrus-worker.js";
-export { createCyrusWorkerArtifacts, runCyrusHeadersHelper } from "./cyrus-worker.js";
+export type { Commissioner, Conversation } from "./types.js";
+export type { WorkerBinding, WorkerConnector, WorkReference } from "./worker.js";
+
+const hasControlCharacters = (value: string) =>
+  Array.from(value).some(
+    (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+  );
+const serverName = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+// The worker reaches the endpoint over HTTPS, or over plain HTTP only on this host.
+const endpoint = z
+  .string()
+  .max(2048)
+  .regex(/^\S+$/)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return (
+        !hasControlCharacters(value) &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        (url.protocol === "https:" ||
+          (url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)))
+      );
+    } catch {
+      return false;
+    }
+  });
 
 export interface CyrusOptions {
   linear: {
@@ -53,7 +76,6 @@ const issueUrl = z
   });
 const bindingSchema = z
   .object({
-    version: z.literal("2"),
     contractCommentId: z
       .string()
       .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
@@ -177,7 +199,6 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
       )
         fail("handoff_conflict");
       return Object.freeze({
-        version: "2",
         contractCommentId,
         commissionId,
         issueId: record.id,
@@ -198,17 +219,6 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
         target.mcpEndpoint !== mcp.endpoint
       )
         fail("configuration_changed");
-      // Select the worker fields explicitly: a structurally wider host object cannot leak guidance/history.
-      const workerSpec = z
-        .object({
-          brief: z.string().min(1).max(100_000),
-          acceptance: z.array(z.string().min(1).max(100_000)).min(1).max(100),
-        })
-        .safeParse({
-          brief: spec?.brief,
-          acceptance: spec?.acceptance,
-        });
-      if (!workerSpec.success) fail("invalid_binding");
       const contract = [
         `<!-- eve-commission:${commissionId} -->`,
         "## Commissioning contract",
@@ -216,12 +226,12 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
         `MCP server: ${target.mcpServerName}`,
         `Endpoint: ${target.mcpEndpoint}`,
         `Canonical work issue: ${target.issueUrl}`,
-        "Read commission_read with this commissionId before starting work. Use commission_consult for bounded questions and commission_report for checkpoints, failures, immutable proposals, and delivery observations. Poll commission_read for answers and revisions. Only the commissioner records decisions.",
+        "Read commission_read with this commissionId before starting work. Use commission_consult for bounded questions and commission_report for checkpoints, failures and immutable proposals. Poll commission_read for answers and revisions. Only the commissioner records decisions.",
         "",
-        workerSpec.data.brief,
+        spec.brief,
         "",
         "Acceptance:",
-        ...workerSpec.data.acceptance.map((value) => `- ${value}`),
+        ...spec.acceptance.map((value) => `- ${value}`),
         `<!-- /eve-commission:${commissionId} -->`,
       ].join("\n");
       // Check the complete rendered contract before any handoff read or external mutation.

@@ -1,37 +1,29 @@
-import type { StoredWorkerBinding, WorkReference } from "./worker.js";
+import type { WorkReference } from "./worker.js";
 
-/** Only the host's authenticated principal resolver may construct this value. Never accept it from tool arguments. */
-export interface Caller {
-  principalId: string;
-  verified: true;
+/**
+ * The conversation a commission was opened in, as the consumer identifies it (a Slack thread, a Linear agent
+ * session). Captured from trusted session auth at open, compared on every owner call, and never shown to the worker.
+ */
+export type Conversation = Readonly<Record<string, string>>;
+/** Who may act as the owner of a commission, and where they're talking: what `commissioner(auth)` returns. */
+export interface Commissioner {
+  id: string;
+  conversation: Conversation;
 }
 export interface CommissionSpec {
   brief: string;
   acceptance: string[];
-  privateGuidance?: string;
 }
-/** Trusted host only. Native connector selection prepares its own immutable binding. */
-export interface OpenOptions {
-  /** Legacy host activation callback; use only with a host-installed activation handler. */
-  requestWorkerActivation?: boolean;
-  /** Trusted host preparation, committed atomically with the commission and activation. */
-  workerBinding?: StoredWorkerBinding;
-}
-export interface OpenInput {
-  commissionId: string;
-  spec: CommissionSpec;
-  workReference?: WorkReference;
+/** The repository and PR identify a remote artifact; only the full commit identifies its content. */
+export interface ArtifactReference {
+  repository: string;
+  commit: string;
+  pullRequest: string;
 }
 export interface QuestionInput {
   commissionId: string;
   questionId: string;
   question: { text: string; options?: string[] };
-}
-/** The repository and PR identify a remote artifact; only the full commit identifies its immutable content. */
-export interface ArtifactReference {
-  repository: string;
-  commit: string;
-  pullRequest: string;
 }
 type ReportBase = { commissionId: string; eventId: string };
 export type ReportInput = ReportBase &
@@ -39,9 +31,6 @@ export type ReportInput = ReportBase &
     | { kind: "proposal"; data: { summary: string; artifact: ArtifactReference } }
     | { kind: "checkpoint"; data: { summary: string } }
     | { kind: "failure"; data: { summary: string } }
-    | { kind: "reviewed"; data: { summary: string; proposalId: string } }
-    | { kind: "merged"; data: { summary: string; proposalId: string } }
-    | { kind: "deployed"; data: { summary: string; proposalId: string } }
   );
 export type DecisionInput = { commissionId: string; eventId: string } & (
   | { target: "question"; questionId: string; decision: { answer: string } }
@@ -60,22 +49,19 @@ export type CommissionStatus =
   | "accepted";
 export type CommissionErrorCode =
   | "invalid_input"
-  | "unverified_caller"
   | "not_found"
   | "forbidden"
   | "conflict"
   | "stale_proposal"
-  | "unsupported_schema"
   | "lease_lost";
 export interface MutationResult {
   commissionId: string;
   status: CommissionStatus;
 }
 export type QuestionView = {
-  commissionId: string;
   questionId: string;
   question: QuestionInput["question"];
-} & ({ status: "pending" } | { status: "answered"; answer: { answer: string } });
+} & ({ status: "pending" } | { status: "answered"; answer: string });
 export interface EventView {
   cursor: number;
   eventId: string;
@@ -84,72 +70,33 @@ export interface EventView {
   createdAt: number;
 }
 export interface CommissionView extends MutationResult {
-  owner: string;
-  worker: string;
   spec: CommissionSpec;
-  proposalId: string | null;
-  proposalPending: boolean;
-  currentProposal: { proposalId: string; summary: string; artifact: ArtifactReference } | null;
-  /** Owner-only delivery diagnostics. Contains fixed failure classes, never raw exceptions. */
-  notification?: {
-    pending: number;
-    attemptCount: number;
-    lastAttemptAt: number | null;
-    failureClass: OutboxFailureClass | null;
-  };
-  delivery: { reviewed: boolean; merged: boolean; deployed: boolean };
+  workReference: WorkReference;
+  /** Whether the worker connector has confirmed the handoff; a confirmed handoff doesn't prove the worker started. */
+  handoff: { status: "pending" | "confirmed"; lastFailure: OutboxFailureClass | null };
+  currentProposal: {
+    proposalId: string;
+    pending: boolean;
+    summary: string;
+    artifact: ArtifactReference;
+  } | null;
   questions: QuestionView[];
   events: EventView[];
   nextCursor: number;
-  attention?: { kind: "overdue_checkpoint"; lastWorkerActivity: number; activityEpoch: number };
-}
-export interface PendingWork {
-  commissionId: string;
-  kind: "question" | "proposal";
-  id: string;
-  owner: string;
-  worker: string;
+  /** The worker has been quiet past its grace interval: a prompt to check on it, not a verdict that it stopped. */
+  attention?: { kind: "overdue_checkpoint"; lastWorkerActivity: number };
 }
 export interface OutboxEntry {
   seq: number;
   commissionId: string;
   eventId: string;
-  recipient: string;
   kind: string;
   payload: unknown;
   leaseToken: string;
-  attemptCount: number;
-  lastAttemptAt: number;
 }
-export type OutboxFailureClass =
-  | "identity_unavailable"
-  | "dispatch_failed"
-  | "worker_unavailable"
-  | "worker_binding_mismatch"
-  | "worker_handoff_failed";
+/** Fixed reasons a delivery stays pending. Raw callback and provider errors are never stored or shown. */
+export type OutboxFailureClass = "handoff_failed" | "commissioner_unavailable" | "delivery_failed";
 export interface StoreOptions {
   now?: () => number;
   overdueAfterMs?: number;
-}
-
-/** Captured by the trusted host, never exposed to worker tools or event envelopes. */
-export type CommissionSource = Readonly<Record<string, string>>;
-export interface CommissionerContext {
-  originSessionId: string;
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
-  source?: CommissionSource;
-  initiator?: { principalId: string; authenticator: string; principalType: string };
-  /** Set only by an explicitly authorized host rebind; origin and captured provenance never change. */
-  activeSessionId?: string;
-}
-export interface RebindSessionInput {
-  commissionId: string;
-  eventId: string;
-  expectedActiveSessionId: string;
-  activeSessionId: string;
-  source: CommissionSource;
-}
-export interface RebindSessionResult {
-  commissionId: string;
-  activeSessionId: string;
 }
