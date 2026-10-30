@@ -226,8 +226,7 @@ function originOf(
 ): string {
   const session = tool?.session;
   const principal = session?.auth?.current?.principalId;
-  // eve's own byPrincipal, so the speaker matches the scope value eve built byte for byte. It reads only
-  // session.auth in 0.83.2 and 0.91; tool.channel is undefined on 0.83, whose ToolContext has no channel.
+  // eve's own byPrincipal, so the speaker matches the scope value eve built byte for byte.
   const speaker =
     tool && session
       ? byPrincipal({
@@ -304,11 +303,11 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
       // session). Query the new message so recall fires on the very first turn of a session.
       const turnInput = (context as MemoryTurnStartedContext).turn?.input;
       const query = latestUserText(turnInput ?? context.messages);
-      // Resuming after a tool approval: inject nothing. eve 0.83 appends recalled messages after the history's tail, and
-      // the AI SDK reads approvals only from the tail tool message, so anything injected here makes it skip the approved
-      // tool and the run fails with "No tool output found for function call". eve's createCurrentMessages add() appends
-      // with no tail check from 0.81 on, so this guard is memory's own: the history ends in a tool-approval-response.
-      // From 0.84 recall sits outside history and a null keeps the earlier turn's recall, so the guard costs nothing.
+      // Resuming after a tool approval: inject nothing. Through eve 0.83, recall was appended after the history's tail,
+      // and the AI SDK reads approvals only from the tail tool message, so anything injected here made it skip the
+      // approved tool and the run failed with "No tool output found for function call". From 0.84 recall sits outside
+      // history and a null keeps the earlier turn's recall, so the guard costs nothing; it stays until a resumed
+      // approval on 0.91 is shown not to need it.
       if (endsInApprovalResponse(context.messages)) return null;
       const mg = await get(context.memory.scope.key);
       const rules = mg.shapeIndex();

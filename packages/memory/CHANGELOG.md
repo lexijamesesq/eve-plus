@@ -2,9 +2,9 @@
 
 ## 0.5.0
 
-Supports eve 0.91.0 as well as 0.83.2. The peer range is now `^0.83.2 || ^0.91.0`, and the package is built against
-eve 0.91.0 and tested against both. eve 0.80 and 0.81 are no longer in the range: the tests run only against the two
-supported versions. No API or stored-data change, so a store written by 0.5.0 opens in 0.4.1.
+Built and tested against eve 0.91.0; the peer range is now `^0.91.0`. Earlier eve versions are no longer supported:
+an agent takes 0.5.0 in the same change that takes it to eve 0.91.0. No API or stored-data change, so a store
+written by 0.5.0 opens in 0.4.1.
 
 - **No compaction recall.** eve 0.84.0 removed the `compaction.completed` recall hook, and `eve build` rejects a
   memory provider that still declares it, so 0.4.1 fails an agent's build on eve 0.91. Recall now runs only at
@@ -16,9 +16,9 @@ supported versions. No API or stored-data change, so a store written by 0.5.0 op
   each replaces the other.
 - **Attribution keeps eve's own principal key.** The speaker behind every write's `who` and `scopeOwner` is still
   computed by eve's `byPrincipal`, now given the tool call's channel, which 0.91 requires. `byPrincipal` reads only
-  the session's auth in both supported versions, so the key matches the scope eve built, byte for byte.
-- The approval-resume guard stays: under 0.83 recall still lands after the history's tail, and under 0.91 skipping a
-  recall keeps the previous one.
+  the session's auth, so the key matches the scope eve built, byte for byte.
+- The approval-resume guard stays. It was needed while recall landed after the history's tail; under 0.91 skipping a
+  recall keeps the previous one, so it costs nothing.
 - The registration example no longer passes `visibility`, which eve 0.84.0 removed. The README installs from a
   release tag, as the other packages do.
 

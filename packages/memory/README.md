@@ -8,7 +8,7 @@ Most agent memory is a flat key-value or vector store: the agent can save things
 
 ## Install
 
-Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or eve 0.83.2 or later within 0.83:
+Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91:
 
 ```json
 {
@@ -19,7 +19,7 @@ Install it from a release tag as a git dependency, next to eve 0.91.0 or later w
 }
 ```
 
-> Installing from a local checkout or a `file:` dependency? `pnpm` doesn't run a `file:` dependency's `prepare` script, so build the package first (`npm run build` in this repo) before your agent tries to import it. A git or registry install runs `prepare` automatically — no extra step needed there.
+> Installing from a local checkout or a `file:` dependency? `pnpm` doesn't run a `file:` dependency's `prepare` script, so build the package first (`npm run build` in this repo) before your agent tries to import it. A git install runs `prepare` automatically — no extra step needed there.
 
 Register it as an eve memory:
 
