@@ -3,12 +3,20 @@ import { SANDBOX_AGENT_ENV, type SandboxConnection } from "eve/sandbox/provider"
 import type { ExecOutput, Sandbox } from "microsandbox";
 import { adaptExecToSandboxProcess } from "./process.js";
 
+type SpawnOptions = Parameters<SandboxConnection["spawn"]>[0] & {
+  readonly signal?: AbortSignal;
+  readonly abortSignal?: AbortSignal;
+};
+
 /** A connection to one running microsandbox VM. */
 export function createConnection(sandbox: Sandbox): SandboxConnection {
   const fs = sandbox.fs();
   return {
-    async spawn({ abortSignal, command, env, workingDirectory }) {
-      abortSignal?.throwIfAborted();
+    async spawn(options: SpawnOptions) {
+      const { command, env, workingDirectory } = options;
+      // eve 0.84.0 renamed the option to `signal`; 0.83 passes `abortSignal`. Whichever arrives must kill the command.
+      const signal = options.signal ?? options.abortSignal;
+      signal?.throwIfAborted();
       // A sandbox restored from a snapshot doesn't keep the template's environment, so the agent
       // marker goes on every command.
       const handle = await sandbox.execStreamWith("bash", (exec) =>
@@ -18,10 +26,11 @@ export function createConnection(sandbox: Sandbox): SandboxConnection {
           .envs({ ...SANDBOX_AGENT_ENV, ...env }),
       );
       const process = adaptExecToSandboxProcess(handle);
-      const kill = () => void process.kill().catch(() => {});
-      abortSignal?.addEventListener("abort", kill, { once: true });
+      // kill() is typed as PromiseLike, which has no catch().
+      const kill = () => void Promise.resolve(process.kill()).catch(() => {});
+      signal?.addEventListener("abort", kill, { once: true });
       // An abort during the exec await above fired before the listener existed.
-      if (abortSignal?.aborted) kill();
+      if (signal?.aborted) kill();
       return process;
     },
 

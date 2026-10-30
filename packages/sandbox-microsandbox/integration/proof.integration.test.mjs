@@ -43,7 +43,7 @@ const encode = (text) => new TextEncoder().encode(text);
 const decode = (bytes) => new TextDecoder().decode(bytes);
 const run = async (connection, command, options = {}) => {
   const child = await connection.spawn({
-    abortSignal: options.signal,
+    signal: options.signal,
     command,
     env: options.env ?? {},
     workingDirectory: options.cwd ?? "/workspace",
@@ -240,7 +240,7 @@ describe("the connection", () => {
     const c = bare.connection;
     const controller = new AbortController();
     const child = await c.spawn({
-      abortSignal: controller.signal,
+      signal: controller.signal,
       command: "sleep 300 & echo $! > /tmp/gc.pid; echo $$ > /tmp/sh.pid; wait",
       env: {},
       workingDirectory: "/workspace",

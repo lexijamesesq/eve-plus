@@ -20,7 +20,7 @@ docker run --rm --name "$NAME" --device /dev/kvm --group-add "$KVM" --user node 
 	node:24-trixie-slim bash -c '
 		set -e
 		npm init -y >/dev/null
-		npm install --no-audit --no-fund /proof/*.tgz eve@0.83.2 ai@7.0.141 vitest@4.1.10 >/dev/null
+		npm install --no-audit --no-fund /proof/*.tgz eve@0.91.0 ai@7.0.141 vitest@4.1.10 >/dev/null
 		mkdir stale && npm pack --silent @superradcompany/microsandbox-linux-arm64-gnu@0.7.9 >/dev/null
 		tar -xzf superradcompany-microsandbox-linux-arm64-gnu-0.7.9.tgz -C stale
 		mkdir -p stale-home/bin stale-home/lib
