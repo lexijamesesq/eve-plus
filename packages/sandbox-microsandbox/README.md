@@ -4,7 +4,7 @@ A sandbox provider for [eve](https://github.com/vercel/eve) that runs each sessi
 
 ## Install
 
-Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or eve 0.83.2 or later within 0.83:
+Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91:
 
 ```json
 {
@@ -133,7 +133,7 @@ for (const snapshot of await Snapshot.list()) {
 
 ## Testing
 
-- **Unit tests** (`npm test`) cover the policy table, the lifecycle against an in-memory microsandbox, that an abort kills a running command under either of eve's names for it, the version pin, and a rule that shipped `src/` imports only eve's public package exports. One test is exempt from that rule: the state round-trip test imports eve's internal persisted-state resolution (`dist/src/sandbox/state.js`), because no public export reaches it, and it proves eve resumes this provider's recorded state.
+- **Unit tests** (`npm test`) cover the policy table, the lifecycle against an in-memory microsandbox, that an abort kills a running command, the version pin, and a rule that shipped `src/` imports only eve's public package exports. One test is exempt from that rule: the state round-trip test imports eve's internal persisted-state resolution (`dist/src/sandbox/state.js`), because no public export reaches it, and it proves eve resumes this provider's recorded state.
 - **The real-VM proof** (`integration/`, run with `vitest.integration.config.ts`, never by `npm test`) needs a KVM host with Docker and a live network, by necessity: it pulls images and probes real hosts. It runs every lifecycle, connection, network, rejection, runtime and persistence probe against a real microVM, in a throwaway container with an eve agent's posture, as one vitest test per probe:
 
   ```sh

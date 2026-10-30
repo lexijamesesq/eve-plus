@@ -3,19 +3,12 @@ import { SANDBOX_AGENT_ENV, type SandboxConnection } from "eve/sandbox/provider"
 import type { ExecOutput, Sandbox } from "microsandbox";
 import { adaptExecToSandboxProcess } from "./process.js";
 
-type SpawnOptions = Parameters<SandboxConnection["spawn"]>[0] & {
-  readonly signal?: AbortSignal;
-  readonly abortSignal?: AbortSignal;
-};
-
 /** A connection to one running microsandbox VM. */
 export function createConnection(sandbox: Sandbox): SandboxConnection {
   const fs = sandbox.fs();
   return {
-    async spawn(options: SpawnOptions) {
-      const { command, env, workingDirectory } = options;
-      // eve 0.84.0 renamed the option to `signal`; 0.83 passes `abortSignal`. Whichever arrives must kill the command.
-      const signal = options.signal ?? options.abortSignal;
+    // eve 0.84.0 renamed the abort option from `abortSignal` to `signal`.
+    async spawn({ signal, command, env, workingDirectory }) {
       signal?.throwIfAborted();
       // A sandbox restored from a snapshot doesn't keep the template's environment, so the agent
       // marker goes on every command.

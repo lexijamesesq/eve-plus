@@ -30,9 +30,9 @@ function runningSandbox() {
 }
 
 describe("createConnection spawn", () => {
-  // eve 0.84.0 and later pass the abort as `signal`; eve 0.83 passed `abortSignal`. The package supports both, and
-  // an abort that doesn't reach kill() leaves a cancelled command running in the VM.
-  it.each(["signal", "abortSignal"])("an abort passed as `%s` kills the command", async (name) => {
+  // eve 0.84.0 renamed the abort option from `abortSignal` to `signal`. An abort that doesn't reach kill() leaves a
+  // cancelled command running in the VM.
+  it("an abort passed as `signal` kills the command", async () => {
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     globalThis.process.on("unhandledRejection", onUnhandled);
@@ -40,11 +40,11 @@ describe("createConnection spawn", () => {
       const { sandbox, kills } = runningSandbox();
       const controller = new AbortController();
       const child = await createConnection(sandbox).spawn({
-        [name]: controller.signal,
+        signal: controller.signal,
         command: "sleep 300",
         env: {},
         workingDirectory: "/workspace",
-      } as Parameters<ReturnType<typeof createConnection>["spawn"]>[0]);
+      });
       controller.abort();
       const status = await Promise.race([
         child.wait(),

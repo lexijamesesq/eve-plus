@@ -2,11 +2,12 @@
 
 ## 0.2.0
 
-Supports eve 0.91.0 as well as 0.83.2; the peer range is `^0.83.2 || ^0.91.0`, and it's built against 0.91.0.
+Built and tested against eve 0.91.0; the peer range is `^0.91.0`. eve 0.83 is no longer supported: an agent takes
+0.2.0 in the same change that takes it to eve 0.91.0.
 
-- **An abort reaches the command under either name.** eve 0.84.0 renamed the spawn option `abortSignal` to
-  `signal`. 0.1.3 read only `abortSignal`, so under 0.91 an abort no longer killed the command and a cancelled
-  command kept running in the VM. `spawn` now reads `signal`, falling back to `abortSignal` for 0.83.
+- **An abort reaches the command again.** eve 0.84.0 renamed the spawn option `abortSignal` to `signal`. 0.1.3
+  read only `abortSignal`, so under 0.91 an abort no longer killed the command and a cancelled command kept running
+  in the VM. `spawn` now reads `signal`.
 - **A failed kill stays quiet under 0.91's types.** 0.91 types a process's `kill()` as `PromiseLike`; the abort
   handler wraps it in a promise before swallowing its failure.
 - The real-VM proof installs eve 0.91.0 and passes `signal`.
