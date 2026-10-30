@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.3
+
+The commissioner instructions say how to verify before accepting. A commissioner verifies a proposal against evidence
+it can read itself: the commit, the pull request and whether it merged. When it can't reach that evidence, it may ask
+a colleague or the person who commissioned the work, and weighs the answer as evidence; the acceptance decision stays
+its own. No API or store change.
+
 ## 0.5.2
 
 The worker endpoint's `commission_report` publishes its arguments. It was registered with a discriminated union,
