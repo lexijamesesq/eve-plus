@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+Built and tested against eve 0.91.0; the peer range is `^0.91.0`.
+
+- **The extension is built with eve 0.91.0.** eve 0.84.0 and later reject an extension distribution built by an
+  earlier eve, and a consumer's install runs `prepare` with this package's own devDependency eve, so 0.5.3 always
+  builds one 0.91 refuses. The built `dist/extension/_manifest.json` now records `formatVersion: 3` and
+  `builtWithEve: "0.91.0"`.
+- **0.91 or later only.** eve 0.83.2 can't load a distribution built by 0.91, so this release can't stay
+  dual-range. An agent moves to 0.6.0 in the same change that moves it to eve 0.91.0, and an image built with
+  0.5.3 keeps working on 0.83.2.
+- **A redelivered notice reaches the conversation once.** Each notice is sent with an idempotency key that names
+  its outbox entry, so a send repeated after a crash before its acknowledgement is taken once by eve, which
+  remembers a session's recent keys.
+
+No API or store schema change. A store written by 0.5.3 opens unchanged, and 0.5.3 can still read one written by
+0.6.0.
+
 ## 0.5.3
 
 A checkpoint reaches the commissioner while a proposal awaits its verdict. Until now every checkpoint was recorded
