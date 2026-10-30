@@ -14,6 +14,12 @@ written by 0.5.0 opens in 0.4.1.
   replaced only by a later one under the same id. The "memory is unavailable" note had its own id, so it would have
   stayed after the outage ended, beside the earlier recall it says can't be seen. It now takes the recall's id, so
   each replaces the other.
+- **The outage note ends with the outage.** A recall with nothing to show returns `null`, which keeps the session's
+  last message, so after an outage a healthy turn with nothing to recall would have left the note in place. The
+  provider now remembers, per session and scope in the process, what it last showed. The first healthy turn after an
+  outage note, or the first in a session this process hasn't recalled for yet (after a restart, or a new session),
+  replaces it with a one-line note that memory is available. After that, a turn with nothing to recall adds nothing,
+  as before.
 - **Attribution keeps eve's own principal key.** The speaker behind every write's `who` and `scopeOwner` is still
   computed by eve's `byPrincipal`, now given the tool call's channel, which 0.91 requires. `byPrincipal` reads only
   the session's auth, so the key matches the scope eve built, byte for byte.

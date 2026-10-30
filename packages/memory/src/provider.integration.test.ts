@@ -299,18 +299,37 @@ describe("merged-state lint", () => {
 });
 
 describe("store outages are loud and temporary", () => {
-  // eve keeps a turn's recalled message for the rest of the session and replaces it only with a later one under the
-  // same id. Under its own id the note would outlast the outage, beside a recall it says can't be seen.
-  it('a store failure at turn start injects an "unavailable" note (not silent-empty, not a throw), in the recall\'s place', async () => {
-    const down = shaclMemory({ dir: "/dev/null/cannot-exist" }) as unknown as Harness;
-    const note = (await turnStart(down, memoryFor("x"), "what do you know about me?"))?.messages[0];
+  // eve keeps a turn's recalled message for the rest of the session, replaces it only with a later one under the same
+  // id, and keeps it when recall returns null. So the note takes the recall's id, and the first healthy turn replaces
+  // it even when there's nothing to recall; after that, a turn with nothing to recall adds nothing. A restart keeps
+  // eve's session but not this process's memory of it, so the first healthy turn after one replaces whatever is there.
+  it('a store failure at turn start injects an "unavailable" note (not silent-empty, not a throw), and the next healthy turn replaces it', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "o1"), "blocks the store dir");
+    const { provider, memory, tools } = await open(dir, "o1");
+    const turn = async (text: string, by: Harness = provider) =>
+      (
+        await by.recall["turn.started"]({
+          messages: [],
+          turn: { input: [{ role: "user", content: text }] },
+          memory,
+          session: { id: "sess-outage" },
+        })
+      )?.messages[0] ?? null;
+    const note = await turn("what do you know about me?");
     expect(note?.content).toContain("temporarily unavailable");
     expect(note?.content).toContain("not an empty memory");
-    const up = await open(tempDir(), "x");
-    await up.tools.remember.execute({ label: "Home", type: "Place" });
-    const recalled = (await turnStart(up.provider, up.memory, "where is home?"))?.messages[0];
+    rmSync(join(dir, "o1"));
+    const recovered = await turn("anything about the weather?");
+    expect(recovered?.id).toBe(note?.id);
+    expect(recovered?.content).toContain("Your memory is available");
+    expect(await turn("and tomorrow?")).toBeNull();
+    await tools.remember.execute({ label: "Home", type: "Place" });
+    const recalled = await turn("where is home?");
     expect(recalled?.content).toContain("Home");
-    expect(note?.id).toBe(recalled?.id);
+    expect(recalled?.id).toBe(note?.id);
+    const restarted = shaclMemory({ dir }) as unknown as Harness;
+    expect((await turn("anything new?", restarted))?.content).toContain("Your memory is available");
   });
 
   it("a failed store open is retried on the next operation (the outage is not cached)", async () => {

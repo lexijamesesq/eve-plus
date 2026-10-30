@@ -696,6 +696,27 @@ const mutations: Mutation[] = [
     expect: 'a store failure at turn start injects an "unavailable" note',
   },
   {
+    name: "the outage note outlives the outage when nothing is recalled",
+    file: "src/provider.ts",
+    find: 'if (seen === undefined || shown.get(seen) === "recall") return null;',
+    replace: "return null;",
+    expect: "and the next healthy turn replaces it",
+  },
+  {
+    name: "every turn with nothing to recall sends a message",
+    file: "src/provider.ts",
+    find: 'if (seen === undefined || shown.get(seen) === "recall") return null;',
+    replace: "if (seen === undefined) return null;",
+    expect: "and the next healthy turn replaces it",
+  },
+  {
+    name: "only an outage this process saw is replaced (a restart keeps the note)",
+    file: "src/provider.ts",
+    find: 'if (seen === undefined || shown.get(seen) === "recall") return null;',
+    replace: 'if (seen === undefined || shown.get(seen) !== "outage") return null;',
+    expect: "and the next healthy turn replaces it",
+  },
+  {
     name: "a seq freed by revertBatch is reused",
     file: "src/memory-graph.ts",
     find: "(SELECT max(ifnull(max(seq), 0), ifnull((${SEQ_HWM_SQL}), 0)) + 1 FROM triples)",
