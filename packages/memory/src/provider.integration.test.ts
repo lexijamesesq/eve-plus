@@ -1,6 +1,9 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { defineMemory } from "eve/memory";
 import { byPrincipal } from "eve/memory/scope";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -18,7 +21,11 @@ interface Tool {
 type ToolName = "recall" | "remember" | "relate" | "forget" | "extend_schema" | "check_memory";
 interface Harness {
   tools(context: { memory: Input }): Promise<Record<ToolName, Tool>>;
-  recall: { "turn.started"(context: Input): Promise<{ messages: { content: string }[] } | null> };
+  recall: {
+    "turn.started"(
+      context: Input,
+    ): Promise<{ messages: { content: string; id?: string }[] } | null>;
+  };
 }
 
 const dirs: string[] = [];
@@ -100,6 +107,24 @@ const clientRule = {
     { slot: "company", minCount: 1 },
   ],
 };
+
+// `eve build` runs the compiler's memory normalizer on every memory definition, and a key it doesn't know (such as
+// eve 0.83's `compaction.completed` recall under 0.84 and later) fails the agent's build. No public export reaches the
+// normalizer, so this imports it from eve's dist.
+describe("eve's compiler accepts the provider", () => {
+  it("as a memory definition", async () => {
+    const eve = createRequire(import.meta.url).resolve("eve/package.json");
+    const { normalizeMemoryDefinition } = await import(
+      new URL("dist/src/internal/authored-definition/memory.js", pathToFileURL(eve)).href
+    );
+    const definition = defineMemory({
+      namespace: "test",
+      provider: shaclMemory({ dir: tempDir() }),
+      scope: byPrincipal,
+    });
+    expect(() => normalizeMemoryDefinition(definition, "not a memory definition")).not.toThrow();
+  });
+});
 
 describe("turn-start recall reads turn.input, not empty history", () => {
   let h: Awaited<ReturnType<typeof open>>;
@@ -274,11 +299,37 @@ describe("merged-state lint", () => {
 });
 
 describe("store outages are loud and temporary", () => {
-  it('a store failure at turn start injects an "unavailable" note (not silent-empty, not a throw)', async () => {
-    const down = shaclMemory({ dir: "/dev/null/cannot-exist" }) as unknown as Harness;
-    const note = await injectedText(down, memoryFor("x"), "what do you know about me?");
-    expect(note).toContain("temporarily unavailable");
-    expect(note).toContain("not an empty memory");
+  // eve keeps a turn's recalled message for the rest of the session, replaces it only with a later one under the same
+  // id, and keeps it when recall returns null. So the note takes the recall's id, and the first healthy turn replaces
+  // it even when there's nothing to recall; after that, a turn with nothing to recall adds nothing. A restart keeps
+  // eve's session but not this process's memory of it, so the first healthy turn after one replaces whatever is there.
+  it('a store failure at turn start injects an "unavailable" note (not silent-empty, not a throw), and the next healthy turn replaces it', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "o1"), "blocks the store dir");
+    const { provider, memory, tools } = await open(dir, "o1");
+    const turn = async (text: string, by: Harness = provider) =>
+      (
+        await by.recall["turn.started"]({
+          messages: [],
+          turn: { input: [{ role: "user", content: text }] },
+          memory,
+          session: { id: "sess-outage" },
+        })
+      )?.messages[0] ?? null;
+    const note = await turn("what do you know about me?");
+    expect(note?.content).toContain("temporarily unavailable");
+    expect(note?.content).toContain("not an empty memory");
+    rmSync(join(dir, "o1"));
+    const recovered = await turn("anything about the weather?");
+    expect(recovered?.id).toBe(note?.id);
+    expect(recovered?.content).toContain("Your memory is available");
+    expect(await turn("and tomorrow?")).toBeNull();
+    await tools.remember.execute({ label: "Home", type: "Place" });
+    const recalled = await turn("where is home?");
+    expect(recalled?.content).toContain("Home");
+    expect(recalled?.id).toBe(note?.id);
+    const restarted = shaclMemory({ dir }) as unknown as Harness;
+    expect((await turn("anything new?", restarted))?.content).toContain("Your memory is available");
   });
 
   it("a failed store open is retried on the next operation (the outage is not cached)", async () => {

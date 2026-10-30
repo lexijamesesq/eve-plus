@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.0
+
+Built and tested against eve 0.91.0; the peer range is now `^0.91.0`. Earlier eve versions are no longer supported:
+an agent takes 0.5.0 in the same change that takes it to eve 0.91.0. No API or stored-data change, so a store
+written by 0.5.0 opens in 0.4.1.
+
+- **No compaction recall.** eve 0.84.0 removed the `compaction.completed` recall hook, and `eve build` rejects a
+  memory provider that still declares it, so 0.4.1 fails an agent's build on eve 0.91. Recall now runs only at
+  `turn.started`. From 0.84 eve keeps recalled memory outside history, so compaction no longer drops it and there is
+  nothing to recall again.
+- **One id for the turn-start message.** From 0.84 a recalled message stays for the rest of the session and is
+  replaced only by a later one under the same id. The "memory is unavailable" note had its own id, so it would have
+  stayed after the outage ended, beside the earlier recall it says can't be seen. It now takes the recall's id, so
+  each replaces the other.
+- **The outage note ends with the outage.** A recall with nothing to show returns `null`, which keeps the session's
+  last message, so after an outage a healthy turn with nothing to recall would have left the note in place. The
+  provider now remembers, per session and scope in the process, what it last showed. The first healthy turn after an
+  outage note, or the first in a session this process hasn't recalled for yet (after a restart, or a new session),
+  replaces it with a one-line note that memory is available. After that, a turn with nothing to recall adds nothing,
+  as before.
+- **Attribution keeps eve's own principal key.** The speaker behind every write's `who` and `scopeOwner` is still
+  computed by eve's `byPrincipal`, now given the tool call's channel, which 0.91 requires. `byPrincipal` reads only
+  the session's auth, so the key matches the scope eve built, byte for byte.
+- The approval-resume guard stays. It was needed while recall landed after the history's tail; under 0.91 skipping a
+  recall keeps the previous one, so it costs nothing.
+- The registration example no longer passes `visibility`, which eve 0.84.0 removed. The README installs from a
+  release tag, as the other packages do.
+
 ## 0.4.1
 
 Installs alongside eve 0.83. The peer range is now `^0.80.1 || ^0.81.0 || ^0.83.2`, and the package is built and

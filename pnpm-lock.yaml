@@ -219,8 +219,8 @@ importers:
         specifier: 7.0.141
         version: 7.0.141(zod@4.6.5)
       eve:
-        specifier: 0.83.2
-        version: 0.83.2(ai@7.0.141(zod@4.6.5))
+        specifier: 0.91.0
+        version: 0.91.0(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -845,29 +845,6 @@ packages:
     resolution: {integrity: sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==}
     engines: {node: '>= 0.6'}
 
-  eve@0.83.2:
-    resolution: {integrity: sha512-NiAHLbmq0etahDN8BKpmwLr8gZrILMq9XSGne8u+DCqdCTxSJBcDCkdvB+8XaHxgCrWLyH8igrqeS1mg5R6bVQ==}
-    engines: {node: '>=24'}
-    hasBin: true
-    peerDependencies:
-      '@opentelemetry/api': ^1.0.0
-      ai: ^7.0.137
-      braintrust: ^3.0.0
-      chat: ^4.42.0
-      dd-trace: ^6.13.0
-      just-bash: ^3.1.0
-    peerDependenciesMeta:
-      '@opentelemetry/api':
-        optional: true
-      braintrust:
-        optional: true
-      chat:
-        optional: true
-      dd-trace:
-        optional: true
-      just-bash:
-        optional: true
-
   eve@0.91.0:
     resolution: {integrity: sha512-IVZ73uGFUm3k5sUju/XNi/O3z9Rmq6Iv8mfA0nzrDMypRu+N7iJUIcOhxuU6qDWxLglfqoXimfoOZiyd9/UCxg==}
     engines: {node: '>=24'}
@@ -1472,10 +1449,6 @@ packages:
   undici@7.30.1:
     resolution: {integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==}
     engines: {node: '>=20.18.1'}
-
-  undici@8.10.2:
-    resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
-    engines: {node: '>=22.19.0'}
 
   undici@8.12.3:
     resolution: {integrity: sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw==}
@@ -2281,11 +2254,13 @@ snapshots:
 
   etag@1.8.1: {}
 
-  eve@0.83.2(ai@7.0.141(zod@4.6.5)):
+  eve@0.91.0(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5)):
     dependencies:
       ai: 7.0.141(zod@4.6.5)
       nitro: 3.0.260903-beta
-      undici: 8.10.2
+      undici: 8.12.3
+    optionalDependencies:
+      vite: 8.3.5(@types/node@22.20.5)
 
   eve@0.91.0(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@22.20.5)):
     dependencies:
@@ -2884,8 +2859,6 @@ snapshots:
   undici@6.29.1: {}
 
   undici@7.30.1: {}
-
-  undici@8.10.2: {}
 
   undici@8.12.3: {}
 

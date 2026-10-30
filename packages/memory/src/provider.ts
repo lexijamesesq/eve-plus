@@ -206,6 +206,11 @@ function isPrincipalKey(value: string | readonly string[]): boolean {
   }
 }
 
+// One id for the turn-start message, whatever it says. eve 0.84 and later keep a recalled message for the rest of the
+// session and replace it only with a later one under the same id, so an outage note under its own id would outlast
+// the outage, and a stale recall would sit beside the note that memory is unavailable.
+const RECALL_ID = "shacl-memory-recall";
+
 function problemsToText(problems: { path?: string; message: string }[]): string {
   return problems.map((p) => `• ${p.message}`).join("\n");
 }
@@ -221,12 +226,13 @@ function originOf(
 ): string {
   const session = tool?.session;
   const principal = session?.auth?.current?.principalId;
+  // eve's own byPrincipal, so the speaker matches the scope value eve built byte for byte.
   const speaker =
     tool && session
       ? byPrincipal({
           abortSignal: tool.abortSignal,
           session: { id: session.id, auth: session.auth },
-          channel: {},
+          channel: tool.channel,
         })
       : null;
   const ownedScope = isPrincipalKey(scope.value);
@@ -258,7 +264,7 @@ function originOf(
  * its own knowledge — entities, attributes, connections, and new kinds — and the only gate is whether it lints.
  * Register it like `fileMemory`:
  *
- *   defineMemory({ provider: shaclMemory({ dir: "/data/memory" }), scope: byPrincipal, visibility: "scope" })
+ *   defineMemory({ provider: shaclMemory({ dir: "/data/memory" }), scope: byPrincipal })
  */
 export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
   const cache = new Map<string, Promise<MemoryGraph>>();
@@ -277,6 +283,15 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
     writes.set(id, n);
     if (writes.size > 1_000) writes.delete(writes.keys().next().value as string);
   };
+  // What this process last showed each session's model under RECALL_ID, per scope. eve keeps that message when recall
+  // returns null, so null is right only when it's known not to be the outage note. Bounded like `writes`.
+  const shown = new Map<string, "recall" | "outage">();
+  const show = (key: string | undefined, what: "recall" | "outage") => {
+    if (key === undefined) return;
+    shown.delete(key);
+    shown.set(key, what);
+    if (shown.size > 1_000) shown.delete(shown.keys().next().value as string);
+  };
   const maxCharacters = options.maxCharacters ?? 2_000;
   const recallLimit = options.recallLimit ?? 6;
   const get = (key: string): Promise<MemoryGraph> => {
@@ -292,25 +307,44 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
 
   const recall = async (context: MemoryOperationContext): Promise<MemoryRecallResult> => {
     // recall MUST NOT throw — a throwing recall["turn.started"] fails the turn before the model call.
+    const sessionId = context.session?.id;
+    const seen =
+      sessionId === undefined ? undefined : `${sessionId}\u0000${context.memory.scope.key}`;
     try {
       // The new delivery is in turn.input; context.messages is pre-recall history (empty on a fresh
       // session). Query the new message so recall fires on the very first turn of a session.
       const turnInput = (context as MemoryTurnStartedContext).turn?.input;
       const query = latestUserText(turnInput ?? context.messages);
-      // Resuming after a tool approval: inject nothing. eve appends recalled messages after the history's tail, and the AI
-      // SDK reads approvals only from the tail tool message, so anything injected here makes it skip the approved tool and
-      // the run fails with "No tool output found for function call". eve's createCurrentMessages add() appends with no
-      // tail check from 0.81 on, so this guard is memory's own: the history ends in a tool-approval-response.
+      // Resuming after a tool approval: inject nothing. Through eve 0.83, recall was appended after the history's tail,
+      // and the AI SDK reads approvals only from the tail tool message, so anything injected here made it skip the
+      // approved tool and the run failed with "No tool output found for function call". From 0.84 recall sits outside
+      // history and a null keeps the earlier turn's recall, so the guard costs nothing; it stays until a resumed
+      // approval on 0.91 is shown not to need it.
       if (endsInApprovalResponse(context.messages)) return null;
       const mg = await get(context.memory.scope.key);
       const rules = mg.shapeIndex();
       const facts = query === null ? [] : mg.recall(query, recallLimit);
-      if (facts.length === 0 && rules.length === 0) return null;
+      if (facts.length === 0 && rules.length === 0) {
+        // Nothing to recall, and eve keeps the session's last recalled message on null. After an outage note, or when
+        // this process hasn't recalled for the session yet (a restart, a new session), replace it once with a short
+        // note that memory is available, so a note from before a recovery doesn't outlive it.
+        if (seen === undefined || shown.get(seen) === "recall") return null;
+        show(seen, "recall");
+        return {
+          messages: [
+            {
+              content: `# Memory for ${context.memory.slot}\n\nYour memory is available. Nothing in it matches this message; use \`${context.memory.slot}__recall\` to look something up.`,
+              id: RECALL_ID,
+            },
+          ],
+        };
+      }
+      show(seen, "recall");
       return {
         messages: [
           {
             content: formatRecall(facts, rules, context.memory.slot, maxCharacters),
-            id: "shacl-memory-recall",
+            id: RECALL_ID,
           },
         ],
       };
@@ -318,11 +352,12 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
       // Never throw from recall (it would fail the turn), but never fall silent either: an unreadable store must not
       // look like an empty one, or the agent confidently tells the user it has nothing on record.
       console.error("[mem] turn-start recall failed:", e instanceof Error ? e.message : String(e));
+      show(seen, "outage");
       return {
         messages: [
           {
             content: `# Memory for ${context.memory.slot}\n\nYour memory is temporarily unavailable — the store could not be opened. You can't see what you remembered before, and saving may fail right now. This is an outage, not an empty memory: don't tell the user you have nothing on record; if it matters, say your memory is unavailable at the moment.`,
-            id: "shacl-memory-unavailable",
+            id: RECALL_ID,
           },
         ],
       };
@@ -330,7 +365,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
   };
 
   return defineMemoryProvider({
-    recall: { "turn.started": recall, "compaction.completed": recall },
+    recall: { "turn.started": recall },
     async tools(context: MemoryToolsContext) {
       const key = context.memory.scope.key;
       const scope = context.memory.scope;

@@ -673,6 +673,50 @@ const mutations: Mutation[] = [
     expect: "the owner's live turn is recorded as the owner's",
   },
   {
+    name: "the speaker's principal drifts from the scope's by one field",
+    file: "src/provider.ts",
+    find: "session: { id: session.id, auth: session.auth },",
+    replace:
+      'session: { id: session.id, auth: { ...session.auth, current: session.auth.current && { ...session.auth.current, issuer: "drift" } } },',
+    expect: "the owner's live turn is recorded as the owner's",
+  },
+  // eve 0.84 and later.
+  {
+    name: "compaction recall is back (eve's compiler rejects the key)",
+    file: "src/provider.ts",
+    find: 'recall: { "turn.started": recall },',
+    replace: 'recall: { "turn.started": recall, "compaction.completed": recall },',
+    expect: "as a memory definition",
+  },
+  {
+    name: "the recall and the outage note have different ids",
+    file: "src/provider.ts",
+    find: "id: RECALL_ID,",
+    replace: 'id: "shacl-memory-unavailable",',
+    expect: 'a store failure at turn start injects an "unavailable" note',
+  },
+  {
+    name: "the outage note outlives the outage when nothing is recalled",
+    file: "src/provider.ts",
+    find: 'if (seen === undefined || shown.get(seen) === "recall") return null;',
+    replace: "return null;",
+    expect: "and the next healthy turn replaces it",
+  },
+  {
+    name: "every turn with nothing to recall sends a message",
+    file: "src/provider.ts",
+    find: 'if (seen === undefined || shown.get(seen) === "recall") return null;',
+    replace: "if (seen === undefined) return null;",
+    expect: "and the next healthy turn replaces it",
+  },
+  {
+    name: "only an outage this process saw is replaced (a restart keeps the note)",
+    file: "src/provider.ts",
+    find: 'if (seen === undefined || shown.get(seen) === "recall") return null;',
+    replace: 'if (seen === undefined || shown.get(seen) !== "outage") return null;',
+    expect: "and the next healthy turn replaces it",
+  },
+  {
     name: "a seq freed by revertBatch is reused",
     file: "src/memory-graph.ts",
     find: "(SELECT max(ifnull(max(seq), 0), ifnull((${SEQ_HWM_SQL}), 0)) + 1 FROM triples)",
