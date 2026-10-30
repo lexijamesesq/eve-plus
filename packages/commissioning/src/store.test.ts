@@ -169,7 +169,7 @@ describe("commission ledger", () => {
     expect(store.decide(owner, verdict("accepted", "p2")).status).toBe("accepted");
   });
 
-  it("resumes blocked work on a checkpoint, notifies a failure once, restores overdue attention, and notifies a checkpoint only while a proposal awaits review", () => {
+  it("resumes blocked work on a checkpoint, notifies a failure once, restores overdue attention, and notifies a checkpoint only while a proposal awaits review, not during a revision", () => {
     let now = 0;
     const store = setup(() => now);
     claimAll(store);
@@ -212,6 +212,14 @@ describe("commission ledger", () => {
       currentProposal: { pending: true },
     });
     expect(claimAll(store).map((entry) => entry.kind)).toEqual(["proposal", "checkpoint"]);
+    store.decide(owner, verdict("revise", "p1", "revise"));
+    store.report({
+      commissionId: "c1",
+      eventId: "revising",
+      kind: "checkpoint",
+      data: { summary: "Revising" },
+    });
+    expect(claimAll(store)).toEqual([]);
   });
 
   it("notifies an overdue worker once per quiet spell, without changing its state", () => {
