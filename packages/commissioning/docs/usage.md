@@ -40,7 +40,7 @@ At the mount's MCP endpoint, stateless Streamable HTTP:
 
 - **`commission_read`**: `{ commissionId, after? }`. The commission, its questions, the current proposal and its events after a cursor. Poll it for answers and verdicts.
 - **`commission_consult`**: `{ commissionId, questionId, question: { text, options? } }`.
-- **`commission_report`**: `{ commissionId, eventId, kind, data }`, where `kind` is `checkpoint` (work is under way), `failure` (blocked), or `proposal` with `data.artifact: { repository, commit, pullRequest }`. The repository and PR are credential-free HTTPS URLs, the PR belongs to the repository, and `commit` is the full lowercase 40-hex commit.
+- **`commission_report`**: `{ commissionId, eventId, kind, data }`, where `kind` is `checkpoint` (work is under way), `failure` (blocked), or `proposal` with `data.artifact: { repository, commit, pullRequest }`. The repository and PR are credential-free HTTPS URLs, the PR belongs to the repository, and `commit` is the full lowercase 40-hex commit. Failures and proposals reach the commissioner's conversation. A checkpoint reaches it only while a proposal awaits its verdict, when the worker's news, such as the pull request merging, may decide it; otherwise a checkpoint is recorded quietly.
 
 A result is `{ result, recorded: true }`, or `{ error: { code, message } }` with one of the store's own codes (`invalid_input`, `not_found`, `forbidden`, `conflict`, `stale_proposal`); anything unexpected is `internal`, with no detail.
 

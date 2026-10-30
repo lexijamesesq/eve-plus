@@ -329,7 +329,8 @@ export class CommissionStore {
         WORKER,
         input.kind,
         { eventId: input.eventId, data: input.data },
-        input.kind !== "checkpoint",
+        // A checkpoint is routine unless the commissioner owes a verdict: then it may carry what decides it.
+        input.kind !== "checkpoint" || Boolean(row.proposal_pending),
       );
       return this.result(row.id);
     });

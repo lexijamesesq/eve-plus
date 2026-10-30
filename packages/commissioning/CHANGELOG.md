@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.3
+
+A checkpoint reaches the commissioner while a proposal awaits its verdict. Until now every checkpoint was recorded
+quietly, so a commissioner holding its verdict until the pull request merged had nothing to wake it: the worker's
+checkpoint that the PR merged was recorded and never delivered. Checkpoints at any other time are still quiet, and
+failures and proposals are delivered as before. No API or store schema change.
+
 ## 0.5.2
 
 The worker endpoint's `commission_report` publishes its arguments. It was registered with a discriminated union,

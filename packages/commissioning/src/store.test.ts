@@ -169,7 +169,7 @@ describe("commission ledger", () => {
     expect(store.decide(owner, verdict("accepted", "p2")).status).toBe("accepted");
   });
 
-  it("resumes blocked work on a checkpoint, notifies a failure once, and restores overdue attention", () => {
+  it("resumes blocked work on a checkpoint, notifies a failure once, restores overdue attention, and notifies a checkpoint only while a proposal awaits review", () => {
     let now = 0;
     const store = setup(() => now);
     claimAll(store);
@@ -192,12 +192,14 @@ describe("commission ledger", () => {
       data: { summary: "Resumed" },
     });
     expect(store.read("c1").status).toBe("working");
+    expect(claimAll(store)).toEqual([]);
     now = 60_101;
     expect(store.read("c1").attention).toEqual({
       kind: "overdue_checkpoint",
       lastWorkerActivity: 100,
     });
     expect(store.reconcileOverdue()).toBe(1);
+    claimAll(store);
     store.report(proposal());
     store.report({
       commissionId: "c1",
@@ -209,6 +211,7 @@ describe("commission ledger", () => {
       status: "needs_review",
       currentProposal: { pending: true },
     });
+    expect(claimAll(store).map((entry) => entry.kind)).toEqual(["proposal", "checkpoint"]);
   });
 
   it("notifies an overdue worker once per quiet spell, without changing its state", () => {
