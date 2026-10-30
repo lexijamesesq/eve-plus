@@ -90,11 +90,16 @@ describe("dispatch", () => {
       expect(sends).toEqual([]);
       expect(store.read("one").handoff).toEqual({ status: "confirmed", lastFailure: null });
       ask(store, "one");
+      const [question] = store.pendingOutbox();
       await drain(to);
       expect(sends).toHaveLength(1);
       expect(sends[0]).toMatchObject({
         target: { channel: "C1", thread: "1.0" },
-        options: { auth: deliveryAuth, turnPolicy: "queue" },
+        options: {
+          auth: deliveryAuth,
+          turnPolicy: "queue",
+          idempotencyKey: `commissioning:one:${question}`,
+        },
       });
       expect(sends[0].message).toContain("Which?");
       expect(store.pendingOutbox()).toEqual([]);
@@ -223,7 +228,7 @@ describe("dispatch", () => {
     }
   });
 
-  it("recovers a send whose lease expired, and doesn't let it starve a later commission", async () => {
+  it("recovers a send whose lease expired, under the same key, and doesn't let it starve a later commission", async () => {
     let now = 1;
     const store = new CommissionStore(":memory:", { now: () => now, overdueAfterMs: 1_000_000 });
     try {
@@ -231,13 +236,18 @@ describe("dispatch", () => {
       for (const id of ["slow", "healthy"]) ask(store, id);
       const sent: string[] = [];
       const drain = createDispatcher(store, config());
-      const { to } = recordingTo((id) => {
+      const { to, sends } = recordingTo((id) => {
         sent.push(id);
         if (id === "slow") now += 120_001;
       });
       await drain(to);
       await drain(to);
       expect(sent).toEqual(["slow", "healthy", "slow"]);
+      // eve takes a repeated key once, so the redelivery repeats the first send's key.
+      const keys = sends.map(
+        (send) => (send.options as { idempotencyKey?: string }).idempotencyKey,
+      );
+      expect(keys[2]).toBe(keys[0]);
       expect(store.pendingOutbox()).toHaveLength(1);
       await drain(recordingTo().to);
       expect(store.pendingOutbox()).toEqual([]);

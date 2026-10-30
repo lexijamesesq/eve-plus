@@ -1,6 +1,6 @@
 {
   "name": "@eve-plus/commissioning",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Commissioning for Vercel eve: an agent hands software work to a worker, answers its questions and decides its proposals. Ships a Cyrus connector.",
   "license": "MIT",
   "keywords": [
@@ -62,12 +62,12 @@
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.0.0",
-    "eve": "0.83.2",
+    "eve": "0.91.0",
     "typescript": "^5.0.0",
     "vitest": "4.1.10"
   },
   "peerDependencies": {
-    "eve": "^0.83.2"
+    "eve": "^0.91.0"
   },
   "engines": {
     "node": ">=24"

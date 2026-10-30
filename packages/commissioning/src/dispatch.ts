@@ -42,7 +42,8 @@ export function notice(entry: OutboxEntry): string {
 /**
  * One dispatcher per mount: hands new work to the worker and tells the commissioner, in the conversation the
  * commission was opened in, what the worker asked, proposed or reported. Delivery is at least once: a crash after a
- * send and before its acknowledgement sends it again.
+ * send and before its acknowledgement sends it again, with the same idempotency key, so eve hands it to the
+ * conversation once.
  */
 export function createDispatcher(store: CommissionStore, config: CommissioningConfig) {
   let active: Promise<void> | undefined;
@@ -73,9 +74,11 @@ export function createDispatcher(store: CommissionStore, config: CommissioningCo
             // tool applies; otherwise the notice would arrive somewhere decide refuses.
             store.owned(resolveCommissioner(config, route.auth), entry.commissionId);
             failure = "delivery_failed";
+            // The key names the outbox entry, never the attempt, so a redelivery repeats it.
             await to(route.channel, route.target).send(notice(entry), {
               auth: route.auth,
               turnPolicy: "queue",
+              idempotencyKey: `commissioning:${entry.commissionId}:${entry.seq}`,
             });
           }
           store.acknowledgeOutbox(entry.seq, entry.leaseToken);
