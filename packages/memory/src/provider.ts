@@ -206,6 +206,11 @@ function isPrincipalKey(value: string | readonly string[]): boolean {
   }
 }
 
+// One id for the turn-start message, whatever it says. eve 0.84 and later keep a recalled message for the rest of the
+// session and replace it only with a later one under the same id, so an outage note under its own id would outlast
+// the outage, and a stale recall would sit beside the note that memory is unavailable.
+const RECALL_ID = "shacl-memory-recall";
+
 function problemsToText(problems: { path?: string; message: string }[]): string {
   return problems.map((p) => `• ${p.message}`).join("\n");
 }
@@ -221,12 +226,14 @@ function originOf(
 ): string {
   const session = tool?.session;
   const principal = session?.auth?.current?.principalId;
+  // eve's own byPrincipal, so the speaker matches the scope value eve built byte for byte. It reads only
+  // session.auth in 0.83.2 and 0.91; tool.channel is undefined on 0.83, whose ToolContext has no channel.
   const speaker =
     tool && session
       ? byPrincipal({
           abortSignal: tool.abortSignal,
           session: { id: session.id, auth: session.auth },
-          channel: {},
+          channel: tool.channel,
         })
       : null;
   const ownedScope = isPrincipalKey(scope.value);
@@ -258,7 +265,7 @@ function originOf(
  * its own knowledge — entities, attributes, connections, and new kinds — and the only gate is whether it lints.
  * Register it like `fileMemory`:
  *
- *   defineMemory({ provider: shaclMemory({ dir: "/data/memory" }), scope: byPrincipal, visibility: "scope" })
+ *   defineMemory({ provider: shaclMemory({ dir: "/data/memory" }), scope: byPrincipal })
  */
 export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
   const cache = new Map<string, Promise<MemoryGraph>>();
@@ -297,10 +304,11 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
       // session). Query the new message so recall fires on the very first turn of a session.
       const turnInput = (context as MemoryTurnStartedContext).turn?.input;
       const query = latestUserText(turnInput ?? context.messages);
-      // Resuming after a tool approval: inject nothing. eve appends recalled messages after the history's tail, and the AI
-      // SDK reads approvals only from the tail tool message, so anything injected here makes it skip the approved tool and
-      // the run fails with "No tool output found for function call". eve's createCurrentMessages add() appends with no
-      // tail check from 0.81 on, so this guard is memory's own: the history ends in a tool-approval-response.
+      // Resuming after a tool approval: inject nothing. eve 0.83 appends recalled messages after the history's tail, and
+      // the AI SDK reads approvals only from the tail tool message, so anything injected here makes it skip the approved
+      // tool and the run fails with "No tool output found for function call". eve's createCurrentMessages add() appends
+      // with no tail check from 0.81 on, so this guard is memory's own: the history ends in a tool-approval-response.
+      // From 0.84 recall sits outside history and a null keeps the earlier turn's recall, so the guard costs nothing.
       if (endsInApprovalResponse(context.messages)) return null;
       const mg = await get(context.memory.scope.key);
       const rules = mg.shapeIndex();
@@ -310,7 +318,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
         messages: [
           {
             content: formatRecall(facts, rules, context.memory.slot, maxCharacters),
-            id: "shacl-memory-recall",
+            id: RECALL_ID,
           },
         ],
       };
@@ -322,7 +330,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
         messages: [
           {
             content: `# Memory for ${context.memory.slot}\n\nYour memory is temporarily unavailable — the store could not be opened. You can't see what you remembered before, and saving may fail right now. This is an outage, not an empty memory: don't tell the user you have nothing on record; if it matters, say your memory is unavailable at the moment.`,
-            id: "shacl-memory-unavailable",
+            id: RECALL_ID,
           },
         ],
       };
@@ -330,7 +338,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
   };
 
   return defineMemoryProvider({
-    recall: { "turn.started": recall, "compaction.completed": recall },
+    recall: { "turn.started": recall },
     async tools(context: MemoryToolsContext) {
       const key = context.memory.scope.key;
       const scope = context.memory.scope;

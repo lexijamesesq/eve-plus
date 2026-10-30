@@ -8,8 +8,15 @@ Most agent memory is a flat key-value or vector store: the agent can save things
 
 ## Install
 
-```sh
-npm install @eve-plus/memory
+Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or eve 0.83.2 or later within 0.83:
+
+```json
+{
+  "dependencies": {
+    "@eve-plus/memory": "github:lexijamesesq/eve-plus#memory--v0.5.0&path:packages/memory",
+    "eve": "0.91.0"
+  }
+}
 ```
 
 > Installing from a local checkout or a `file:` dependency? `pnpm` doesn't run a `file:` dependency's `prepare` script, so build the package first (`npm run build` in this repo) before your agent tries to import it. A git or registry install runs `prepare` automatically — no extra step needed there.
@@ -28,7 +35,6 @@ export default defineMemory({
     maxWritesPerSession: 200,                       // optional: fail loud past this many writes in one session
   }),
   scope: byPrincipal,
-  visibility: "scope",
 });
 ```
 
