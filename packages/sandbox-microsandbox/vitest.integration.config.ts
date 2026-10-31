@@ -1,8 +1,8 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * The real-VM proof: a KVM host, a live network, and the installed package. It runs inside run.sh's throwaway
- * container, never through `npm test`. Its probes build on each other, so they run in order in one file.
+ * The real-VM proof: a KVM host, a live network, and the installed package. integration/proof.sh runs it inside a
+ * throwaway container, never through `npm test`. Its probes build on each other, so they run in order in one file.
  */
 export default defineConfig({
   test: {

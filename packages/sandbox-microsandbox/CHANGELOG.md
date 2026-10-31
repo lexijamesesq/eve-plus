@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+Tests only: the real-VM proof's steps inside the container move from `integration/run.sh` to `integration/proof.sh`,
+which builds the package from the checkout under test and installs the eve, `ai` and vitest versions its own
+`devDependencies` name, so the proof always tests the version it's run at. `run.sh` is gone: the container, its posture
+and its limits belong to whoever runs the proof. No change to shipped code.
+
 ## 0.2.0
 
 Built and tested against eve 0.91.0; the peer range is `^0.91.0`. eve 0.83 is no longer supported: an agent takes

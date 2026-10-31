@@ -1,6 +1,6 @@
-// Real-VM proof for @eve-plus/sandbox-microsandbox. Runs inside the throwaway container that run.sh starts on a
-// KVM host, against the installed package, with a live network. One test per probe, in order: later probes use the
-// template and sessions earlier ones made. The last probes record one session, resume it from a new process
+// Real-VM proof for @eve-plus/sandbox-microsandbox. proof.sh runs it inside a throwaway container on a KVM host,
+// against the installed package, with a live network. One test per probe, in order: later probes use the template
+// and sessions earlier ones made. The last probes record one session, resume it from a new process
 // (resume-child.mjs), then clean up.
 import { spawn as spawnChild } from "node:child_process";
 import { createHash } from "node:crypto";
