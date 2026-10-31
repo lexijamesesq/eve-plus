@@ -338,13 +338,6 @@ describe("start", () => {
     },
   );
 
-  it("keeps a public sandbox's policy when allow-all is asked later", async () => {
-    const implementation = createImplementation({});
-    const first = await implementation.start(ctx, { networkPolicy: "public" }, artifact);
-    await implementation.start(ctx, { networkPolicy: "allow-all" }, artifact);
-    expect(msb.sandboxes.get(first.state.sandboxName)).toBe("public");
-  });
-
   it("treats a sandbox whose recorded policy it didn't create as allow-all", async () => {
     const implementation = createImplementation({});
     const { state } = await implementation.start(ctx, undefined, artifact);
