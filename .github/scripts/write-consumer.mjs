@@ -1,9 +1,9 @@
 // write-consumer.mjs <package_dir> <consumer_dir> <repo> <commit_sha> <pnpm>
 //
-// Writes an empty consumer project that depends on the package the way eve-deploy's agents do: a github: spec with
+// Writes an empty consumer project that depends on the package the way real consumers do: a github: spec with
 // &path:, eve at the version the package is built against, and allowBuilds that deny better-sqlite3's build (its
 // prebuilt binding must load) and allow only the package's own prepare build, keyed to the commit. Like the
-// estate's own installs, it sets no release-age gate.
+// consumers it stands in for, it sets no release-age gate.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 

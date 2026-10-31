@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CommissionError, CommissionStore } from "./store.js";
 import type { Commissioner, DecisionInput, ReportInput } from "./types.js";
 
-const owner: Commissioner = { id: "felix", conversation: { channel: "C1", thread: "1.0" } };
+const owner: Commissioner = { id: "ops-agent", conversation: { channel: "C1", thread: "1.0" } };
 const input = {
   commissionId: "recover",
   spec: { brief: "Build", acceptance: ["Works"] },

@@ -2,7 +2,7 @@
 # check-consumer-install.sh <commit_sha>
 #
 # PR-time check (no writes outside a temp directory). For each package under packages/, installs it from GitHub at
-# <commit_sha> in an empty consumer project, the way eve-deploy's agents install it (see write-consumer.mjs), then
+# <commit_sha> in an empty consumer project, the way a consumer installs it (see write-consumer.mjs), then
 # requires every export to exist and load (see resolve-exports.mjs). It catches what a working tree hides: a file
 # left out of `files`, a broken export, a build that only works locally.
 set -euo pipefail
@@ -13,7 +13,7 @@ SHA="$1"
 	exit 1
 }
 REPO="lexijamesesq/eve-plus"
-# eve-deploy's agents pin this in their package.json `packageManager`.
+# The pnpm a consumer pins in its package.json `packageManager`.
 CONSUMER_PNPM="pnpm@12.4.2"
 SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 WORK_ROOT="${RUNNER_TEMP:-$(mktemp -d)}"

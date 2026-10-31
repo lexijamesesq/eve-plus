@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+No behaviour change. The README, usage guide and tests use neutral example names for the commissioning agent
+and its MCP server.
+
 ## 0.6.0
 
 Built and tested against eve 0.91.0; the peer range is `^0.91.0`.

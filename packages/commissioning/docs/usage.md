@@ -22,7 +22,7 @@ They keep identity and routing in your application; the package never derives th
 
 **`authenticateWorker(request)`** checks the worker's credential. With one long-lived token held by both sides, extract the bearer with eve's `extractBearerToken` (`eve/channels/auth`) and compare it in constant time with `crypto.timingSafeEqual`. A worker authenticated here can read a commission, ask and report, and nothing else: the endpoint has no owner operations.
 
-**`commissioner(auth)`** maps a session's verified auth to who commissions and where. `id` names the commissioner: several principals can share one, such as the operator and a schedule both acting for Felix. `conversation` is your own coordinates for the conversation the session is in, 1 to 16 string fields: for Slack, the team, channel and thread; for a Linear agent session, the organization, session and issue. Read them from `auth`, never from anything the model wrote. It's called on every owner tool call: an owner can act on a commission only when `id` matches and `conversation` equals the one recorded at open. Return `null` for the worker's own principal and for anyone who may not commission.
+**`commissioner(auth)`** maps a session's verified auth to who commissions and where. `id` names the commissioner: several principals can share one, such as the operator and a schedule both acting for the same agent. `conversation` is your own coordinates for the conversation the session is in, 1 to 16 string fields: for Slack, the team, channel and thread; for a Linear agent session, the organization, session and issue. Read them from `auth`, never from anything the model wrote. It's called on every owner tool call: an owner can act on a commission only when `id` matches and `conversation` equals the one recorded at open. Return `null` for the worker's own principal and for anyone who may not commission.
 
 **`deliver(conversation)`** names where a notice goes for a commission opened in `conversation`: one of the agent's channels, a target on it, and the auth to send with, usually the agent's own principal in that conversation. The dispatcher sends the notice with `to(channel, target).send(notice, { auth, turnPolicy: "queue", idempotencyKey })`, so it waits for any turn already running. The key is `commissioning:<commissionId>:<seq>`, naming the notice's outbox entry: a redelivery after a crash between the send and its acknowledgement reuses it, so eve hands the notice to the conversation once. Before sending, it checks that `commissioner(auth)` returns the commission's own `id` and `conversation`. A delivered turn that couldn't act on the commission would be a notice nobody can answer, so a delivery that fails the check stays pending.
 
@@ -60,7 +60,7 @@ A result is `{ result, recorded: true }`, or `{ error: { code, message } }` with
 ```json
 {
   "mcpServers": {
-    "eve_felix": {
+    "eve_ops_agent": {
       "type": "http",
       "url": "https://agent.example/commissioning/mcp",
       "headers": { "Authorization": "Bearer ${COMMISSIONING_WORKER_TOKEN}" }

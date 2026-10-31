@@ -10,11 +10,11 @@ import { CommissionStore } from "./store.js";
 import type { Commissioner, Conversation } from "./types.js";
 
 type To = RouteHandlerArgs["to"];
-const owner: Commissioner = { id: "felix", conversation: { channel: "C1", thread: "1.0" } };
+const owner: Commissioner = { id: "ops-agent", conversation: { channel: "C1", thread: "1.0" } };
 // The auth a delivery sends with: the agent's own principal in the captured conversation.
 const deliveryAuth: SessionAuthContext = {
   authenticator: "test",
-  principalId: "felix-bot",
+  principalId: "ops-agent-bot",
   principalType: "service",
   attributes: { channel: "C1", thread: "1.0" },
 };
@@ -26,8 +26,8 @@ function config(overrides: Partial<CommissioningConfig> = {}): CommissioningConf
     worker: { id: "test-worker", prepare: async () => ({}), handoff: async () => {} },
     authenticateWorker: () => true,
     commissioner: (auth) =>
-      auth?.principalId === "felix-bot"
-        ? { id: "felix", conversation: auth.attributes as Conversation }
+      auth?.principalId === "ops-agent-bot"
+        ? { id: "ops-agent", conversation: auth.attributes as Conversation }
         : null,
     deliver: (conversation) => ({
       channel,

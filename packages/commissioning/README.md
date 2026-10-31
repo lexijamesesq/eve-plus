@@ -11,7 +11,7 @@ Install it from a release tag as a git dependency, next to eve 0.91.0 or later w
 ```json
 {
   "dependencies": {
-    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.6.0&path:packages/commissioning",
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.6.1&path:packages/commissioning",
     "eve": "0.91.0"
   }
 }
@@ -28,11 +28,11 @@ import slack from "../channels/slack";
 
 export default commissioning({
   dataDir: "/data/commissioning",
-  namespace: "felix",
+  namespace: "ops-agent",
   worker: cyrus({
     linear: { accessToken: () => linearToken() },
     delegateId: "<Cyrus's Linear user ID>",
-    mcp: { serverName: "eve_felix", endpoint: "https://agent.example/commissioning/mcp" },
+    mcp: { serverName: "eve_ops_agent", endpoint: "https://agent.example/commissioning/mcp" },
   }),
   // Is this request from the worker? Compare its bearer token with the one the worker holds.
   authenticateWorker: (request) => matchesWorkerToken(request),
