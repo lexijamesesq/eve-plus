@@ -375,7 +375,7 @@ describe("the public profile", () => {
 
 describe("the disk and time limits", () => {
   const limited = createImplementation({
-    rootDiskMib: 1024,
+    rootDiskMib: 256,
     maxDurationSecs: 20,
     idleTimeoutSecs: 600,
   });
@@ -386,13 +386,13 @@ describe("the disk and time limits", () => {
     open = await limited.start(sessionCtx("limits"), undefined, limitedArtifact);
     const r = await run(
       open.connection,
-      "dd if=/dev/zero of=/workspace/fill bs=1M count=2000 2>/dev/null; echo $?; " +
+      "dd if=/dev/zero of=/workspace/fill bs=1M count=400 2>/dev/null; echo $?; " +
         "df -m / | awk 'NR==2{print $2}'; rm -f /workspace/fill",
     );
     const [exit, size] = r.out.split("\n");
     // The uncapped template's VM is the control: without the cap the disk is larger, so the probe can fail.
     const uncapped = await run(bare.connection, "df -m / | awk 'NR==2{print $2}'");
-    const ok = exit !== "0" && Number(size) <= 1024 && Number(uncapped.out) > 1024;
+    const ok = exit !== "0" && Number(size) <= 256 && Number(uncapped.out) > 256;
     return [ok, JSON.stringify({ capped: r.out, uncapped: uncapped.out })];
   });
   probe("time-limits-are-recorded-on-the-session-vm", async () => {

@@ -12,7 +12,7 @@
   cutoff, and templates past it that aren't among the two newest, each with a `remove()`. It's for a periodic job:
   sessions stranded by an eve upgrade never run `onSessionEnd`, and old templates were never removed.
 - The real-VM proof adds probes for each: `public` reaches a public host by name and is refused by a host server
-  that an `allow-all` VM reaches; a 1 GiB disk can't be filled past its size in a restored VM; the time limits are
+  that an `allow-all` VM reaches; a 256 MiB disk can't be filled past its size in a restored VM; the time limits are
   recorded on the session VM, and a stopped VM boots again with its synced files; a stopped VM is reaped and a
   running one survives.
 
