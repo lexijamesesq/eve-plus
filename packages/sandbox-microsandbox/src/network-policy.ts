@@ -16,7 +16,7 @@ export function isNoLooserThan(
 }
 
 /**
- * Thrown for any network policy other than the two string literals. eve's rule is that a
+ * Thrown for any network policy other than the three string literals. eve's rule is that a
  * provider rejects what it cannot enforce instead of weakening it: microsandbox cannot inject
  * the headers eve's `transform` rules add, and cannot change a live sandbox's policy.
  */

@@ -22,6 +22,7 @@ import {
   type MicrosandboxNetworkPolicy,
   resolveNetworkPolicy,
 } from "./network-policy.js";
+import { recordPrepared } from "./reap.js";
 import { assertPinnedRuntime, MICROSANDBOX_VERSION } from "./runtime.js";
 
 export const PROVIDER_NAME = "eve-plus-microsandbox";
@@ -129,6 +130,7 @@ export function createImplementation(
       if (cached !== undefined) {
         ctx.log(`reusing template snapshot "${snapshotName}"`);
         const snapshot = await Snapshot.open(cached.digest);
+        await recordPrepared(snapshotName);
         return artifactFor(snapshot, templateKey);
       }
 
@@ -168,6 +170,7 @@ export function createImplementation(
         if (snapshot !== undefined) await Snapshot.remove(snapshot.digest).catch(() => {});
         throw error;
       }
+      await recordPrepared(snapshotName);
       return artifactFor(snapshot, templateKey);
     },
 

@@ -1,3 +1,6 @@
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Sandbox, SandboxNotFoundError, Snapshot } from "microsandbox";
 
 /** One piece of this provider's state that nothing has used lately, and how to remove it. */
@@ -7,8 +10,40 @@ export interface StaleSandboxState {
   readonly remove: () => Promise<void>;
 }
 
-/** The newest templates are kept whatever their age: the running build's is one of them, and so is a rollback's. */
-const KEPT_TEMPLATES = 2;
+/**
+ * Templates prepared within this long of the latest build's are that build's. One `eve build` prepares every
+ * environment of an agent within minutes.
+ */
+const BUILD_WINDOW_MS = 60 * 60_000;
+
+/** Where `prepare` records each template it builds or reuses: one file per template, its time the last prepare. */
+function preparedDirectory(): string {
+  return join(process.env.MSB_HOME ?? join(homedir(), ".microsandbox"), "eve-plus-prepared");
+}
+
+/**
+ * Records that a build prepared this template. A running agent uses the templates its last `eve build` prepared, and
+ * nothing in eve tells a later process which those were, so the reaper reads them from here.
+ */
+export async function recordPrepared(snapshotName: string): Promise<void> {
+  await mkdir(preparedDirectory(), { recursive: true });
+  await writeFile(join(preparedDirectory(), snapshotName), "");
+}
+
+/** Each recorded template's last prepare time. */
+async function preparedTimes(): Promise<Map<string, number>> {
+  const times = new Map<string, number>();
+  let names: string[];
+  try {
+    names = await readdir(preparedDirectory());
+  } catch {
+    return times;
+  }
+  for (const name of names) {
+    times.set(name, (await stat(join(preparedDirectory(), name))).mtimeMs);
+  }
+  return times;
+}
 
 /**
  * Finds this provider's VMs and templates in `MSB_HOME` that nothing has used for `unusedForMs`, by microsandbox's own
@@ -18,8 +53,10 @@ const KEPT_TEMPLATES = 2;
  * the session continues in a fresh sandbox. A session stranded by an eve upgrade never comes back for its VM at
  * all, which is the leak this exists for.
  *
- * A template is stale once it's older than `unusedForMs` and isn't among the newest two. The current build's template
- * is the newest unless a later build was rolled back, and a removed one is rebuilt by the next `eve build`.
+ * A template is never stale while the latest build uses it: `prepare` records each template it builds or reuses, and
+ * the ones recorded with the latest build are in use until the next build, however old. Any other template is stale
+ * once its last prepare (or, unrecorded, its creation) is older than `unusedForMs`. With nothing recorded, no
+ * template is. A rollback's build records its own template, and one removed earlier is rebuilt by that build.
  */
 export async function staleSandboxState(options: {
   readonly unusedForMs: number;
@@ -42,15 +79,22 @@ export async function staleSandboxState(options: {
     cursor = page.nextCursor;
   } while (cursor !== undefined);
 
-  const templates = (await Snapshot.list())
-    .filter((snapshot) => snapshot.name?.startsWith("eve-plus-tpl-"))
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  for (const template of templates.slice(KEPT_TEMPLATES)) {
-    if (template.createdAt.getTime() > cutoff) continue;
+  const prepared = await preparedTimes();
+  if (prepared.size === 0) return stale;
+  const latestBuild = Math.max(...prepared.values());
+  for (const template of await Snapshot.list()) {
+    const name = template.name;
+    if (name === null || !name.startsWith("eve-plus-tpl-")) continue;
+    const lastPrepared = prepared.get(name);
+    if (lastPrepared !== undefined && lastPrepared >= latestBuild - BUILD_WINDOW_MS) continue;
+    if ((lastPrepared ?? template.createdAt.getTime()) > cutoff) continue;
     stale.push({
       kind: "template",
-      name: template.name as string,
-      remove: () => Snapshot.remove(template.digest),
+      name,
+      remove: async () => {
+        await Snapshot.remove(template.digest);
+        await rm(join(preparedDirectory(), name), { force: true });
+      },
     });
   }
   return stale;

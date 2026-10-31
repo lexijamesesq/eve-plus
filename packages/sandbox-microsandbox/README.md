@@ -141,7 +141,7 @@ for (const item of await staleSandboxState({ unusedForMs: 7 * 24 * 60 * 60_000 }
 ```
 
 - **A VM** is stale when it's stopped and microsandbox last started or stopped it before the cutoff. A running VM never is, and `remove()` skips a VM something started since it was found. eve can't list its sessions, so last use stands for liveness. Set `idleTimeoutSecs`, so a VM stops soon after its last command and its record says when that was. Removing a live session's VM loses only its files: eve's resume finds it gone and the session continues in a fresh sandbox.
-- **A template** is stale when it's older than the cutoff and isn't one of the two newest. The current build's template is the newest unless a later build was rolled back, so the rollback's is kept too. A session never depends on its template after its VM is restored. Removing the template the current build names makes new sessions fail with `SandboxTemplateNotProvisionedError` until the next `eve build`, which rebuilds it.
+- **A template** is never stale while the latest build uses it. `prepare` records each template it builds or reuses in `MSB_HOME/eve-plus-prepared/`, and the templates recorded with the latest build are in use until the next build, however old: eve doesn't tell a later process which template its build prepared, and removing that one would fail every new session until the next `eve build`. Any other template is stale once its last prepare (or, if it was never recorded, its creation) is older than the cutoff. With nothing recorded, no template is. A session never depends on its template after its VM is restored.
 
 ## Testing
 

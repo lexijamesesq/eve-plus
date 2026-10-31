@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type SandboxPrepareContext,
   type SandboxSessionContext,
@@ -109,6 +111,11 @@ vi.mock("microsandbox", () => {
     resolveRuntimeVersion: async () => msb.version,
     Snapshot: {
       list: async () => msb.snapshots,
+      open: async (digest: string) => ({
+        digest,
+        reference: `/s/${digest}`,
+        referenceKind: "path",
+      }),
       remove: async (digest: string) => {
         msb.removedSnapshots.push(digest);
       },
@@ -231,6 +238,7 @@ beforeEach(() => {
   msb.sandboxes = new Map();
   msb.snapshots = [{ name: "eve-plus-tpl-key", digest: "sha256:tpl" }];
   msb.version = MICROSANDBOX_VERSION;
+  process.env.MSB_HOME = mkdtempSync(join(tmpdir(), "msb-home-"));
 });
 
 describe("start", () => {
@@ -347,6 +355,14 @@ describe("start", () => {
     );
   });
 
+  it("reopens a public sandbox as public", async () => {
+    const implementation = createImplementation({});
+    const first = await implementation.start(ctx, { networkPolicy: "public" }, artifact);
+    const again = await implementation.start(ctx, { networkPolicy: "public" }, artifact);
+    expect(again.state).toEqual(first.state);
+    expect(msb.restored).toHaveLength(1);
+  });
+
   it("keeps a deny-all sandbox's policy when allow-all is asked later", async () => {
     const implementation = createImplementation({});
     const first = await implementation.start(ctx, undefined, artifact);
@@ -429,6 +445,25 @@ describe("prepare", () => {
     expect(msb.rootDisks).toEqual([8192]);
     expect(keyed[0]).toEqual(expect.objectContaining({ rootDiskMib: 8192 }));
     expect(keyed[1]).not.toHaveProperty("rootDiskMib");
+  });
+
+  it("records the template it prepares, built or reused, for the reaper", async () => {
+    const recorded = join(
+      String(process.env.MSB_HOME),
+      "eve-plus-prepared",
+      `eve-plus-tpl-${"a".repeat(64)}`,
+    );
+    msb.snapshots = [];
+    await createImplementation({}).prepare(prepareCtx);
+    expect(existsSync(recorded)).toBe(true);
+    process.env.MSB_HOME = mkdtempSync(join(tmpdir(), "msb-home-"));
+    const reused = join(
+      String(process.env.MSB_HOME),
+      "eve-plus-prepared",
+      `eve-plus-tpl-${"a".repeat(64)}`,
+    );
+    await createImplementation({}).prepare(prepareCtx);
+    expect(existsSync(reused)).toBe(true);
   });
 
   it("removes the captured snapshot when removing the build sandbox fails", async () => {

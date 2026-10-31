@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { staleSandboxState } from "./reap.js";
 
@@ -39,7 +42,18 @@ const vm = (name: string, status: string, lastUsedDaysAgo: number) => ({
   updatedAt: ago(lastUsedDaysAgo),
 });
 
+// `prepare`'s records live in MSB_HOME, so each test gets its own.
+let prepared: string;
+/** Records a template as prepared `days` ago, as `prepare` would have. */
+const recordPreparedAgo = (name: string, days: number) => {
+  writeFileSync(join(prepared, name), "");
+  utimesSync(join(prepared, name), ago(days), ago(days));
+};
+
 beforeEach(() => {
+  process.env.MSB_HOME = mkdtempSync(join(tmpdir(), "msb-home-"));
+  prepared = join(process.env.MSB_HOME, "eve-plus-prepared");
+  mkdirSync(prepared);
   msb.sandboxes = [];
   msb.snapshots = [];
   msb.destroyed = [];
@@ -74,31 +88,34 @@ describe("staleSandboxState", () => {
     expect(msb.destroyed).toEqual([]);
   });
 
-  it("keeps the newest two templates however old, and finds older ones past the cutoff", async () => {
-    const template = (name: string, days: number) => ({
+  it("keeps the latest build's template however old, and finds others unused past the cutoff", async () => {
+    const template = (name: string, createdDaysAgo: number) => ({
       name: `eve-plus-tpl-${name}`,
       digest: `sha256:${name}`,
-      createdAt: ago(days),
+      createdAt: ago(createdDaysAgo),
     });
     msb.snapshots = [
-      template("third", 85),
-      template("newest", 40),
-      template("oldest", 90),
-      template("second", 80),
+      template("in-use", 400),
+      template("rolled-back", 40),
+      template("unrecorded", 90),
+      template("recent", 3),
       { name: null, digest: "sha256:unnamed", createdAt: ago(100) },
     ];
+    // The running build reused a template built long ago; a later build that was rolled back prepared another.
+    recordPreparedAgo("eve-plus-tpl-in-use", 30);
+    recordPreparedAgo("eve-plus-tpl-rolled-back", 31);
     const stale = await find();
-    expect(stale.map((item) => item.name)).toEqual(["eve-plus-tpl-third", "eve-plus-tpl-oldest"]);
+    expect(stale.map((item) => item.name).sort()).toEqual([
+      "eve-plus-tpl-rolled-back",
+      "eve-plus-tpl-unrecorded",
+    ]);
     for (const item of stale) await item.remove();
-    expect(msb.removed).toEqual(["sha256:third", "sha256:oldest"]);
+    expect(msb.removed.sort()).toEqual(["sha256:rolled-back", "sha256:unrecorded"]);
+    expect(readdirSync(prepared)).toEqual(["eve-plus-tpl-in-use"]);
   });
 
-  it("keeps a template younger than the cutoff even when it isn't among the newest two", async () => {
-    msb.snapshots = [
-      { name: "eve-plus-tpl-a", digest: "sha256:a", createdAt: ago(1) },
-      { name: "eve-plus-tpl-b", digest: "sha256:b", createdAt: ago(2) },
-      { name: "eve-plus-tpl-c", digest: "sha256:c", createdAt: ago(3) },
-    ];
+  it("finds no template when no build has recorded one", async () => {
+    msb.snapshots = [{ name: "eve-plus-tpl-old", digest: "sha256:old", createdAt: ago(400) }];
     expect(await find()).toEqual([]);
   });
 });

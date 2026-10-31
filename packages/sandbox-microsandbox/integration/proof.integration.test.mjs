@@ -346,6 +346,11 @@ describe("the public profile", () => {
     const r = await reaches(open.connection, "https://registry.npmjs.org/eve");
     return [r.reached, r.detail];
   });
+  // The real VM's recorded policy is read back on every reopen; a misread would lock the session out of its sandbox.
+  probe("public-reopens-as-public", async () => {
+    const again = await provider.start(sessionCtx("public"), { networkPolicy: "public" }, artifact);
+    return [again.state.sandboxName === open.state.sandboxName, JSON.stringify(again.state)];
+  });
   // A server in this process is the VM's host. allow-all reaching it shows the probe can fail.
   probe("public-blocks-the-host-that-allow-all-reaches", async () => {
     const server = createServer((_, response) => response.end("from-host")).listen(0, "0.0.0.0");
