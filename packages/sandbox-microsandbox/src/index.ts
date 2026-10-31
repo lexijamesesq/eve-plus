@@ -12,4 +12,5 @@ export {
   type MicrosandboxState,
   NetworkPolicyConflictError,
 } from "./provider.js";
+export { type StaleSandboxState, staleSandboxState } from "./reap.js";
 export { MICROSANDBOX_VERSION, MicrosandboxRuntimeMismatchError } from "./runtime.js";

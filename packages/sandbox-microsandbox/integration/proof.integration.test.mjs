@@ -5,6 +5,7 @@
 import { spawn as spawnChild } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SandboxSessionGoneError, SandboxTemplateNotProvisionedError } from "eve/sandbox/provider";
@@ -18,6 +19,7 @@ const { createImplementation, NetworkPolicyConflictError } = await import(
 const { UnsupportedNetworkPolicyError } = await import(
   pathToFileURL(join(pkg, "network-policy.js")).href
 );
+const { staleSandboxState } = await import(pathToFileURL(join(pkg, "reap.js")).href);
 
 const ALPINE =
   "alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f";
@@ -334,6 +336,108 @@ describe("network policies", () => {
     );
     const after = await sandboxNames();
     return [rejected && before.length === after.length, detail];
+  });
+});
+
+describe("the public profile", () => {
+  let open;
+  probe("public-reaches-a-public-host-by-name", async () => {
+    open = await provider.start(sessionCtx("public"), { networkPolicy: "public" }, artifact);
+    const r = await reaches(open.connection, "https://registry.npmjs.org/eve");
+    return [r.reached, r.detail];
+  });
+  // The real VM's recorded policy is read back on every reopen; a misread would lock the session out of its sandbox.
+  probe("public-reopens-as-public", async () => {
+    const again = await provider.start(sessionCtx("public"), { networkPolicy: "public" }, artifact);
+    return [again.state.sandboxName === open.state.sandboxName, JSON.stringify(again.state)];
+  });
+  // A server in this process is the VM's host. allow-all reaching it shows the probe can fail.
+  probe("public-blocks-the-host-that-allow-all-reaches", async () => {
+    const server = createServer((_, response) => response.end("from-host")).listen(0, "0.0.0.0");
+    await new Promise((resolve) => server.once("listening", resolve));
+    const url = `http://host.microsandbox.internal:${server.address().port}`;
+    const control = await provider.start(
+      sessionCtx("host-control"),
+      { networkPolicy: "allow-all" },
+      artifact,
+    );
+    const fromAllowAll = await run(control.connection, `curl -s --max-time 5 ${url}`);
+    const fromPublic = await run(open.connection, `curl -s --max-time 5 ${url}`);
+    await provider.onSessionEnd(sessionCtx("host-control"), control.state, { reason: "completed" });
+    server.close();
+    const ok = fromAllowAll.out === "from-host" && fromPublic.out !== "from-host";
+    return [ok, JSON.stringify({ fromAllowAll, fromPublic })];
+  });
+  probe("deny-all-open-of-a-public-sandbox-is-refused", async () => {
+    const [refused, detail] = await rejectsWith(
+      provider.start(sessionCtx("public"), undefined, artifact),
+      NetworkPolicyConflictError,
+    );
+    await provider.onSessionEnd(sessionCtx("public"), open.state, { reason: "completed" });
+    return [refused, detail];
+  });
+});
+
+describe("the disk and time limits", () => {
+  const limited = createImplementation({
+    rootDiskMib: 256,
+    maxDurationSecs: 20,
+    idleTimeoutSecs: 600,
+  });
+  let limitedArtifact;
+  let open;
+  probe("root-disk-cap-holds-in-a-restored-vm", async () => {
+    limitedArtifact = await limited.prepare(prepareCtx({ salt: "limits" }));
+    open = await limited.start(sessionCtx("limits"), undefined, limitedArtifact);
+    const r = await run(
+      open.connection,
+      "dd if=/dev/zero of=/workspace/fill bs=1M count=400 2>/dev/null; echo $?; " +
+        "df -m / | awk 'NR==2{print $2}'; rm -f /workspace/fill",
+    );
+    const [exit, size] = r.out.split("\n");
+    // The uncapped template's VM is the control: without the cap the disk is larger, so the probe can fail.
+    const uncapped = await run(bare.connection, "df -m / | awk 'NR==2{print $2}'");
+    const ok = exit !== "0" && Number(size) <= 256 && Number(uncapped.out) > 256;
+    return [ok, JSON.stringify({ capped: r.out, uncapped: uncapped.out })];
+  });
+  probe("time-limits-are-recorded-on-the-session-vm", async () => {
+    const { lifecycle } = JSON.parse((await Sandbox.get(open.state.sandboxName)).configJson);
+    const ok = lifecycle.max_duration_secs === 20 && lifecycle.idle_timeout_secs === 600;
+    return [ok, JSON.stringify(lifecycle)];
+  });
+  probe("max-duration-stops-the-vm-and-the-next-start-boots-it-with-its-files", async () => {
+    // The limit stops the VM hard, so the file is synced first; what isn't synced can be lost.
+    await run(open.connection, "printf kept > /workspace/kept.txt && sync");
+    await new Promise((resolve) => setTimeout(resolve, 35_000));
+    const status = (await Sandbox.get(open.state.sandboxName)).status;
+    const again = await limited.start(sessionCtx("limits"), undefined, limitedArtifact);
+    const bytes = await again.connection.readFile({ path: "/workspace/kept.txt" });
+    await limited.onSessionEnd(sessionCtx("limits"), open.state, { reason: "completed" });
+    await Snapshot.remove(limitedArtifact.snapshot.digest);
+    const ok = status === "stopped" && bytes !== null && decode(bytes) === "kept";
+    return [ok, JSON.stringify({ status, kept: bytes === null ? null : decode(bytes) })];
+  });
+});
+
+describe("reaping", () => {
+  // Stopped is how a stranded session's VM is left; running is a live one mid-command.
+  probe("a-stopped-vm-is-reaped-and-a-running-one-survives", async () => {
+    const stranded = await provider.start(sessionCtx("reap-stranded"), undefined, artifact);
+    const live = await provider.start(sessionCtx("reap-live"), undefined, artifact);
+    await stranded.connection.stop();
+    const ours = [stranded.state.sandboxName, live.state.sandboxName];
+    const stale = (await staleSandboxState({ unusedForMs: 0, now: Date.now() + 60_000 })).filter(
+      (item) => ours.includes(item.name),
+    );
+    for (const item of stale) await item.remove();
+    const left = (await sandboxNames()).filter((name) => ours.includes(name));
+    await provider.onSessionEnd(sessionCtx("reap-live"), live.state, { reason: "completed" });
+    const ok =
+      stale.length === 1 &&
+      stale[0].name === stranded.state.sandboxName &&
+      left.length === 1 &&
+      left[0] === live.state.sandboxName;
+    return [ok, JSON.stringify({ stale: stale.map((item) => item.name), left })];
   });
 });
 

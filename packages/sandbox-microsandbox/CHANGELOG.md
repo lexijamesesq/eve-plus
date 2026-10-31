@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0
+
+- **A `public` network policy.** `open({ networkPolicy: "public" })` creates the VM under microsandbox's own `public`
+  profile: public internet and DNS, with private, loopback, link-local, metadata and host addresses denied. A
+  stricter later `open()` on that sandbox is refused, as `deny-all` on an `allow-all` sandbox already was.
+- **Disk and time limits.** `rootDiskMib` sets the root disk at template build and joins the template key when set,
+  so templates built without it keep their key. `maxDurationSecs` and `idleTimeoutSecs` pass to every session VM's
+  restore. Either limit stops the VM; the next access boots it again.
+- **Reaping VMs.** `staleSandboxState({ unusedForMs })` finds this provider's VMs that are stopped and unused since
+  the cutoff, each with a `remove()`, for a periodic job: sessions stranded by an eve upgrade never run
+  `onSessionEnd`, so their VMs stayed on disk. Templates aren't reaped.
+- The real-VM proof adds probes for each: `public` reaches a public host by name and is refused by a host server
+  that an `allow-all` VM reaches; a 256 MiB disk can't be filled past its size in a restored VM; the time limits are
+  recorded on the session VM, and a stopped VM boots again with its synced files; a stopped VM is reaped and a
+  running one survives; a `public` sandbox reopens as `public`.
+
+No state or naming change: sessions recorded by 0.2.0 resume, and environments that set none of the new options
+build the same template.
+
 ## 0.2.1
 
 Tests only: the real-VM proof's steps inside the container move from `integration/run.sh` to `integration/proof.sh`,

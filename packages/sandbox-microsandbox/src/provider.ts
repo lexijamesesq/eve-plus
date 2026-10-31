@@ -17,20 +17,24 @@ import {
   Snapshot,
 } from "microsandbox";
 import { createConnection } from "./connection.js";
-import { type MicrosandboxNetworkPolicy, resolveNetworkPolicy } from "./network-policy.js";
+import {
+  isNoLooserThan,
+  type MicrosandboxNetworkPolicy,
+  resolveNetworkPolicy,
+} from "./network-policy.js";
 import { assertPinnedRuntime, MICROSANDBOX_VERSION } from "./runtime.js";
 
 export const PROVIDER_NAME = "eve-plus-microsandbox";
 
-/** Thrown when a session asks for deny-all but its sandbox was created with network access. */
+/** Thrown when a session asks for a stricter policy than its sandbox was created with. */
 export class NetworkPolicyConflictError extends Error {
   override readonly name = "NetworkPolicyConflictError";
 
-  constructor(sandboxName: string) {
+  constructor(sandboxName: string, existing: string, requested: string) {
     super(
-      `The session's sandbox "${sandboxName}" was created with network access, and its policy ` +
-        `can't change, so it can't be opened as "deny-all". Delete the session's sandbox ` +
-        `(sandbox.delete()) to start a fresh one under "deny-all".`,
+      `The session's sandbox "${sandboxName}" was created "${existing}", and its policy ` +
+        `can't change, so it can't be opened as "${requested}". Delete the session's sandbox ` +
+        `(sandbox.delete()) to start a fresh one under "${requested}".`,
     );
   }
 }
@@ -50,6 +54,15 @@ export interface MicrosandboxEnvironmentOptions {
   readonly cpus?: number;
   /** Memory per sandbox in MiB. @default 1024 */
   readonly memoryMib?: number;
+  /**
+   * Root disk per sandbox in MiB. It is fixed when the template is built, because a session VM is a restore of
+   * the template and restore can't resize it, so it is part of the template key. @default microsandbox's own
+   */
+  readonly rootDiskMib?: number;
+  /** Seconds a session VM may run before microsandbox stops it; the next access boots it again. @default none */
+  readonly maxDurationSecs?: number;
+  /** Seconds without an attached command before microsandbox stops a session VM. @default none */
+  readonly idleTimeoutSecs?: number;
 }
 
 export interface MicrosandboxOpenOptions {
@@ -99,11 +112,18 @@ export function createImplementation(
   }
   const cpus = options.cpus ?? 1;
   const memoryMib = options.memoryMib ?? 1024;
+  const { rootDiskMib, maxDurationSecs, idleTimeoutSecs } = options;
+  const limits = { maxDurationSecs, idleTimeoutSecs };
 
   return {
     async prepare(ctx): Promise<MicrosandboxArtifact> {
       await assertPinnedRuntime();
-      const templateKey = ctx.templateKey({ image, msbVersion: MICROSANDBOX_VERSION });
+      // rootDiskMib joins the key only when set, so templates built without it keep their key.
+      const templateKey = ctx.templateKey({
+        image,
+        msbVersion: MICROSANDBOX_VERSION,
+        ...(rootDiskMib === undefined ? {} : { rootDiskMib }),
+      });
       const snapshotName = `eve-plus-tpl-${templateKey}`;
       const cached = (await Snapshot.list()).find((entry) => entry.name === snapshotName);
       if (cached !== undefined) {
@@ -116,12 +136,15 @@ export function createImplementation(
       ctx.log(`starting template build sandbox from "${image}"`);
       // The build runs allow-all, as eve's Docker provider does, so an authored prepare can
       // install packages. Sessions start under their own policy.
-      const sandbox = await Sandbox.builder(buildName)
+      const builder = Sandbox.builder(buildName)
         .image(image)
         .cpus(cpus)
         .memory(memoryMib)
-        .network((network) => network.policy(NetworkPolicy.allowAll()))
-        .create();
+        .network((network) => network.policy(NetworkPolicy.allowAll()));
+      const sandbox = await (rootDiskMib === undefined
+        ? builder
+        : builder.rootDisk(rootDiskMib)
+      ).create();
       let snapshot: Snapshot | undefined;
       try {
         const bash = await sandbox.execWith("/bin/sh", (exec) =>
@@ -152,7 +175,12 @@ export function createImplementation(
       const policy = resolveNetworkPolicy(open?.networkPolicy);
       await assertPinnedRuntime();
       const sandboxName = sessionSandboxName(ctx);
-      const sandbox = await openOrRestore(sandboxName, artifact, { cpus, memoryMib, policy });
+      const sandbox = await openOrRestore(sandboxName, artifact, {
+        cpus,
+        memoryMib,
+        policy,
+        ...limits,
+      });
       const state: MicrosandboxState = { sandboxName, msbVersion: MICROSANDBOX_VERSION };
       return { connection: createConnection(sandbox), state };
     },
@@ -205,7 +233,13 @@ export function sessionSandboxName(ctx: Pick<SandboxSessionContext, "session" | 
 async function openOrRestore(
   sandboxName: string,
   artifact: MicrosandboxArtifact,
-  config: { cpus: number; memoryMib: number; policy: MicrosandboxNetworkPolicy },
+  config: {
+    cpus: number;
+    memoryMib: number;
+    policy: MicrosandboxNetworkPolicy;
+    maxDurationSecs?: number | undefined;
+    idleTimeoutSecs?: number | undefined;
+  },
 ): Promise<Sandbox> {
   const existing = await connectIfExists(sandboxName, config.policy);
   if (existing !== undefined) return existing;
@@ -221,17 +255,21 @@ async function openOrRestore(
   const policy =
     config.policy === "allow-all"
       ? NetworkPolicy.builder().defaultAllow()
-      : NetworkPolicy.builder().defaultDeny();
+      : config.policy === "public"
+        ? NetworkPolicy.fromProfiles(["public"])
+        : NetworkPolicy.builder().defaultDeny();
+  let restore = Sandbox.restore({
+    reference: artifact.snapshot.reference,
+    referenceKind: artifact.snapshot.referenceKind,
+  })
+    .name(sandboxName)
+    .cpus(config.cpus)
+    .memory(config.memoryMib)
+    .networkPolicy(policy);
+  if (config.maxDurationSecs !== undefined) restore = restore.maxDuration(config.maxDurationSecs);
+  if (config.idleTimeoutSecs !== undefined) restore = restore.idleTimeout(config.idleTimeoutSecs);
   try {
-    return await Sandbox.restore({
-      reference: artifact.snapshot.reference,
-      referenceKind: artifact.snapshot.referenceKind,
-    })
-      .name(sandboxName)
-      .cpus(config.cpus)
-      .memory(config.memoryMib)
-      .networkPolicy(policy)
-      .restore();
+    return await restore.restore();
   } catch (error) {
     // Another caller created it first; theirs is the session's sandbox.
     if (!(error instanceof SandboxAlreadyExistsError)) throw error;
@@ -243,9 +281,9 @@ async function openOrRestore(
 
 /**
  * Connects to the session's existing VM, booting it if stopped. Its policy was fixed when it was
- * created and can't change, so a deny-all request for a VM created allow-all is refused rather
- * than silently weakened. The reverse, an allow-all request for a deny-all VM, keeps the
- * stricter policy, as eve applies open options only when a sandbox is created.
+ * created and can't change, so a request stricter than the VM's policy is refused rather than
+ * silently weakened. A looser request keeps the VM's stricter policy, as eve applies open options
+ * only when a sandbox is created.
  */
 async function connectIfExists(
   sandboxName: string,
@@ -258,14 +296,31 @@ async function connectIfExists(
     if (error instanceof SandboxNotFoundError) return undefined;
     throw error;
   }
-  if (requested === "deny-all" && existingEgress(handle) !== "deny") {
-    throw new NetworkPolicyConflictError(sandboxName);
+  const existing = existingPolicy(handle);
+  if (!isNoLooserThan(existing, requested)) {
+    throw new NetworkPolicyConflictError(sandboxName, existing, requested);
   }
   return await handle.connectOrStart({ detached: true });
 }
 
-function existingEgress(handle: { readonly configJson: string }): string | undefined {
-  return JSON.parse(handle.configJson)?.network?.policy?.default_egress;
+type RecordedRule = { action?: string; destination?: { group?: string }; ports?: unknown[] };
+
+/**
+ * Reads back the policy microsandbox recorded for a VM. Anything that isn't exactly one of the shapes this
+ * provider creates counts as allow-all, so an unrecognised VM is never handed to a stricter request.
+ */
+function existingPolicy(handle: { readonly configJson: string }): MicrosandboxNetworkPolicy {
+  const policy = JSON.parse(handle.configJson)?.network?.policy;
+  if (policy?.default_egress !== "deny") return "allow-all";
+  const allows = ((policy.rules ?? []) as RecordedRule[]).filter((rule) => rule.action === "allow");
+  if (allows.length === 0) return "deny-all";
+  const isPublicProfile = allows.every(
+    (rule) =>
+      rule.destination?.group === "public" ||
+      (rule.destination?.group === "host" &&
+        JSON.stringify(rule.ports) === '[{"start":53,"end":53}]'),
+  );
+  return isPublicProfile ? "public" : "allow-all";
 }
 
 async function removeSandbox(sandboxName: string): Promise<void> {

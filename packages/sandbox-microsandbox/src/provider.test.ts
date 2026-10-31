@@ -16,18 +16,60 @@ import {
 } from "./provider.js";
 import { MICROSANDBOX_VERSION, MicrosandboxRuntimeMismatchError } from "./runtime.js";
 
+// The policies as microsandbox records them in a sandbox's config (read back from a real VM's `configJson`).
+type Recorded = "deny" | "allow" | "public" | "other";
+const RECORDED = vi.hoisted(() => ({
+  deny: { default_egress: "deny", default_ingress: "deny", rules: [] },
+  allow: { default_egress: "allow", default_ingress: "allow", rules: [] },
+  public: {
+    default_egress: "deny",
+    default_ingress: "allow",
+    rules: [
+      {
+        direction: "egress",
+        destination: { group: "host" },
+        protocols: ["udp", "tcp"],
+        ports: [{ start: 53, end: 53 }],
+        action: "allow",
+      },
+      {
+        direction: "egress",
+        destination: { group: "public" },
+        protocols: [],
+        ports: [],
+        action: "allow",
+      },
+    ],
+  },
+  other: {
+    default_egress: "deny",
+    default_ingress: "deny",
+    rules: [
+      { direction: "egress", destination: { domain: "example.com" }, ports: [], action: "allow" },
+    ],
+  },
+}));
+
 // An in-memory stand-in for the microsandbox SDK: named sandboxes, indexed snapshots, and a
 // record of every restore. The real-VM behaviour is proven on a KVM host, not here.
 const msb = vi.hoisted(() => ({
   calls: [] as string[],
   raceOnRestore: false,
-  raceWinnerEgress: undefined as "deny" | "allow" | undefined,
-  restored: [] as { name?: string; cpus?: number; memory?: number; policy?: string }[],
+  raceWinnerEgress: undefined as Recorded | undefined,
+  restored: [] as {
+    name?: string;
+    cpus?: number;
+    memory?: number;
+    policy?: string;
+    maxDuration?: number;
+    idleTimeout?: number;
+  }[],
+  rootDisks: [] as number[],
   failDestroy: false,
   removedSnapshots: [] as string[],
   runtime: { origin: "sdk_package", msbPath: "/pkg/msb", libkrunfwPath: "/pkg/fw" },
-  // Each sandbox's default egress, as microsandbox records it in the sandbox's config.
-  sandboxes: new Map<string, "deny" | "allow">(),
+  // Each sandbox's policy, as microsandbox records it in the sandbox's config.
+  sandboxes: new Map<string, Recorded>(),
   snapshots: [] as { name: string; digest: string }[],
   version: "0.7.10" as string | null,
 }));
@@ -56,13 +98,22 @@ vi.mock("microsandbox", () => {
     return builder;
   };
   return {
-    NetworkPolicy: { builder: policyBuilder, allowAll: () => ({}) },
+    NetworkPolicy: {
+      builder: policyBuilder,
+      allowAll: () => ({}),
+      fromProfiles: (profiles: string[]) => ({ kind: profiles.join(",") }),
+    },
     SandboxAlreadyExistsError,
     SandboxNotFoundError,
     resolveRuntime: () => msb.runtime,
     resolveRuntimeVersion: async () => msb.version,
     Snapshot: {
       list: async () => msb.snapshots,
+      open: async (digest: string) => ({
+        digest,
+        reference: `/s/${digest}`,
+        referenceKind: "path",
+      }),
       remove: async (digest: string) => {
         msb.removedSnapshots.push(digest);
       },
@@ -74,6 +125,10 @@ vi.mock("microsandbox", () => {
           cpus: () => builder,
           memory: () => builder,
           network: () => builder,
+          rootDisk(size: number) {
+            msb.rootDisks.push(size);
+            return builder;
+          },
           async create() {
             msb.sandboxes.set(name, "allow");
             return sandbox(name);
@@ -86,7 +141,7 @@ vi.mock("microsandbox", () => {
         const egress = msb.sandboxes.get(name);
         if (egress === undefined) throw new SandboxNotFoundError(name);
         return {
-          configJson: JSON.stringify({ network: { policy: { default_egress: egress } } }),
+          configJson: JSON.stringify({ network: { policy: RECORDED[egress] } }),
           connectOrStart: async () => sandbox(name),
           destroy: async () => {
             msb.calls.push(`destroy ${name}`);
@@ -123,10 +178,25 @@ vi.mock("microsandbox", () => {
             record.policy = value.kind;
             return builder;
           },
+          maxDuration(value: number) {
+            record.maxDuration = value;
+            return builder;
+          },
+          idleTimeout(value: number) {
+            record.idleTimeout = value;
+            return builder;
+          },
           async restore() {
             const name = record.name as string;
             msb.calls.push(`restore ${name}`);
-            msb.sandboxes.set(name, record.policy === "allow-all" ? "allow" : "deny");
+            msb.sandboxes.set(
+              name,
+              record.policy === "allow-all"
+                ? "allow"
+                : record.policy === "public"
+                  ? "public"
+                  : "deny",
+            );
             if (msb.raceOnRestore) {
               if (msb.raceWinnerEgress !== undefined) msb.sandboxes.set(name, msb.raceWinnerEgress);
               throw new SandboxAlreadyExistsError(name);
@@ -161,6 +231,7 @@ beforeEach(() => {
   msb.raceWinnerEgress = undefined;
   msb.removedSnapshots = [];
   msb.restored = [];
+  msb.rootDisks = [];
   msb.runtime = { origin: "sdk_package", msbPath: "/pkg/msb", libkrunfwPath: "/pkg/fw" };
   msb.sandboxes = new Map();
   msb.snapshots = [{ name: "eve-plus-tpl-key", digest: "sha256:tpl" }];
@@ -180,6 +251,11 @@ describe("start", () => {
     expect(msb.restored[0]?.policy).toBe("allow-all");
   });
 
+  it("opens microsandbox's public profile when asked", async () => {
+    await createImplementation({}).start(ctx, { networkPolicy: "public" }, artifact);
+    expect(msb.restored[0]?.policy).toBe("public");
+  });
+
   it("rejects an object policy before touching microsandbox", async () => {
     const open = { networkPolicy: { allow: ["*"] } } as never;
     await expect(createImplementation({}).start(ctx, open, artifact)).rejects.toThrow(
@@ -191,6 +267,21 @@ describe("start", () => {
   it("applies the CPU and memory options", async () => {
     await createImplementation({ cpus: 2, memoryMib: 2048 }).start(ctx, undefined, artifact);
     expect(msb.restored[0]).toEqual(expect.objectContaining({ cpus: 2, memory: 2048 }));
+  });
+
+  it("applies the time limits to the restored VM, and none unless asked", async () => {
+    await createImplementation({ maxDurationSecs: 3600, idleTimeoutSecs: 900 }).start(
+      ctx,
+      undefined,
+      artifact,
+    );
+    expect(msb.restored[0]).toEqual(
+      expect.objectContaining({ maxDuration: 3600, idleTimeout: 900 }),
+    );
+    msb.sandboxes.clear();
+    await createImplementation({}).start(ctx, undefined, artifact);
+    expect(msb.restored[1]).not.toHaveProperty("maxDuration");
+    expect(msb.restored[1]).not.toHaveProperty("idleTimeout");
   });
 
   it("reuses an existing sandbox instead of restoring", async () => {
@@ -235,6 +326,38 @@ describe("start", () => {
     await expect(implementation.start(ctx, undefined, artifact)).rejects.toThrow(
       NetworkPolicyConflictError,
     );
+  });
+
+  it.each([
+    ["public", "deny-all", undefined],
+    ["allow-all", "public", "public"],
+  ] as const)(
+    "refuses a stricter request: a %s sandbox opened as %s",
+    async (created, _, asked) => {
+      const implementation = createImplementation({});
+      await implementation.start(ctx, { networkPolicy: created }, artifact);
+      const open = asked === undefined ? undefined : { networkPolicy: asked };
+      await expect(implementation.start(ctx, open, artifact)).rejects.toThrow(
+        NetworkPolicyConflictError,
+      );
+    },
+  );
+
+  it("treats a sandbox whose recorded policy it didn't create as allow-all", async () => {
+    const implementation = createImplementation({});
+    const { state } = await implementation.start(ctx, undefined, artifact);
+    msb.sandboxes.set(state.sandboxName, "other");
+    await expect(implementation.start(ctx, { networkPolicy: "public" }, artifact)).rejects.toThrow(
+      NetworkPolicyConflictError,
+    );
+  });
+
+  it("reopens a public sandbox as public", async () => {
+    const implementation = createImplementation({});
+    const first = await implementation.start(ctx, { networkPolicy: "public" }, artifact);
+    const again = await implementation.start(ctx, { networkPolicy: "public" }, artifact);
+    expect(again.state).toEqual(first.state);
+    expect(msb.restored).toHaveLength(1);
   });
 
   it("keeps a deny-all sandbox's policy when allow-all is asked later", async () => {
@@ -301,6 +424,24 @@ describe("prepare", () => {
     expect(result.templateKey).toBe("a".repeat(64));
     expect(result.snapshot.digest).toBe(`sha256:eve-plus-tpl-${"a".repeat(64)}`);
     expect(msb.sandboxes.size).toBe(0);
+  });
+
+  it("builds the template with the root disk size, and keys the template by it only when set", async () => {
+    msb.snapshots = [];
+    const keyed: unknown[] = [];
+    const recording = {
+      ...prepareCtx,
+      templateKey: (inputs: unknown) => {
+        keyed.push(inputs);
+        return "a".repeat(64);
+      },
+    } as SandboxPrepareContext;
+    await createImplementation({ rootDiskMib: 8192 }).prepare(recording);
+    msb.snapshots = [];
+    await createImplementation({}).prepare(recording);
+    expect(msb.rootDisks).toEqual([8192]);
+    expect(keyed[0]).toEqual(expect.objectContaining({ rootDiskMib: 8192 }));
+    expect(keyed[1]).not.toHaveProperty("rootDiskMib");
   });
 
   it("removes the captured snapshot when removing the build sandbox fails", async () => {
