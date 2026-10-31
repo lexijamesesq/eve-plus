@@ -390,7 +390,10 @@ describe("the disk and time limits", () => {
         "df -m / | awk 'NR==2{print $2}'; rm -f /workspace/fill",
     );
     const [exit, size] = r.out.split("\n");
-    return [exit !== "0" && Number(size) <= 1024, r.out];
+    // The uncapped template's VM is the control: without the cap the disk is larger, so the probe can fail.
+    const uncapped = await run(bare.connection, "df -m / | awk 'NR==2{print $2}'");
+    const ok = exit !== "0" && Number(size) <= 1024 && Number(uncapped.out) > 1024;
+    return [ok, JSON.stringify({ capped: r.out, uncapped: uncapped.out })];
   });
   probe("time-limits-are-recorded-on-the-session-vm", async () => {
     const { lifecycle } = JSON.parse((await Sandbox.get(open.state.sandboxName)).configJson);
