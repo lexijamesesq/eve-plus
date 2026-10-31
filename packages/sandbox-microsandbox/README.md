@@ -44,18 +44,23 @@ Without it, `eve build` bundles the package, separating microsandbox's `dist/` f
 
 Environment options:
 
-| Option      | Default                                | Meaning                                                               |
-| ----------- | -------------------------------------- | --------------------------------------------------------------------- |
-| `image`     | `debian:trixie-slim`, pinned by digest | Base OCI image. It must be pinned (`name@sha256:…`) and provide bash. |
-| `cpus`      | `1`                                    | vCPUs per sandbox.                                                    |
-| `memoryMib` | `1024`                                 | Memory per sandbox, in MiB.                                           |
-| `prepare`   | none                                   | eve's standard template setup, run once per template.                 |
+| Option            | Default                                | Meaning                                                                                                          |
+| ----------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `image`           | `debian:trixie-slim`, pinned by digest | Base OCI image. It must be pinned (`name@sha256:…`) and provide bash.                                            |
+| `cpus`            | `1`                                    | vCPUs per sandbox.                                                                                               |
+| `memoryMib`       | `1024`                                 | Memory per sandbox, in MiB.                                                                                      |
+| `rootDiskMib`     | microsandbox's own                     | Root disk per sandbox, in MiB. Set when the template is built, and part of the template key.                     |
+| `maxDurationSecs` | none                                   | Seconds a session VM runs before microsandbox stops it. The next access boots it again with its synced files.    |
+| `idleTimeoutSecs` | none                                   | Seconds without a running command before microsandbox stops a session VM. The next access boots it again.        |
+| `prepare`         | none                                   | eve's standard template setup, run once per template.                                                            |
 
-`open()` takes `{ networkPolicy }`, described below. There's no idle or maximum-duration auto-stop: a sandbox runs until eve stops it or the session ends.
+`open()` takes `{ networkPolicy }`, described below. Without `maxDurationSecs` or `idleTimeoutSecs`, a sandbox runs until eve stops it or the session ends. Either limit stops the VM hard, so a write that hasn't been synced can be lost.
+
+The disk is fixed at the template because a session VM is a restore of the template snapshot, and microsandbox's restore can't resize a disk. A session's disk is the template's.
 
 ## How it works
 
-- **`prepare`** (at `eve build`) boots a template VM from the image, fails clearly if the image lacks bash, creates `/workspace` as root (as eve's Docker provider does), and runs `ctx.populate()`, which seeds workspace and skill files and runs your `prepare`. It then stops the VM and captures a disk snapshot named for the template key, which hashes the image, the microsandbox version, and eve's workspace, skill and sandbox-file inputs. An unchanged template is reused. The template build runs `allow-all`, so your `prepare` can install packages. A failed build removes its VM and any snapshot it captured.
+- **`prepare`** (at `eve build`) boots a template VM from the image, fails clearly if the image lacks bash, creates `/workspace` as root (as eve's Docker provider does), and runs `ctx.populate()`, which seeds workspace and skill files and runs your `prepare`. It then stops the VM and captures a disk snapshot named for the template key, which hashes the image, the microsandbox version, `rootDiskMib` when it's set, and eve's workspace, skill and sandbox-file inputs. An unchanged template is reused. The template build runs `allow-all`, so your `prepare` can install packages. A failed build removes its VM and any snapshot it captured.
 - **`start`** finds the session's VM by a name derived from the session id and the app's sandbox storage path. It connects to a running VM, boots a stopped one, or restores a new one from the template snapshot under the session's network policy, always detached. Concurrent and cross-process starts converge on one VM. A missing template snapshot throws eve's `SandboxTemplateNotProvisionedError`, and a policy that would weaken the existing VM's throws `NetworkPolicyConflictError` (see below).
 - **`resume`** reconnects to the recorded VM, booting it if it's stopped, or throws `SandboxSessionGoneError` if it no longer exists.
 - **`onSessionEnd`** deletes the VM. It's idempotent and succeeds when nothing exists.
@@ -67,11 +72,17 @@ The recorded session state is `{ sandboxName, msbVersion }` under `stateProtocol
 
 ## Network policy
 
-The provider enforces exactly two policies, set once when a session's sandbox is created. Every other shape rejects with `UnsupportedNetworkPolicyError` rather than being weakened: microsandbox can't inject the headers eve's `transform` rules add, and can't change a live sandbox's policy.
+The provider enforces three policies, set once when a session's sandbox is created. From strictest to loosest:
+
+- **`deny-all`:** no network.
+- **`public`:** microsandbox's own `public` profile. The VM reaches public internet addresses, with DNS through the host, and is denied private, loopback, link-local, metadata and host addresses, so it can't reach the host's LAN or the host itself.
+- **`allow-all`:** everything, including the host.
+
+Every other shape rejects with `UnsupportedNetworkPolicyError` rather than being weakened: microsandbox can't inject the headers eve's `transform` rules add, and can't change a live sandbox's policy. eve's domain allowlists (`{ "allow": [...] }`) are rejected too. microsandbox enforces a hostname rule for HTTPS only with TLS interception or with its strict hostname mode off, and neither setting survives the restore every session VM is made by, so an allowlisted VM couldn't open an HTTPS connection at all.
 
 An absent policy means `deny-all`. eve's Docker provider defaults to `allow-all`; this one doesn't.
 
-A sandbox keeps the policy it was created with. A later `open()` asking for `deny-all` when the session's sandbox was created `allow-all` throws `NetworkPolicyConflictError` instead of quietly handing back network access; delete the session's sandbox (`sandbox.delete()`) to start a fresh one. A later `open()` asking for `allow-all` when the sandbox is `deny-all` reconnects to it unchanged, since eve applies open options only when a sandbox is created.
+A sandbox keeps the policy it was created with. A later `open()` asking for a stricter policy than the session's sandbox was created with (`deny-all` for a `public` or `allow-all` sandbox, `public` for an `allow-all` one) throws `NetworkPolicyConflictError` instead of quietly handing back network access; delete the session's sandbox (`sandbox.delete()`) to start a fresh one. A sandbox whose recorded policy isn't one this provider creates counts as `allow-all`. A later `open()` asking for a looser policy reconnects to the sandbox unchanged, since eve applies open options only when a sandbox is created.
 
 No TLS interception is configured, and the guest trusts only its image's own certificate store.
 
@@ -81,6 +92,7 @@ The table below is checked by the package's unit tests: each row's shape is pars
 | ---------------------------------------------------------------------------------------- | ----------- |
 | absent                                                                                   | `deny-all`  |
 | `"deny-all"`                                                                             | `deny-all`  |
+| `"public"`                                                                               | `public`    |
 | `"allow-all"`                                                                            | `allow-all` |
 | `{}`                                                                                     | rejects     |
 | `{"allow": ["*"]}`                                                                       | rejects     |

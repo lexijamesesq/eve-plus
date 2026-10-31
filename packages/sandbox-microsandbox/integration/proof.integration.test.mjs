@@ -5,6 +5,7 @@
 import { spawn as spawnChild } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SandboxSessionGoneError, SandboxTemplateNotProvisionedError } from "eve/sandbox/provider";
@@ -334,6 +335,78 @@ describe("network policies", () => {
     );
     const after = await sandboxNames();
     return [rejected && before.length === after.length, detail];
+  });
+});
+
+describe("the public profile", () => {
+  let open;
+  probe("public-reaches-a-public-host-by-name", async () => {
+    open = await provider.start(sessionCtx("public"), { networkPolicy: "public" }, artifact);
+    const r = await reaches(open.connection, "https://registry.npmjs.org/eve");
+    return [r.reached, r.detail];
+  });
+  // A server in this process is the VM's host. allow-all reaching it shows the probe can fail.
+  probe("public-blocks-the-host-that-allow-all-reaches", async () => {
+    const server = createServer((_, response) => response.end("from-host")).listen(0, "0.0.0.0");
+    await new Promise((resolve) => server.once("listening", resolve));
+    const url = `http://host.microsandbox.internal:${server.address().port}`;
+    const control = await provider.start(
+      sessionCtx("host-control"),
+      { networkPolicy: "allow-all" },
+      artifact,
+    );
+    const fromAllowAll = await run(control.connection, `curl -s --max-time 5 ${url}`);
+    const fromPublic = await run(open.connection, `curl -s --max-time 5 ${url}`);
+    await provider.onSessionEnd(sessionCtx("host-control"), control.state, { reason: "completed" });
+    server.close();
+    const ok = fromAllowAll.out === "from-host" && fromPublic.out !== "from-host";
+    return [ok, JSON.stringify({ fromAllowAll, fromPublic })];
+  });
+  probe("deny-all-open-of-a-public-sandbox-is-refused", async () => {
+    const [refused, detail] = await rejectsWith(
+      provider.start(sessionCtx("public"), undefined, artifact),
+      NetworkPolicyConflictError,
+    );
+    await provider.onSessionEnd(sessionCtx("public"), open.state, { reason: "completed" });
+    return [refused, detail];
+  });
+});
+
+describe("the disk and time limits", () => {
+  const limited = createImplementation({
+    rootDiskMib: 1024,
+    maxDurationSecs: 20,
+    idleTimeoutSecs: 600,
+  });
+  let limitedArtifact;
+  let open;
+  probe("root-disk-cap-holds-in-a-restored-vm", async () => {
+    limitedArtifact = await limited.prepare(prepareCtx({ salt: "limits" }));
+    open = await limited.start(sessionCtx("limits"), undefined, limitedArtifact);
+    const r = await run(
+      open.connection,
+      "dd if=/dev/zero of=/workspace/fill bs=1M count=2000 2>/dev/null; echo $?; " +
+        "df -m / | awk 'NR==2{print $2}'; rm -f /workspace/fill",
+    );
+    const [exit, size] = r.out.split("\n");
+    return [exit !== "0" && Number(size) <= 1024, r.out];
+  });
+  probe("time-limits-are-recorded-on-the-session-vm", async () => {
+    const { lifecycle } = JSON.parse((await Sandbox.get(open.state.sandboxName)).configJson);
+    const ok = lifecycle.max_duration_secs === 20 && lifecycle.idle_timeout_secs === 600;
+    return [ok, JSON.stringify(lifecycle)];
+  });
+  probe("max-duration-stops-the-vm-and-the-next-start-boots-it-with-its-files", async () => {
+    // The limit stops the VM hard, so the file is synced first; what isn't synced can be lost.
+    await run(open.connection, "printf kept > /workspace/kept.txt && sync");
+    await new Promise((resolve) => setTimeout(resolve, 35_000));
+    const status = (await Sandbox.get(open.state.sandboxName)).status;
+    const again = await limited.start(sessionCtx("limits"), undefined, limitedArtifact);
+    const bytes = await again.connection.readFile({ path: "/workspace/kept.txt" });
+    await limited.onSessionEnd(sessionCtx("limits"), open.state, { reason: "completed" });
+    await Snapshot.remove(limitedArtifact.snapshot.digest);
+    const ok = status === "stopped" && bytes !== null && decode(bytes) === "kept";
+    return [ok, JSON.stringify({ status, kept: bytes === null ? null : decode(bytes) })];
   });
 });
 
