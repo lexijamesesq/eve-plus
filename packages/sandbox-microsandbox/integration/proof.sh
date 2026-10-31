@@ -32,7 +32,7 @@ mkdir pack
 
 echo "stage: install"
 npm init -y >/dev/null
-npm install --no-audit --no-fund pack/*.tgz "eve@$(dev_dependency eve)" "ai@$(dev_dependency ai)" \
+npm install --no-audit --no-fund "$HOME"/pack/*.tgz "eve@$(dev_dependency eve)" "ai@$(dev_dependency ai)" \
 	"vitest@$(dev_dependency vitest)" >/dev/null
 mkdir stale && npm pack --silent @superradcompany/microsandbox-linux-arm64-gnu@0.7.9 >/dev/null
 tar -xzf superradcompany-microsandbox-linux-arm64-gnu-0.7.9.tgz -C stale
