@@ -78,7 +78,7 @@ The provider enforces three policies, set once when a session's sandbox is creat
 - **`public`:** microsandbox's own `public` profile. The VM reaches public internet addresses, with DNS through the host, and is denied private, loopback, link-local, metadata and host addresses, so it can't reach the host's LAN or the host itself.
 - **`allow-all`:** everything, including the host.
 
-Every other shape rejects with `UnsupportedNetworkPolicyError` rather than being weakened: microsandbox can't inject the headers eve's `transform` rules add, and can't change a live sandbox's policy. eve's domain allowlists (`{ "allow": [...] }`) are rejected too. microsandbox enforces a hostname rule for HTTPS only with TLS interception or with its strict hostname mode off, and neither setting survives the restore every session VM is made by, so an allowlisted VM couldn't open an HTTPS connection at all.
+Every other shape rejects with `UnsupportedNetworkPolicyError` rather than being weakened: microsandbox can't inject the headers eve's `transform` rules add, and can't change a live sandbox's policy. eve's domain allowlists (`{ "allow": [...] }`) are rejected too. microsandbox's docs say a hostname rule allows HTTPS only with TLS interception or with its strict hostname mode off ("Hostname rules and HTTPS"). In our tests on microsandbox 0.7.10, a VM restored from a template built with either setting came back with interception off and strict mode on, and every HTTPS connection to an allowlisted host was reset during the handshake (curl, git and Node alike), while plain HTTP to it worked.
 
 An absent policy means `deny-all`. eve's Docker provider defaults to `allow-all`; this one doesn't.
 
