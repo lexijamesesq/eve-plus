@@ -258,7 +258,7 @@ describe("public Cyrus Linear connector", () => {
       const store = new CommissionStore(":memory:");
       try {
         store.open(
-          { id: "felix", conversation: { thread: "1.0" } },
+          { id: "ops-agent", conversation: { thread: "1.0" } },
           {
             commissionId,
             spec: markerSpec,

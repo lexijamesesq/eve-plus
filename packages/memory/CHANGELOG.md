@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+No behaviour change. The tests use neutral example names.
+
 ## 0.5.0
 
 Built and tested against eve 0.91.0; the peer range is now `^0.91.0`. Earlier eve versions are no longer supported:

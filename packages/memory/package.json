@@ -1,6 +1,6 @@
 {
   "name": "@eve-plus/memory",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A memory provider for Vercel eve: a SHACL ontology over an embedded SQLite graph that the agent shapes and validates itself.",
   "license": "MIT",
   "keywords": [

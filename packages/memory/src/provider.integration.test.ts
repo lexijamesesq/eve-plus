@@ -46,7 +46,7 @@ const principal = (principalId: string) => ({
   attributes: {},
 });
 const OPERATOR = principal("U-operator");
-const OTHER_AGENT = principal("U-felix-bot");
+const OTHER_AGENT = principal("U-other-bot");
 const scopeOf = (current: Input) =>
   byPrincipal({
     abortSignal: new AbortController().signal,
@@ -712,7 +712,7 @@ describe("forget: the agent can retract what is wrong or no longer true (tombsto
       id: "ghost",
       label: "Ghost Client",
       type: "Person",
-      attributes: { company: "Nowhere", status: "stale" },
+      attributes: { company: "Initech", status: "stale" },
     });
   });
 

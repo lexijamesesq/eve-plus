@@ -223,9 +223,9 @@ describe("the current view: kinds never shadow each other, and write order is ex
 // What the user stated outranks handed content: content adds beside it but never replaces or retracts it. The provider
 // grounds which writes are content; the store enforces the rule on whatever origin it is handed.
 describe("attribution, not precedence: every write lands, recorded with who made it", () => {
-  const owner = (callId = "o") => JSON.stringify({ who: "owner", principal: "lexi", callId });
+  const owner = (callId = "o") => JSON.stringify({ who: "owner", principal: "operator", callId });
   const scheduled = (callId = "s") =>
-    JSON.stringify({ who: "scheduled", principal: "lexi", sessionId: "run-1", callId });
+    JSON.stringify({ who: "scheduled", principal: "operator", sessionId: "run-1", callId });
   const person = async () => {
     const g = await MemoryGraph.create();
     await g.remember(

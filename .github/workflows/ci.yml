@@ -53,7 +53,7 @@ jobs:
         with:
           ref: ${{ needs.checks.outputs.head_sha }}
           persist-credentials: false
-      # Node 24 and pnpm 12.4.2, as eve-deploy's agents install with; action-setup reads the root packageManager.
+      # Node 24 and pnpm 12.4.2, as consumers install with; action-setup reads the root packageManager.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24

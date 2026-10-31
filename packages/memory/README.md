@@ -13,7 +13,7 @@ Install it from a release tag as a git dependency, next to eve 0.91.0 or later w
 ```json
 {
   "dependencies": {
-    "@eve-plus/memory": "github:lexijamesesq/eve-plus#memory--v0.5.0&path:packages/memory",
+    "@eve-plus/memory": "github:lexijamesesq/eve-plus#memory--v0.5.1&path:packages/memory",
     "eve": "0.91.0"
   }
 }

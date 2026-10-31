@@ -28,10 +28,10 @@ function setup() {
     store,
     config: {
       worker: { id: "test-worker", prepare, handoff: async () => {} },
-      // Only the operator commissions, as Felix; anyone else gets null.
+      // Only the operator commissions, as the agent; anyone else gets null.
       commissioner: (value: SessionAuthContext | null) =>
         value?.principalId === "U-operator"
-          ? { id: "felix", conversation: value.attributes as Conversation }
+          ? { id: "ops-agent", conversation: value.attributes as Conversation }
           : null,
     },
   };

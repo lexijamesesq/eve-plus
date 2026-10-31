@@ -6,7 +6,10 @@ import { handleWorkerRequest } from "./transport.js";
 import type { Commissioner } from "./types.js";
 
 // The worker's side of a commission through the official MCP client, over the endpoint's real request handler.
-const owner: Commissioner = { id: "felix", conversation: { channel: "C-private", thread: "1.0" } };
+const owner: Commissioner = {
+  id: "ops-agent",
+  conversation: { channel: "C-private", thread: "1.0" },
+};
 const stores: CommissionStore[] = [];
 const clients: Client[] = [];
 function fixture() {
