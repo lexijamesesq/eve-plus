@@ -126,11 +126,9 @@ To move to a new microsandbox release:
 
 Because the microsandbox version is part of the template key, the next `eve build` builds a fresh template.
 
-## Reaping unused VMs and templates
+## Reaping unused VMs
 
-Two things outlive their use in `MSB_HOME`. A session that never ends, such as one stranded by an eve upgrade, never runs `onSessionEnd`, so its VM and files stay on disk. Each distinct template key leaves a snapshot named `eve-plus-tpl-<key>`. Nothing removes either automatically.
-
-`staleSandboxState({ unusedForMs })` finds them, and each item it returns has a `remove()`. Call it from a periodic job:
+A session that never ends, such as one stranded by an eve upgrade, never runs `onSessionEnd`, so its VM and files stay on disk. `staleSandboxState({ unusedForMs })` finds this provider's VMs that are stopped and that microsandbox last started or stopped before the cutoff, and each item it returns has a `remove()`. Call it from a periodic job:
 
 ```ts
 import { staleSandboxState } from "@eve-plus/sandbox-microsandbox";
@@ -140,8 +138,24 @@ for (const item of await staleSandboxState({ unusedForMs: 7 * 24 * 60 * 60_000 }
 }
 ```
 
-- **A VM** is stale when it's stopped and microsandbox last started or stopped it before the cutoff. A running VM never is, and `remove()` skips a VM something started since it was found. eve can't list its sessions, so last use stands for liveness. Set `idleTimeoutSecs`, so a VM stops soon after its last command and its record says when that was. Removing a live session's VM loses only its files: eve's resume finds it gone and the session continues in a fresh sandbox.
-- **A template** is never stale while the latest build uses it. `prepare` records each template it builds or reuses in `MSB_HOME/eve-plus-prepared/`, and the templates recorded with the latest build are in use until the next build, however old: eve doesn't tell a later process which template its build prepared, and removing that one would fail every new session until the next `eve build`. Any other template is stale once its last prepare (or, if it was never recorded, its creation) is older than the cutoff. With nothing recorded, no template is. A session never depends on its template after its VM is restored.
+A running VM is never stale, and `remove()` skips a VM something started since it was found. eve can't list its sessions, so last use stands for liveness. Set `idleTimeoutSecs`, so a VM stops soon after its last command and its record says when that was. Removing a live session's VM loses only its files: eve's resume finds it gone and the session continues in a fresh sandbox. Templates aren't reaped; see below.
+
+## Pruning templates
+
+Each distinct template key leaves one snapshot named `eve-plus-tpl-<key>` in `MSB_HOME`, and nothing removes old ones automatically. A session never depends on its template after its VM is restored, so removing a snapshot can't break a live or stopped session. Removing the snapshot that the current deployment's artifact names makes new sessions fail with `SandboxTemplateNotProvisionedError` until the next `eve build`.
+
+To prune, remove snapshots whose key isn't the current deployment's, by digest, without `force`:
+
+```ts
+import { Snapshot } from "microsandbox";
+
+const current = "eve-plus-tpl-<current template key>";
+for (const snapshot of await Snapshot.list()) {
+  if (snapshot.name?.startsWith("eve-plus-tpl-") && snapshot.name !== current) {
+    await Snapshot.remove(snapshot.digest);
+  }
+}
+```
 
 ## Testing
 

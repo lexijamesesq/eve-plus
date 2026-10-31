@@ -8,10 +8,9 @@
 - **Disk and time limits.** `rootDiskMib` sets the root disk at template build and joins the template key when set,
   so templates built without it keep their key. `maxDurationSecs` and `idleTimeoutSecs` pass to every session VM's
   restore. Either limit stops the VM; the next access boots it again.
-- **Reaping.** `staleSandboxState({ unusedForMs })` finds this provider's VMs that are stopped and unused since the
-  cutoff, and templates no longer in use past it, each with a `remove()`. `prepare` records the templates each build
-  prepares, and the latest build's are never stale. It's for a periodic job:
-  sessions stranded by an eve upgrade never run `onSessionEnd`, and old templates were never removed.
+- **Reaping VMs.** `staleSandboxState({ unusedForMs })` finds this provider's VMs that are stopped and unused since
+  the cutoff, each with a `remove()`, for a periodic job: sessions stranded by an eve upgrade never run
+  `onSessionEnd`, so their VMs stayed on disk. Templates aren't reaped.
 - The real-VM proof adds probes for each: `public` reaches a public host by name and is refused by a host server
   that an `allow-all` VM reaches; a 256 MiB disk can't be filled past its size in a restored VM; the time limits are
   recorded on the session VM, and a stopped VM boots again with its synced files; a stopped VM is reaped and a
