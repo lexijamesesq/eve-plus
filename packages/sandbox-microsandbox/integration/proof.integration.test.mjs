@@ -19,6 +19,7 @@ const { createImplementation, NetworkPolicyConflictError } = await import(
 const { UnsupportedNetworkPolicyError } = await import(
   pathToFileURL(join(pkg, "network-policy.js")).href
 );
+const { staleSandboxState } = await import(pathToFileURL(join(pkg, "reap.js")).href);
 
 const ALPINE =
   "alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f";
@@ -407,6 +408,28 @@ describe("the disk and time limits", () => {
     await Snapshot.remove(limitedArtifact.snapshot.digest);
     const ok = status === "stopped" && bytes !== null && decode(bytes) === "kept";
     return [ok, JSON.stringify({ status, kept: bytes === null ? null : decode(bytes) })];
+  });
+});
+
+describe("reaping", () => {
+  // Stopped is how a stranded session's VM is left; running is a live one mid-command.
+  probe("a-stopped-vm-is-reaped-and-a-running-one-survives", async () => {
+    const stranded = await provider.start(sessionCtx("reap-stranded"), undefined, artifact);
+    const live = await provider.start(sessionCtx("reap-live"), undefined, artifact);
+    await stranded.connection.stop();
+    const ours = [stranded.state.sandboxName, live.state.sandboxName];
+    const stale = (await staleSandboxState({ unusedForMs: 0, now: Date.now() + 60_000 })).filter(
+      (item) => ours.includes(item.name),
+    );
+    for (const item of stale) await item.remove();
+    const left = (await sandboxNames()).filter((name) => ours.includes(name));
+    await provider.onSessionEnd(sessionCtx("reap-live"), live.state, { reason: "completed" });
+    const ok =
+      stale.length === 1 &&
+      stale[0].name === stranded.state.sandboxName &&
+      left.length === 1 &&
+      left[0] === live.state.sandboxName;
+    return [ok, JSON.stringify({ stale: stale.map((item) => item.name), left })];
   });
 });
 

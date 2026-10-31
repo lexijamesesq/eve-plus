@@ -126,22 +126,22 @@ To move to a new microsandbox release:
 
 Because the microsandbox version is part of the template key, the next `eve build` builds a fresh template.
 
-## Pruning templates
+## Reaping unused VMs and templates
 
-Each distinct template key leaves one snapshot named `eve-plus-tpl-<key>` in `MSB_HOME`, and nothing removes old ones automatically. A session never depends on its template after its VM is restored, so removing a snapshot can't break a live or stopped session. Removing the snapshot that the current deployment's artifact names makes new sessions fail with `SandboxTemplateNotProvisionedError` until the next `eve build`.
+Two things outlive their use in `MSB_HOME`. A session that never ends, such as one stranded by an eve upgrade, never runs `onSessionEnd`, so its VM and files stay on disk. Each distinct template key leaves a snapshot named `eve-plus-tpl-<key>`. Nothing removes either automatically.
 
-To prune, remove snapshots whose key isn't the current deployment's, by digest, without `force`:
+`staleSandboxState({ unusedForMs })` finds them, and each item it returns has a `remove()`. Call it from a periodic job:
 
 ```ts
-import { Snapshot } from "microsandbox";
+import { staleSandboxState } from "@eve-plus/sandbox-microsandbox";
 
-const current = "eve-plus-tpl-<current template key>";
-for (const snapshot of await Snapshot.list()) {
-  if (snapshot.name?.startsWith("eve-plus-tpl-") && snapshot.name !== current) {
-    await Snapshot.remove(snapshot.digest);
-  }
+for (const item of await staleSandboxState({ unusedForMs: 7 * 24 * 60 * 60_000 })) {
+  await item.remove();
 }
 ```
+
+- **A VM** is stale when it's stopped and microsandbox last started or stopped it before the cutoff. A running VM never is, and `remove()` skips a VM something started since it was found. eve can't list its sessions, so last use stands for liveness. Set `idleTimeoutSecs`, so a VM stops soon after its last command and its record says when that was. Removing a live session's VM loses only its files: eve's resume finds it gone and the session continues in a fresh sandbox.
+- **A template** is stale when it's older than the cutoff and isn't one of the two newest. The current build's template is the newest unless a later build was rolled back, so the rollback's is kept too. A session never depends on its template after its VM is restored. Removing the template the current build names makes new sessions fail with `SandboxTemplateNotProvisionedError` until the next `eve build`, which rebuilds it.
 
 ## Testing
 
