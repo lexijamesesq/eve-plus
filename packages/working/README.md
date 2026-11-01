@@ -57,6 +57,7 @@ The options:
 | `liftedVisibleDays` | 7 | How long a lifted or replaced order stays in the standing block. |
 | `limits` | loops 200, orders 50, notes 100 | The most open loops, active orders and live notes held at once. Past a cap, a write is refused with the way out (close, lift). |
 | `eventsPerEntry` | 50 | History kept per entry: its first change and its latest ones, up to this many in all. |
+| `recentEventMs` | 10 minutes | How recently an event may have fired for a loop opened to wait on it to be due at once. |
 | `maxWritesPerSession` | off | Past it, a write throws instead of landing. |
 
 The scope must never resolve to `null`: eve wipes a slot's recalled messages when its scope resolver returns `null`, and a schedule turn is exactly when the standing block matters. A constant scope, as above, is the intended use.
@@ -80,22 +81,22 @@ Open elsewhere (1):
 
 A turn with no address gets "No conversation address for this turn" in `here`. When nothing is open, the blocks say so, with the time.
 
-The standing block lists orders first, one short line each (the subject, the rule clipped to 60 characters, who set it by kind, and the date; `<slot>__list` shows the principal and link), then lifted orders, notes, and loops elsewhere with due and stale ones first. Past the budget it says what it cut, by kind, and names every order it couldn't show: `+3 more orders (releases:api, releases:docs, releases:cli); working__list lists them.` An order line runs from about 45 characters (`• releases:web: hold (by operator 2026-11-01)`) to about 110 with a long rule. Within the default 1,200, ten short orders fit in full (about 625 characters); ten with long rules show about six in full and name the other four in the closing line. The block is stamped to the minute, not the second, so an unchanged block within a minute is byte-identical and keeps its place in the prompt. If the store can't be read, both messages say `working memory unavailable: <reason>` and a warning is logged, so an outage never reads as an empty memory.
+No one entry can crowd out the rest: a line is capped at 400 characters, a loop's links are shown only while they fit in 160 (past that, "(N links)"), and a line that doesn't fit the budget is skipped and counted rather than ending the block. The standing block lists orders first, one short line each (the subject, the rule clipped to 60 characters, who set it by kind, and the date; `<slot>__list` shows the principal and link), then lifted orders, notes, and loops elsewhere with due and stale ones first (the store returns them first too, so a newer loop never pushes a due one out). Past the budget it says what it cut, by kind, and names every order it couldn't show: `+3 more orders (releases:api, releases:docs, releases:cli); working__list lists them.` An order line runs from about 45 characters (`• releases:web: hold (by operator 2026-11-01)`) to about 110 with a long rule. Within the default 1,200, ten short orders fit in full (about 625 characters); ten with long rules show about six in full and name the other four in the closing line. The block is stamped to the minute, not the second, so an unchanged block within a minute is byte-identical and keeps its place in the prompt. If the store can't be read, both messages say `working memory unavailable: <reason>` and a warning is logged, so an outage never reads as an empty memory.
 
 ### Waking
 
 A loop with a `revisit` is a follow-up. The package records the wake; the host delivers it, because only the host knows its channels. Its wake engine opens the same store with `openWorkingStore({ dir, followups, resolve })` from `@eve-plus/working/store` and drives it:
 
-- `claimDue(now, leaseMs)` leases every due loop in one `UPDATE … RETURNING`, so overlapping ticks never claim a loop twice. Each claim carries the loop's `address`, the opening turn's `principal` to send as, and `followupNote`, the wake text, which names the loop and stands alone after a restart.
+- `claimDue(now, leaseMs)` leases due loops in one `UPDATE … RETURNING`, so overlapping ticks never claim a loop twice: at most `claimLimit` a tick (default 20), oldest due first, so a backlog drains over several ticks. Each claim carries the loop's `address`, the opening turn's `principal` to send as, and `followupNote`, the wake text, which names the loop and stands alone after a restart.
 - `settleWake(id, leaseToken, firedBy)` after delivery: the loop is open again with its wake spent. A wake isn't a resolution; the woken turn closes the loop or sets a new revisit.
-- A delivery that fails isn't settled: its lease runs out and the next tick claims it again, so delivery is at least once.
-- `eventOccurred(event, occurredAt, firedBy, now)` makes due every loop waiting on that event whose wake was set by `occurredAt`; one set later waits for the next, so a redelivered old event wakes nothing new.
+- `failWake(id, leaseToken, { reason, final })` when the hand-off failed. A transient failure leaves the wake due, claimable again once its lease runs out, and the loop open for the agent to change in the meantime. A final failure (no address to send to, say), or the `maxWakeAttempts`th (default 5), gives the wake up as undeliverable: the loop stays open, shows as due in the standing block with `wake failed ×N: <reason>`, and isn't claimed again until the agent sets a new revisit. A claimant that dies without settling or failing leaves its lease to expire, and the loop is claimed again, so delivery is at least once.
+- `eventOccurred(event, occurredAt, firedBy, now)` makes due every loop waiting on that event whose wake was set by `occurredAt`; one set later waits for the next, so a redelivered old event wakes nothing new. The store remembers each event's latest occurrence, so a loop opened to wait on an event that fired within `recentEventMs` is due at once rather than stranded.
 
 `parseWhen` and `parseOn` (the `revisit` grammar) and `LOOP_WAKE_OPENING` are exported from `./store` too.
 
 ## Tools
 
-eve mounts them as `<slot>__<name>`. Identity and the conversation come from the session, never from arguments, and every refusal says what to do instead.
+eve mounts them as `<slot>__<name>`. Identity and the conversation come from the session, never from arguments, and every refusal says what to do instead. When the store can't be read or written, a tool answers `Working memory is unavailable: <reason>; nothing was recorded.` rather than throwing a database error at the model; only the `maxWritesPerSession` cap throws.
 
 - **`open`**: open a loop in this conversation: `what`, `waitingOn`, `next`, optional `links`, `signature`, `reviewBy` and `revisit` (`when`: an ISO time with offset or "in N minutes|hours|days"; or `on`: one of the host's `events`). Refused on a turn with no conversation.
 - **`update`**: change a loop's `next`, `waitingOn`, `links`, `revisit` (null removes it) or `reviewBy`. Refused while its wake is being delivered.
@@ -117,7 +118,7 @@ A loop keeps the opening turn's auth for its wake, cut to what delivery needs: `
 
 Observations and recurrence aren't in this version; loops already carry a `signature` column for them.
 
-A follow-ups file from an earlier self-wake store (`followups.sqlite`) is imported once by `openWorkingStore` or the `followups` option: a pending follow-up becomes an open loop with its wake, a done one a done loop, a cancelled one a dropped loop, with the note's first line as `what` and the rest as `next` (capped as the tools cap them), and its wake text built as any loop's. Re-running imports nothing twice; a row whose principal doesn't parse is skipped, and one the host's resolver can't place is counted as unresolved. When it imports or leaves out anything, it logs `[working] imported follow-ups imported=N skipped=N unresolved=N`.
+A follow-ups file from an earlier self-wake store (`followups.sqlite`) is imported once by `openWorkingStore` or the `followups` option: a pending follow-up becomes an open loop with its wake, a done one a done loop, a cancelled one a dropped loop, with the note's first line as `what` and the rest as `next` (capped as the tools cap them), and its wake text built as any loop's. Re-running imports nothing twice. A row whose principal doesn't parse or has no attributes, or that the host's resolver throws on, is skipped and named in a warning; one the resolver can't place is counted as unresolved. An empty or unreadable file imports nothing, and a failed import never stops the store opening. When it imports or can't place anything, it logs `[working] imported follow-ups imported=N skipped=N unresolved=N`.
 
 ## Checking a store
 

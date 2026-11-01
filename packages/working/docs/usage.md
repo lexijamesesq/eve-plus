@@ -56,6 +56,14 @@ Where the host can't deliver a wake (a GitHub or Linear conversation, say), the 
 → "Opened loop L2c4e6a80 in this conversation. Its revisit is recorded, but a wake can't be delivered to GitHub acme/app#7; the loop will still show as due in working:standing when the time comes."
 ```
 
+If the host can't hand a wake off, it reports the failure, and the loop says so. After the last attempt, or a failure the host knows is final, the wake is given up and the loop shows as due instead:
+
+```text
+• L77b0d2aa (Slack thread C123/1730390000.000200) waiting on me: reassess the release candidate [DUE since 2026-11-04T16:00Z; no wake can be delivered here; shown as due instead; wake failed ×5: queue busy]
+```
+
+The loop is still open: the agent can act on it, close it, or set a new revisit, which tries again from the start.
+
 ## A thread you started to ask for help
 
 When the agent asks someone else for help in a thread it started, the host may run that thread as the principal who asked, so "this conversation" there is the conversation the agent asked from. A loop it opens in that thread lands on, and wakes in, the original conversation, which is where the work is.
