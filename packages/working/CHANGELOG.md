@@ -3,8 +3,9 @@
 ## 0.1.1
 
 - **The standing block is stamped to the day** ("as of 2026-11-01"), not the minute. A changed block is re-anchored at the current turn and everything after it is re-sent uncached, so the minute stamp cost the prompt cache on every turn more than a minute apart.
-- **The standing block keeps only the room its closing line needs.** It reserved a fixed ~405 characters for the cut counts and names, which hid loops that would have fit: at 3 orders, 1 lifted, 1 note and 4 loops elsewhere, all four loops now show. The pointer to `<slot>__list` is still reserved first and never cut.
+- **The standing block keeps only the room its closing line needs.** It reserved a fixed ~405 characters for the cut counts and names, which hid entries that would have fit. The pointer to `<slot>__list` is still reserved first and never cut.
 - **Loops elsewhere carry their next step**, clipped to 60 characters.
+- **The budget is the host's.** At 3 orders, 1 lifted, 1 note and 4 marked loops elsewhere, 1,200 characters shows every order and note and 3 of the 4 loops, counting the fourth; all four need about 1,240. Hosts size `maxCharacters` for their own state.
 
 ## 0.1.0
 

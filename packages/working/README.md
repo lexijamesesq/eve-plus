@@ -13,7 +13,7 @@ Install it from a release tag as a git dependency, next to eve 0.91.0 or later w
 ```json
 {
   "dependencies": {
-    "@eve-plus/working": "github:lexijamesesq/eve-plus#working--v0.1.0&path:packages/working",
+    "@eve-plus/working": "github:lexijamesesq/eve-plus#working--v0.1.1&path:packages/working",
     "eve": "0.91.0"
   }
 }
@@ -57,7 +57,7 @@ The options:
 | `eventsPerEntry` | 50 | History kept per entry: its first change and its latest ones, up to this many in all. |
 | `principalAttributes` | user_id, team_id, channel_id, thread_ts | The auth attributes a loop keeps of the turn that opened it, for your host to send its wake as. It replaces the default; every other attribute is dropped. |
 | `onFirstOpen(store)` | none | Run when the store is opened, before it's first read: where your host imports loops from an earlier store with `importLoop`. It runs on every open, by the provider and by the wake engine, so it must be idempotent (`importLoop` is). |
-| `maxCharacters` | 1,200 | Per recall message. Past it, counts and a pointer to `<slot>__list`. |
+| `maxCharacters` | 1,200 | Per recall message. Past it, counts and a pointer to `<slot>__list`. The standing block fills orders, then lifted orders and notes, then loops elsewhere, so a small budget shows every order and note before any loop; size it to the host's realistic state. |
 | `reviewAfterDays` | loop 7, order 14, note 7 | When an untouched entry is marked stale; a note expires then. |
 | `maxWritesPerSession` | 100 | Past it, a write throws instead of landing. |
 
@@ -82,7 +82,7 @@ Open elsewhere (1):
 • L77b0d2aa (Slack thread C123/1730390000.000200) waiting on me: reassess the release candidate. Next: rerun the smoke suite on the new candidate [revisit 2026-11-05T16:00Z]
 ```
 
-A turn with no address gets "No conversation address for this turn" in `here`, and so does a turn whose resolver throws or returns an invalid address (logged as `[working] conversation resolver failed: <reason>`): the standing block still renders, so holds never drop out because a conversation couldn't be placed. When nothing is open, the blocks say so, with the time. The standing block lists orders first, the operator's first among them, one short line each; then lifted orders, notes, and loops elsewhere, due ones first, then stale. No entry can crowd out the rest: a line is capped at 400 characters, links past 160 are counted instead, and a line that doesn't fit is skipped and counted. Past the budget the block says what it cut, by kind, names the orders it couldn't show, and keeps the pointer to `<slot>__list`; the room kept for that closing line is what it actually needs, so nothing is hidden to make space for names that aren't there. Loops elsewhere carry their next step. The standing block is stamped to the day, not the minute. eve re-anchors a recalled block that changed at the current turn, so everything after its old place is sent again uncached: a minute stamp cost the prompt cache on every turn more than a minute apart. Within a day an unchanged block is byte-identical and keeps its place.
+A turn with no address gets "No conversation address for this turn" in `here`, and so does a turn whose resolver throws or returns an invalid address (logged as `[working] conversation resolver failed: <reason>`): the standing block still renders, so holds never drop out because a conversation couldn't be placed. When nothing is open, the blocks say so. The standing block lists orders first, the operator's first among them, one short line each; then lifted orders, notes, and loops elsewhere, due ones first, then stale. No entry can crowd out the rest: a line is capped at 400 characters, links past 160 are counted instead, and a line that doesn't fit is skipped and counted. Past the budget the block says what it cut, by kind, names the orders it couldn't show, and keeps the pointer to `<slot>__list`; the room kept for that closing line is what it actually needs, so nothing is hidden to make space for names that aren't there. Loops elsewhere carry their next step. The standing block is stamped to the day, not the minute. eve re-anchors a recalled block that changed at the current turn, so everything after its old place is sent again uncached: a minute stamp cost the prompt cache on every turn more than a minute apart. Within a day an unchanged block is byte-identical and keeps its place.
 
 If the store can't be read, both messages say working memory is temporarily unavailable this turn, as fixed text: the reason goes to the log as `[working] turn-start recall failed: <reason>`, never into the model's context, and an outage never reads as an empty memory. A store the agent can read but not write (a read-only mount) is shown as usual, marked "read-only this turn", and writes refuse. Recall is idempotent by its ids, so resuming after a tool approval needs no special case.
 

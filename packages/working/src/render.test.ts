@@ -128,37 +128,80 @@ describe("recall blocks", () => {
     expect(standing).toContain("working__list lists them.");
   });
 
-  it("at 3 orders, 1 lifted, 1 note and 4 loops elsewhere, all four loops show with their next step", () => {
-    const orders = ["releases:web", "releases:api", "fleet:deploys"].map((s) =>
+  // The reviewers' realistic state: three 47-character hold rules, one lifted order, one note, and four loops
+  // elsewhere carrying the marks a live store gives them (due, undeliverable, stale).
+  const realistic = (maxCharacters: number): RecallView => {
+    const orders = ["releases:web", "releases:api", "deploys:web"].map((s) =>
       order(s, { rule: "hold until the migration on this service lands" }),
     );
     const lifted = order("releases:docs", { status: "lifted", endedBy: operator, why: "shipped" });
     const note: Note = {
       id: "N1",
-      text: "Thursday prep moves to 10:00 this week",
+      text: "standup moves to 10:00 this week",
       expiresAt: NOW + 7 * 86_400_000,
       origin: operator,
       createdAt: NOW - 3_600_000,
       updatedAt: NOW - 3_600_000,
     };
-    const loops = Array.from({ length: 4 }, (_, i) =>
+    const marked: Partial<Loop>[] = [
+      { wake: "pending", dueAt: NOW - 60_000 },
+      { wake: "undeliverable", dueAt: NOW - 60_000 },
+      { reviewBy: Date.parse("2026-10-28T00:00:00Z") },
+      { wake: "pending", dueAt: NOW + 86_400_000 },
+    ];
+    const loops = marked.map((extra, i) =>
       loop(`L${i}`, {
         conversationKey: `k${i}`,
         address: { kind: "slack-dm", teamId: "T1", channelId: `D${i}` },
+        ...extra,
       }),
     );
-    const standing = renderStanding({
+    return {
       ...empty,
+      maxCharacters,
       orders: { orders, total: 3 },
       lifted: { orders: [lifted], total: 1 },
       notes: { notes: [note], total: 1 },
       elsewhere: { loops, total: 4 },
-    });
+    };
+  };
+  const loopLines = (block: string) =>
+    block.split("\n").filter((l) => /^• L\d+ .*Next: when she answers/.test(l));
+
+  it("at the realistic state, 1,200 characters shows every order and note before the loops, and counts the rest", () => {
+    const standing = renderStanding(realistic(1_200));
     expect(standing.length).toBeLessThanOrEqual(1_200);
-    expect(
-      standing.split("\n").filter((l) => /^• L\d+ .*Next: when she answers/.test(l)),
-    ).toHaveLength(4);
+    for (const subject of ["releases:web", "releases:api", "deploys:web", "releases:docs"])
+      expect(standing).toContain(subject);
+    expect(standing).toContain("standup moves to 10:00 this week");
+    expect(loopLines(standing)).toHaveLength(3);
+    expect(standing.split("\n").at(-1)).toBe("+1 more loops elsewhere: working__list lists them.");
+  });
+
+  it("at the realistic state, a 2,000-character budget shows all four loops with their next step", () => {
+    const standing = renderStanding(realistic(2_000));
+    expect(loopLines(standing)).toHaveLength(4);
     expect(standing).not.toContain("more loops elsewhere");
+  });
+
+  it("lays out again when the closing line needs more room than the pointer, so no line is cut short", () => {
+    // Hidden orders are named on the closing line, which the first layout, with room for the pointer alone, can't fit.
+    const orders = Array.from({ length: 30 }, (_, i) =>
+      order(`releases:service-${i}`, { rule: "hold until the migration on this service lands" }),
+    );
+    const standing = renderStanding({ ...empty, orders: { orders, total: 30 } });
+    expect(standing.length).toBeLessThanOrEqual(1_200);
+    expect(standing).not.toContain("…");
+    expect(standing.split("\n").at(-1)).toMatch(
+      /^\+\d+ more orders \(releases:service-.*: working__list lists them\.$/,
+    );
+  });
+
+  it("when even the header leaves no room, the body is cut and the closing line is kept whole", () => {
+    const orders = Array.from({ length: 5 }, (_, i) => order(`releases:service-${i}`));
+    const standing = renderStanding({ ...empty, maxCharacters: 260, orders: { orders, total: 5 } });
+    expect(standing.length).toBeLessThanOrEqual(260);
+    expect(standing).toMatch(/…\n\+5 more orders \(.*\): working__list lists them\.$/);
   });
 
   it("one oversize loop doesn't blank the block: its links are counted and the next loop still shows", () => {

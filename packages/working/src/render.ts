@@ -146,9 +146,6 @@ export interface Section {
 
 const NAMES_BUDGET = 240;
 
-// Slack kept beside the closing line's measured length, so a small difference in its final wording still fits.
-const TAIL_MARGIN = 16;
-
 /**
  * The header, then each section's lines in order for as long as they fit in `max`, then a stated count of what didn't,
  * by kind, with a pointer to the list tool. A line that doesn't fit is skipped and counted, not a stop, so one long
@@ -168,10 +165,10 @@ export function fitBlock(
   listTool: string,
 ): string {
   const pointer = `: ${listTool} lists them.`;
-  let reserve = pointer.length + TAIL_MARGIN;
+  let reserve = pointer.length + 1;
   let laid = layout(header, sections, max - reserve, pointer);
   for (let pass = 0; pass < 3 && laid.tail && laid.tail.length + 1 > reserve; pass++) {
-    reserve = laid.tail.length + 1 + TAIL_MARGIN;
+    reserve = laid.tail.length + 1;
     laid = layout(header, sections, max - reserve, pointer);
   }
   const body = laid.lines.join("\n");
