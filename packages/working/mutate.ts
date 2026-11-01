@@ -104,8 +104,8 @@ const mutations: Mutation[] = [
   {
     name: "a live lease doesn't hold a loop",
     file: "src/store.ts",
-    find: "AND (status = 'open' OR (status = 'delivering' AND lease_until <= ?))",
-    replace: "AND status IN ('open', 'delivering') AND ? IS NOT NULL",
+    find: "AND (lease_until IS NULL OR lease_until <= ?) AND status IN ('open', 'delivering')",
+    replace: "AND ? IS NOT NULL AND status IN ('open', 'delivering')",
     expect: "claimDue claims a due loop once",
   },
   {

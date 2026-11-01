@@ -203,6 +203,58 @@ describe("wakes", () => {
     expect(s.settleWake(loop.id, second?.leaseToken as string, "x")).toBe(true);
   });
 
+  it("a failing wake is retried after its lease, then given up as undeliverable, and the loop stays usable", () => {
+    const s = store();
+    const loop = loopIn(s, dm, { revisit: { dueAt: T0 } });
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      clock += 60_000;
+      const [claimed] = s.claimDue(clock, 30_000);
+      if (attempt > 5) {
+        expect(claimed).toBeUndefined();
+        break;
+      }
+      expect(s.failWake(loop.id, claimed?.leaseToken as string, { reason: "queue busy" })).toBe(
+        true,
+      );
+      // Open, so the agent can change it, but not claimable again until the lease runs out.
+      expect(s.loop(loop.id)?.status).toBe("open");
+      if (attempt < 5) expect(s.claimDue(clock + 1, 30_000)).toEqual([]);
+    }
+    expect(s.loop(loop.id)).toMatchObject({
+      status: "open",
+      wake: "undeliverable",
+      wakeAttempts: 5,
+      wakeError: "queue busy",
+    });
+    expect(s.update(loop.id, { next: "ask again" }, operator).ok).toBe(true);
+    const other = loopIn(s, dm, { revisit: { dueAt: clock } });
+    const [claimed] = s.claimDue(clock, 30_000);
+    s.failWake(other.id, claimed?.leaseToken as string, { reason: "no address", final: true });
+    expect(s.loop(other.id)?.wake).toBe("undeliverable");
+  });
+
+  it("one tick claims at most its limit, oldest due first", () => {
+    const s = store({ claimLimit: 3 });
+    const ids = Array.from(
+      { length: 5 },
+      (_, i) => loopIn(s, dm, { revisit: { dueAt: T0 + (5 - i) * 1_000 } }).id,
+    );
+    clock = T0 + 10_000;
+    expect(s.claimDue(clock, 60_000).map((c) => c.id)).toEqual([ids[4], ids[3], ids[2]]);
+    expect(s.claimDue(clock, 60_000).map((c) => c.id)).toEqual([ids[1], ids[0]]);
+  });
+
+  it("a loop opened just after its event fired is due at once; long after, it waits for the next", () => {
+    const s = store();
+    s.eventOccurred("build-finished:web", T0, "run 7", T0);
+    clock = T0 + 5 * 60_000;
+    const soon = loopIn(s, dm, { revisit: { onEvent: "build-finished:web" } });
+    expect(soon).toMatchObject({ dueAt: clock, firedBy: "run 7" });
+    clock = T0 + 11 * 60_000;
+    const late = loopIn(s, dm, { revisit: { onEvent: "build-finished:web" } });
+    expect(late.dueAt).toBeNull();
+  });
+
   it("an undeliverable wake is recorded but never claimed", () => {
     const s = store();
     const loop = loopIn(s, dm, { revisit: { dueAt: T0 }, deliverable: false });

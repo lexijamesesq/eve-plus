@@ -46,6 +46,9 @@ export interface Loop {
   readonly onEvent: string | null;
   readonly wake: WakeState | null;
   readonly firedBy: string | null;
+  /** Failed deliveries of the current wake, and the last failure's reason. */
+  readonly wakeAttempts: number;
+  readonly wakeError: string | null;
   readonly why: string | null;
   readonly followupNote: string;
   readonly reviewBy: number;
@@ -193,6 +196,15 @@ export interface WorkingStoreOptions {
   readonly limits?: { readonly loops?: number; readonly orders?: number; readonly notes?: number };
   /** Events kept per entry: its first, and its latest up to this many in all. Default 50. */
   readonly eventsPerEntry?: number;
+  /** Failed deliveries before a wake is given up as undeliverable. Default 5. */
+  readonly maxWakeAttempts?: number;
+  /** Most loops one `claimDue` claims, oldest due first, so a backlog drains over several ticks. Default 20. */
+  readonly claimLimit?: number;
+  /**
+   * How recent an event may be for a loop that waits on it to be due at once: a loop opened just after its event
+   * fired would otherwise wait for the next one. Default 10 minutes.
+   */
+  readonly recentEventMs?: number;
 }
 
 // What a wake needs of the opening turn's auth to send as it, and nothing else: no email or names at rest.
@@ -287,6 +299,8 @@ const MIGRATIONS: readonly string[] = [
     lease_until INTEGER,
     lease_token TEXT,
     fired_by TEXT,
+    wake_attempts INTEGER NOT NULL DEFAULT 0,
+    wake_error TEXT,
     followup_note TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('open', 'delivering', 'done', 'dropped')),
     why TEXT,
@@ -332,6 +346,11 @@ const MIGRATIONS: readonly string[] = [
     at INTEGER NOT NULL
   );
   CREATE INDEX events_entry ON events (entry_id, seq);
+  CREATE TABLE event_occurrences (
+    event TEXT PRIMARY KEY,
+    occurred_at INTEGER NOT NULL,
+    fired_by TEXT NOT NULL
+  );
   `,
 ];
 /** The schema version this package writes. */
@@ -393,6 +412,9 @@ export class WorkingStore {
   readonly #liftedMs: number;
   readonly #limits: { loops: number; orders: number; notes: number };
   readonly #eventsPerEntry: number;
+  readonly #maxWakeAttempts: number;
+  readonly #claimLimit: number;
+  readonly #recentEventMs: number;
 
   constructor(path: string, options: WorkingStoreOptions = {}) {
     // Only the agent's own user reads its working state: the directory it makes is 0700 and the file 0600.
@@ -410,6 +432,9 @@ export class WorkingStore {
       notes: options.limits?.notes ?? 100,
     };
     this.#eventsPerEntry = Math.max(2, options.eventsPerEntry ?? 50);
+    this.#maxWakeAttempts = Math.max(1, options.maxWakeAttempts ?? 5);
+    this.#claimLimit = Math.max(1, options.claimLimit ?? 20);
+    this.#recentEventMs = options.recentEventMs ?? 10 * 60_000;
     const db = new DatabaseSync(path);
     this.#db = db;
     try {
@@ -509,14 +534,23 @@ export class WorkingStore {
   }
 
   #wake(revisit: Revisit | undefined | null, deliverable: boolean, now: number): Row {
+    const fresh = { wake_attempts: 0, wake_error: null };
     if (!revisit || (revisit.dueAt === undefined && revisit.onEvent === undefined))
-      return { due_at: null, on_event: null, wake: null, wake_set_at: null };
+      return { due_at: null, on_event: null, wake: null, wake_set_at: null, ...fresh };
+    // An event that fired moments before the loop was opened still counts, so a fast host doesn't strand it.
+    const recent =
+      revisit.onEvent === undefined
+        ? undefined
+        : (this.#db
+            .prepare("SELECT fired_by FROM event_occurrences WHERE event = ? AND occurred_at >= ?")
+            .get(revisit.onEvent, now - this.#recentEventMs) as { fired_by: string } | undefined);
     return {
-      due_at: revisit.dueAt ?? null,
+      due_at: revisit.dueAt ?? (recent ? now : null),
       on_event: revisit.onEvent ?? null,
       wake: deliverable ? "pending" : "undeliverable",
       wake_set_at: now,
-      fired_by: null,
+      fired_by: recent?.fired_by ?? null,
+      ...fresh,
     };
   }
 
@@ -776,6 +810,8 @@ export class WorkingStore {
       notes: ["expires_at > ?", [now]],
       all: ["expires_at > ?", [now]],
     };
+    // Loops that need action (due or stale) come first, so a cap never hides them behind newer ones.
+    const urgentFirst = `((wake IS NOT NULL AND due_at IS NOT NULL AND due_at <= ${Number(now)}) OR review_by <= ${Number(now)}) DESC, `;
     const select = (table: Table, where: Where | undefined) => {
       if (!where) return { rows: [] as Row[], total: 0 };
       const [clause, params] = where;
@@ -783,7 +819,9 @@ export class WorkingStore {
         .prepare(`SELECT count(*) AS n FROM ${table} WHERE ${clause}`)
         .get(...params) as { n: number };
       const rows = this.#db
-        .prepare(`SELECT * FROM ${table} WHERE ${clause} ORDER BY updated_at DESC, id LIMIT ?`)
+        .prepare(
+          `SELECT * FROM ${table} WHERE ${clause} ORDER BY ${table === "loops" ? urgentFirst : ""}updated_at DESC, id LIMIT ?`,
+        )
         .all(...params, limit) as Row[];
       return { rows, total: Number(n) };
     };
@@ -808,11 +846,18 @@ export class WorkingStore {
       const rows = this.#db
         .prepare(
           `UPDATE loops SET status = 'delivering', lease_until = ?, lease_token = ?
-           WHERE wake = 'pending' AND due_at IS NOT NULL AND due_at <= ?
-             AND (status = 'open' OR (status = 'delivering' AND lease_until <= ?))
+           WHERE id IN (
+             SELECT id FROM loops
+             WHERE wake = 'pending' AND due_at IS NOT NULL AND due_at <= ?
+               AND (lease_until IS NULL OR lease_until <= ?) AND status IN ('open', 'delivering')
+             ORDER BY due_at, id LIMIT ?)
            RETURNING *`,
         )
-        .all(now + leaseMs, token, now, now) as Row[];
+        .all(now + leaseMs, token, now, now, this.#claimLimit) as Row[];
+      // RETURNING keeps no order; hand them back oldest due first, as they were chosen.
+      rows.sort(
+        (a, b) => Number(a.due_at) - Number(b.due_at) || String(a.id).localeCompare(String(b.id)),
+      );
       for (const row of rows)
         this.#event("loops", String(row.id), "wake-claimed", null, row, WAKE_ORIGIN);
       return rows.map((row) => ({
@@ -855,6 +900,38 @@ export class WorkingStore {
   }
 
   /**
+   * The wake couldn't be handed off. A transient failure leaves the wake due, and the loop open for the agent to change,
+   * to be claimed again once the lease runs out; a final one, or the `maxWakeAttempts`th, gives the wake up as
+   * undeliverable, so the loop shows as due in the standing block instead of retrying forever. False when this
+   * claimant no longer holds it.
+   */
+  failWake(
+    id: string,
+    leaseToken: string,
+    failure: { readonly reason: string; readonly final?: boolean },
+  ): boolean {
+    return this.#tx(() => {
+      const now = this.#now();
+      const before = this.#row("loops", id);
+      if (before?.status !== "delivering" || before.lease_token !== leaseToken) return false;
+      const attempts = Number(before.wake_attempts ?? 0) + 1;
+      const giveUp = failure.final === true || attempts >= this.#maxWakeAttempts;
+      const after: Row = {
+        ...before,
+        status: "open",
+        lease_token: null,
+        lease_until: giveUp ? null : before.lease_until,
+        wake: giveUp ? "undeliverable" : "pending",
+        wake_attempts: attempts,
+        wake_error: clip(flat(failure.reason), 160),
+        updated_at: now,
+      };
+      this.#put("loops", before, after, giveUp ? "wake-given-up" : "wake-failed", WAKE_ORIGIN);
+      return true;
+    });
+  }
+
+  /**
    * An event happened at `occurredAt`: every open loop waiting on it, whose wake was set by then, becomes due `now`.
    * One set after it waits for the next, so a redelivered old event wakes nothing new. The wake's set time decides,
    * not the loop's creation, since `update` can add a revisit to an old loop. Answers how many became due.
@@ -869,6 +946,13 @@ export class WorkingStore {
            RETURNING *`,
         )
         .all(now, firedBy, now, event, occurredAt) as Row[];
+      this.#db
+        .prepare(
+          `INSERT INTO event_occurrences (event, occurred_at, fired_by) VALUES (?, ?, ?)
+           ON CONFLICT (event) DO UPDATE SET occurred_at = excluded.occurred_at, fired_by = excluded.fired_by
+           WHERE excluded.occurred_at > event_occurrences.occurred_at`,
+        )
+        .run(event, occurredAt, firedBy);
       for (const row of rows)
         this.#event("loops", String(row.id), "event-occurred", null, row, EVENT_ORIGIN);
       return rows.length;
@@ -976,12 +1060,21 @@ export class WorkingStore {
     resolve: (principal: SessionAuthContext) => Address | null,
   ): MigrationReport {
     if (!existsSync(path)) return { imported: 0, skipped: 0, unresolved: 0 };
-    const source = new DatabaseSync(path, { readOnly: true });
+    // A file that can't be read as a follow-ups store (empty, another schema, corrupt) imports nothing and never
+    // fails the open: a bad import must not take working memory down with it.
     let rows: Row[];
     try {
-      rows = source.prepare("SELECT * FROM followups ORDER BY created_at, id").all() as Row[];
-    } finally {
-      source.close();
+      const source = new DatabaseSync(path, { readOnly: true });
+      try {
+        rows = source.prepare("SELECT * FROM followups ORDER BY created_at, id").all() as Row[];
+      } finally {
+        source.close();
+      }
+    } catch (error) {
+      console.warn(
+        `[working] follow-ups file not imported: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { imported: 0, skipped: 0, unresolved: 0 };
     }
     const STATUS: Record<string, LoopStatus> = {
       pending: "open",
@@ -997,14 +1090,22 @@ export class WorkingStore {
           report.skipped++;
           continue;
         }
+        // One bad row is skipped and named, never the whole import.
         let principal: SessionAuthContext;
+        let address: Address | null;
         try {
-          principal = deliveryPrincipal(JSON.parse(String(f.principal)) as SessionAuthContext);
-        } catch {
+          const parsed = JSON.parse(String(f.principal)) as SessionAuthContext | null;
+          if (typeof parsed?.attributes !== "object" || parsed.attributes === null)
+            throw new Error("its principal has no attributes");
+          principal = deliveryPrincipal(parsed);
+          address = resolve(principal);
+        } catch (error) {
           report.skipped++;
+          console.warn(
+            `[working] follow-up ${followupId} skipped: ${error instanceof Error ? error.message : String(error)}`,
+          );
           continue;
         }
-        const address = resolve(principal);
         const status = STATUS[String(f.status)];
         if (address === null || status === undefined) {
           report.unresolved++;
@@ -1096,6 +1197,8 @@ function toLoop(row: Row): Loop {
     onEvent: str(row.on_event),
     wake: str(row.wake) as WakeState | null,
     firedBy: str(row.fired_by),
+    wakeAttempts: Number(row.wake_attempts ?? 0),
+    wakeError: str(row.wake_error),
     why: str(row.why),
     followupNote: String(row.followup_note),
     reviewBy: Number(row.review_by),
@@ -1163,21 +1266,24 @@ export interface OpenWorkingStoreOptions extends WorkingStoreOptions {
  * import is one IMMEDIATE transaction and skips rows already imported, so running it from both is harmless.
  */
 export function openWorkingStore(options: OpenWorkingStoreOptions): WorkingStore {
+  if (options.followups !== undefined && options.resolve === undefined)
+    throw new Error("openWorkingStore: followups needs resolve");
   const store = new WorkingStore(workingStorePath(options.dir), options);
-  try {
-    if (options.followups !== undefined) {
-      if (options.resolve === undefined)
-        throw new Error("openWorkingStore: followups needs resolve");
+  if (options.followups !== undefined && options.resolve !== undefined) {
+    // The import is a one-off; a failure in it is logged, and the store opens without it.
+    try {
       const r = store.migrateFollowups(options.followups, options.resolve);
-      // The import's only other trace is the stats' open count; a row with no address would vanish unremarked.
+      // The import's only other trace is the stats' open count; a row with no address would vanish unremarked. Rows
+      // already imported are skipped on every later start, so they alone don't log; a bad row logs its own line.
       if (r.imported + r.unresolved > 0)
         console.log(
           `[working] imported follow-ups imported=${r.imported} skipped=${r.skipped} unresolved=${r.unresolved}`,
         );
+    } catch (error) {
+      console.warn(
+        `[working] follow-ups import failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-  } catch (error) {
-    store.close();
-    throw error;
   }
   return store;
 }

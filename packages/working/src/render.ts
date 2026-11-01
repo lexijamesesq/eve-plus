@@ -68,15 +68,33 @@ function marks(loop: Loop, now: number): string {
   if (loop.wake === "undeliverable")
     out.push("no wake can be delivered here; shown as due instead");
   if (loop.status === "delivering") out.push("its wake is being delivered");
+  if (loop.wakeAttempts > 0)
+    out.push(
+      `wake failed ×${loop.wakeAttempts}${loop.wakeError ? `: ${clip(loop.wakeError, 60)}` : ""}`,
+    );
   if (isStale(loop, now)) out.push(`STALE since ${day(loop.reviewBy)}`);
   return out.length ? ` [${out.join("; ")}]` : "";
 }
 
+// No one entry can crowd out the rest: a line is capped, and links too long to show are counted instead.
+const MAX_LINE = 400;
+const MAX_LINKS = 160;
+
 /** A loop in full, for `here` and the list tool. */
 export function loopLine(loop: Loop, now: number, where = false): string {
   const at = where ? ` (${describeAddress(loop.address)})` : "";
-  const links = loop.links.length ? ` Links: ${loop.links.map(flat).join(" ")}` : "";
-  return `• ${loop.id}${at} waiting on ${flat(loop.waitingOn)}: ${flat(loop.what)}. Next: ${flat(loop.next)}${links}${marks(loop, now)}`;
+  const shown = loop.links.map(flat).join(" ");
+  const links =
+    loop.links.length === 0
+      ? ""
+      : shown.length <= MAX_LINKS
+        ? ` Links: ${shown}`
+        : ` (${loop.links.length} links)`;
+  const line = `• ${loop.id}${at} waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 200)}. Next: ${flat(loop.next)}`;
+  const tail = `${links}${marks(loop, now)}`;
+  return line.length + tail.length > MAX_LINE
+    ? `${clip(line, MAX_LINE - tail.length)}${tail}`
+    : `${line}${tail}`;
 }
 
 /** A loop elsewhere, short: enough to know it's there and where; the list tool has the rest. */
@@ -137,23 +155,35 @@ export function fitBlock(
   const reserve = 60 + listTool.length + sections.length * 24 + named.join(", ").length;
   const out = [header];
   let length = header.length;
-  let full = false;
   const left: string[] = [];
   for (const s of sections) {
     const head = s.lines.length === 0 ? (s.empty ?? null) : s.heading;
     let shown = 0;
-    for (const line of head === null ? s.lines : [head, ...s.lines]) {
-      if (full || length + line.length + 1 > max - reserve) {
-        full = true;
-        break;
+    // A line that doesn't fit is skipped and counted, not a stop: one long entry can't hide the shorter ones after it.
+    if (head !== null) {
+      if (length + head.length + 1 > max - reserve) {
+        if (s.lines.length > 0) {
+          left.push(
+            `+${s.total} more ${s.noun}${s.names?.length ? ` (${s.names.join(", ")})` : ""}`,
+          );
+          continue;
+        }
+      } else {
+        out.push(head);
+        length += head.length + 1;
       }
+    }
+    const shownNames: string[] = [];
+    for (const [i, line] of s.lines.entries()) {
+      if (length + line.length + 1 > max - reserve) continue;
       out.push(line);
       length += line.length + 1;
-      if (line !== head) shown++;
+      shown++;
+      if (s.names?.[i] !== undefined) shownNames.push(s.names[i] as string);
     }
     const hidden = s.total - shown;
     if (hidden > 0) {
-      const names = s.names?.slice(shown) ?? [];
+      const names = s.names?.filter((n) => !shownNames.includes(n)) ?? [];
       left.push(
         `+${hidden} more ${s.noun}${names.length ? ` (${names.join(", ")}${hidden > names.length ? ", …" : ""})` : ""}`,
       );

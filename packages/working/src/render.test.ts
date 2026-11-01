@@ -20,6 +20,8 @@ const loop = (id: string, extra: Partial<Loop> = {}): Loop => ({
   onEvent: null,
   wake: null,
   firedBy: null,
+  wakeAttempts: 0,
+  wakeError: null,
   why: null,
   followupNote: "",
   reviewBy: NOW + 86_400_000,
@@ -124,6 +126,30 @@ describe("recall blocks", () => {
     const shown = standing.split("\n").filter((l) => /^• L\d+ /.test(l)).length;
     expect(standing).toContain(`+${20 - shown} more loops elsewhere`);
     expect(standing).toContain("working__list lists them.");
+  });
+
+  it("one oversize loop doesn't blank the block: its links are counted and the next loop still shows", () => {
+    const big = loop("L9", {
+      links: Array.from({ length: 10 }, (_, i) => `https://example.test/${i}/${"a".repeat(480)}`),
+    });
+    const small = loop("L8", { what: "a small one" });
+    const here = renderHere({ ...empty, here: { loops: [big, small], total: 2 } });
+    expect(here).toContain("• L9 ");
+    expect(here).toContain("(10 links)");
+    expect(here).toContain("• L8 ");
+    expect(here.length).toBeLessThanOrEqual(1_200);
+  });
+
+  it("a failed wake says so on its loop", () => {
+    const failed = loop("L7", {
+      wake: "undeliverable",
+      dueAt: NOW - 1,
+      wakeAttempts: 3,
+      wakeError: "queue busy",
+    });
+    expect(renderStanding({ ...empty, elsewhere: { loops: [failed], total: 1 } })).toContain(
+      "wake failed ×3: queue busy",
+    );
   });
 
   it("an outage is both ids' one line", () => {
