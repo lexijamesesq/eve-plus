@@ -6,7 +6,9 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const STORE = "working.sqlite";
+import { STORE_FILE } from "./store.js";
+
+const STORE = STORE_FILE;
 const FILES = [STORE, `${STORE}-wal`, `${STORE}-shm`];
 
 export interface FileStat {
