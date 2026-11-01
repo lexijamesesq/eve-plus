@@ -1416,13 +1416,17 @@ function toEvent(row: Row): EntryEvent {
 export interface OpenWorkingStoreOptions extends WorkingStoreOptions {
   /** The store's directory; the file is `<dir>/working.sqlite`. */
   readonly dir: string;
-  /** Run once the store is open, before it's returned: where a host imports loops from an earlier store. */
+  /**
+   * Run each time this opener opens the store, before it's returned: where a host imports loops from an earlier store.
+   * The provider and the wake engine each open it, so it runs more than once and must be idempotent, as importLoop is.
+   */
   readonly onFirstOpen?: (store: WorkingStore) => void;
 }
 
 /**
  * Opens the agent's store and runs the host's `onFirstOpen` on it. The provider and the host's wake engine both open
- * through here, so whichever opens first after a start runs it, and neither reads before it has run. A throw from it is
+ * through here, so it runs on every open by each of them, and neither reads before it has run; the hook must be
+ * idempotent, which importLoop is by external id. A throw from it is
  * logged and the store opens anyway: a one-off import must not take working memory down.
  */
 export function openWorkingStore(options: OpenWorkingStoreOptions): WorkingStore {

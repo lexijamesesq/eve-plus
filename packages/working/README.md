@@ -56,7 +56,7 @@ The options:
 | `retentionDays` | 30 | How long a closed loop, an ended order or an expired note is kept, with its history, before it's pruned. |
 | `eventsPerEntry` | 50 | History kept per entry: its first change and its latest ones, up to this many in all. |
 | `principalAttributes` | user_id, team_id, channel_id, thread_ts | The auth attributes a loop keeps of the turn that opened it, for your host to send its wake as. It replaces the default; every other attribute is dropped. |
-| `onFirstOpen(store)` | none | Run once the store is open, before it's first read: where your host imports loops from an earlier store with `importLoop`. |
+| `onFirstOpen(store)` | none | Run when the store is opened, before it's first read: where your host imports loops from an earlier store with `importLoop`. It runs on every open, by the provider and by the wake engine, so it must be idempotent (`importLoop` is). |
 | `maxCharacters` | 1,200 | Per recall message. Past it, counts and a pointer to `<slot>__list`. |
 | `reviewAfterDays` | loop 7, order 14, note 7 | When an untouched entry is marked stale; a note expires then. |
 | `maxWritesPerSession` | 100 | Past it, a write throws instead of landing. |
@@ -114,7 +114,7 @@ Retention: closed loops, ended orders and expired notes are pruned with their hi
 
 A loop keeps the opening turn's auth for its wake, cut to `principalId`, `principalType`, `authenticator`, `issuer` and the `principalAttributes`. No email or names are stored, and event rows keep the origin but not the auth.
 
-**Bringing in an earlier store.** Reading another store's schema is the host's; the package gives it `importLoop({ externalId, address, principal, what, next, status, wake, createdAt, origin, … })`, which stores a loop as `open` would (the same link rule and text caps), once per `externalId`, and answers `imported`, `exists`, `bad` (a link `open` would refuse, a malformed address or origin, a non-numeric time or an unknown status) or `capped` (an open row past the open-loop cap). Run it from `onFirstOpen` on both the provider and the wake engine: whichever opens first imports, and a throw from it is logged and never stops the store opening. Imported ids are kept after their loops are pruned, so importing the same source again never brings a closed loop back.
+**Bringing in an earlier store.** Reading another store's schema is the host's; the package gives it `importLoop({ externalId, address, principal, what, next, status, wake, createdAt, origin, … })`, which stores a loop as `open` would (the same link rule and text caps), once per `externalId`, and answers `imported`, `exists`, `bad` (a link `open` would refuse, a malformed address or origin, a non-numeric time or an unknown status) or `capped` (an open row past the open-loop cap). Run it from `onFirstOpen` on both the provider and the wake engine: the hook runs on every open by each, the first run imports and the others find each row already there, and a throw from it is logged and never stops the store opening. Imported ids are kept after their loops are pruned, so importing the same source again never brings a closed loop back.
 
 Observations and recurrence aren't in this version.
 

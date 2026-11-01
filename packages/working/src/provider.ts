@@ -72,7 +72,10 @@ export interface WorkingMemoryOptions {
   readonly retentionDays?: number;
   /** The auth attributes a loop keeps for its wake. Default: user_id, team_id, channel_id, thread_ts. */
   readonly principalAttributes?: readonly string[];
-  /** Run once the store is open, before it's first read: where a host imports loops from an earlier store. */
+  /**
+   * Run when the provider opens the store, before it's first read: where a host imports loops from an earlier store.
+   * The wake engine runs it on its own open too, so it must be idempotent, as importLoop is.
+   */
   readonly onFirstOpen?: (store: WorkingStore) => void;
   /** Max characters per recall message. Default 1,200. */
   readonly maxCharacters?: number;
