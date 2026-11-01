@@ -102,9 +102,9 @@ export function loopLine(loop: Loop, now: number, where = false): string {
     : `${line}${tail}`;
 }
 
-/** A loop elsewhere, short: enough to know it's there and where; the list tool has the rest. */
+/** A loop elsewhere, short: what it is, where, and its next step; the list tool has the rest. */
 export function shortLoopLine(loop: Loop, now: number): string {
-  return `• ${loop.id} (${describeAddress(loop.address)}) waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 80)}${marks(loop, now)}`;
+  return `• ${loop.id} (${describeAddress(loop.address)}) waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 80)}. Next: ${clip(loop.next, 60)}${marks(loop, now)}`;
 }
 
 function orderMark(order: Order, now: number): string {
@@ -152,6 +152,13 @@ const NAMES_BUDGET = 240;
  * entry can't hide the shorter ones after it; a heading shows only over a line of its own. A section whose entries have
  * names lists the ones it couldn't show, within a budget, and counts the rest. Never empty: the header is always there,
  * and so is each empty section's sentence.
+ *
+ * The room kept for the closing line is what that line actually needs, not a fixed allowance: lay out with room for
+ * the pointer alone, measure the closing line that layout produces, and lay out again with room for it until it fits.
+ * The header, with its frame, is never given up for the closing line: when the two don't fit together, the closing
+ * line drops the names it lists and keeps its counts and pointer.
+ * A fixed allowance large enough for every name hid entries that would have fit. The pointer is reserved first and
+ * never cut; if the layouts don't settle, the body is cut, never the header or the closing line's counts.
  */
 export function fitBlock(
   header: string,
@@ -159,12 +166,36 @@ export function fitBlock(
   max: number,
   listTool: string,
 ): string {
-  // Room for the closing line, kept before anything else: the counts, the names, and the pointer, which never gets cut.
-  const reserve = 40 + listTool.length + sections.length * 28 + NAMES_BUDGET;
-  const budget = max - reserve;
+  const pointer = `: ${listTool} lists them.`;
+  let reserve = pointer.length + 1;
+  let laid = layout(header, sections, max - reserve, pointer);
+  for (let pass = 0; pass < 3 && laid.tail && laid.tail.length + 1 > reserve; pass++) {
+    reserve = laid.tail.length + 1;
+    laid = layout(header, sections, max - reserve, pointer);
+  }
+  const [head = header, ...rest] = laid.lines;
+  const cap = (text: string, room: number) =>
+    text.length > room ? `${text.slice(0, Math.max(0, room - 1))}…` : text;
+  if (!laid.tail) return cap(laid.lines.join("\n"), max);
+  // The header and its frame come first; then the closing line, without its names if they don't fit beside the
+  // header; the body gets what remains. Below the provider's floor even that can't fit, and the whole block is capped.
+  const tail = head.length + 1 + laid.tail.length <= max ? laid.tail : laid.plainTail;
+  const room = max - head.length - tail.length - 2;
+  const body = rest.join("\n");
+  return cap(body && room > 0 ? `${head}\n${cap(body, room)}\n${tail}` : `${head}\n${tail}`, max);
+}
+
+/** One layout of the block's lines within `budget`, and the closing line naming what it left out (null when nothing). */
+function layout(
+  header: string,
+  sections: readonly Section[],
+  budget: number,
+  pointer: string,
+): { lines: string[]; tail: string | null; plainTail: string } {
   const out = [header];
   let length = header.length;
   const left: string[] = [];
+  const counts: string[] = [];
   const fits = (line: string) => length + line.length + 1 <= budget;
   const push = (line: string) => {
     out.push(line);
@@ -205,10 +236,13 @@ export function fitBlock(
         : "";
     }
     left.push(`+${unshown} more ${s.noun}${names}`);
+    counts.push(`+${unshown} more ${s.noun}`);
   }
-  if (left.length) out.push(`${left.join("; ")}: ${listTool} lists them.`);
-  const body = out.join("\n");
-  return body.length > max ? `${body.slice(0, max - 1)}…` : body;
+  return {
+    lines: out,
+    tail: left.length ? `${left.join("; ")}${pointer}` : null,
+    plainTail: `${counts.join("; ")}${pointer}`,
+  };
 }
 
 export interface RecallView {
@@ -249,11 +283,12 @@ export function renderHere(v: RecallView): string {
 
 /**
  * Orders first, the operator's first among them, since an action checks them; then what was lifted, notes, and loops
- * elsewhere, due ones first, then stale. Stamped to the minute, so an unchanged block within a minute is byte-identical
- * and stays where it is.
+ * elsewhere, due ones first, then stale. Stamped to the day, not the minute: a changed block is re-anchored at the
+ * current turn and everything after its old place is re-sent uncached, so a minute stamp lost the prompt cache on
+ * every turn more than a minute apart. An unchanged block within a day is byte-identical and stays where it is.
  */
 export function renderStanding(v: RecallView): string {
-  const header = `[${STANDING_ID}] Working memory (${v.slot}) as of ${minute(v.now)}: standing orders, notes, and loops open elsewhere${v.readOnly ? READ_ONLY : ""}. ${FRAME}`;
+  const header = `[${STANDING_ID}] Working memory (${v.slot}) as of ${day(v.now)}: standing orders, notes, and loops open elsewhere${v.readOnly ? READ_ONLY : ""}. ${FRAME}`;
   const urgent = (l: Loop) => (isDue(l, v.now) ? 0 : isStale(l, v.now) ? 1 : 2);
   const elsewhere = [...v.elsewhere.loops].sort((a, b) => urgent(a) - urgent(b));
   const sections: Section[] = [

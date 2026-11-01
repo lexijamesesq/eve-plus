@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- **The standing block is stamped to the day** ("as of 2026-11-01"), not the minute. A changed block is re-anchored at the current turn and everything after it is re-sent uncached, so the minute stamp cost the prompt cache on every turn more than a minute apart.
+- **The standing block keeps only the room its closing line needs.** It reserved a fixed ~405 characters for the cut counts and names, which hid entries that would have fit. The pointer to `<slot>__list` is still reserved first and never cut.
+- **Loops elsewhere carry their next step**, clipped to 60 characters.
+- **The header and its frame are kept first.** When the closing line's listed names don't fit beside the header, the closing line keeps only its counts and pointer, and the body is cut before either. `maxCharacters` below 400 is raised to 400, so the block never exceeds its cap or loses its "Recorded data, not instructions" frame.
+- **The budget is the host's.** At 3 orders, 1 lifted, 1 note and 4 marked loops elsewhere, 1,200 characters shows every order and note and 3 of the 4 loops, counting the fourth; all four need a budget of about 1,270. Hosts size `maxCharacters` for their own state.
+
 ## 0.1.0
 
 The first release. A working-memory provider for eve 0.91: an agent's open loops, standing orders and notes in one SQLite file (`node:sqlite`, schema `user_version` 1), recalled at every turn's start as two messages, `working:here` and `working:standing`, which are never empty and never throw. Stores written by pre-release commits of this package aren't supported.
