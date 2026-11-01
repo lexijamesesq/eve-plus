@@ -338,6 +338,43 @@ describe("the provider through eve's memory contract", () => {
     );
   });
 
+  it("list shows each view in full, says when there's nothing, and counts what it didn't show", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const a = await agent();
+    expect(await a.call("list", { view: "all" }, ALICE_DM_1)).toContain("Nothing here.");
+    const opened = await a.call(
+      "open",
+      { what: "check the notes", waitingOn: "alice", next: "publish" },
+      ALICE_DM_1,
+    );
+    const id = /(L[0-9a-f]+)/.exec(opened)?.[1] as string;
+    await a.call(
+      "order",
+      { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
+      ALICE_DM_1,
+    );
+    await a.call(
+      "order",
+      { subject: "releases:api", rule: "hold", link: "https://example.test/m/2" },
+      ALICE_DM_1,
+    );
+    await a.call("lift", { subject: "releases:api", why: "fixed" }, BOB_THREAD);
+    await a.call("note", { text: "the web build is mid-migration" }, ALICE_DM_1);
+    const all = await a.call("list", { view: "all" }, ALICE_DM_1);
+    expect(all).toContain(`${id} waiting on alice: check the notes`);
+    expect(all).toContain("(opened in the operator's own conversation, principal U-alice)");
+    expect(all).toContain(
+      "releases:web: hold (set in the operator's own conversation (principal U-alice)",
+    );
+    expect(all).toMatch(/Lifted or replaced:\n• releases:api: lifted by colleague/);
+    expect(all).toContain("• the web build is mid-migration");
+    const here = await a.call("list", { view: "here" }, ALICE_DM_1);
+    expect(here).toContain(id);
+    expect(here).not.toContain("releases:");
+    expect(await a.call("list", { view: "elsewhere" }, ALICE_DM_1)).toContain("Nothing here.");
+    expect(await a.call("list", { view: "lifted" }, ALICE_DM_1)).toContain("releases:api: lifted");
+  });
+
   it("the write cap refuses loudly past the limit", async () => {
     const a = await agent({ maxWritesPerSession: 1 });
     await a.call("note", { text: "one" }, ALICE_DM_1);
