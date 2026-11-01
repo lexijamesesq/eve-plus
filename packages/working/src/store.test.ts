@@ -5,6 +5,7 @@ import type { Address } from "./addresses.js";
 import { addressKey } from "./addresses.js";
 import {
   LOOP_WAKE_OPENING,
+  linkRule,
   MIGRATIONS,
   type Origin,
   orderChangeCount,
@@ -91,7 +92,7 @@ describe("loops", () => {
     expect(s.history(loop.id).map((e) => e.change)).toEqual(["opened"]);
   });
 
-  it("a retried tool call returns the entry it already made", () => {
+  it("a retried tool call returns the entry it already made, within its session", () => {
     const s = store();
     const call = { ...operator, callId: "call-1" };
     const first = loopIn(s, dm, {}, call);
@@ -106,6 +107,10 @@ describe("loops", () => {
     );
     expect(again.ok && again.order.id).toBe(order.ok && order.order.id);
     expect(s.list({ view: "all" }).totals).toMatchObject({ loops: 1, orders: 1 });
+    // The same call id in another session is another call.
+    const elsewhere = loopIn(s, dm, {}, { ...call, sessionId: "s9" });
+    expect(elsewhere.id).not.toBe(first.id);
+    expect(s.list({ view: "all" }).totals.loops).toBe(2);
   });
 
   it("closing is an event, never a deletion, and a second close returns the first", () => {
@@ -267,6 +272,12 @@ describe("wakes", () => {
     clock = T0 + 11 * 60_000;
     const late = loopIn(s, dm, { revisit: { onEvent: "build-finished:web" } });
     expect(late.dueAt).toBeNull();
+  });
+
+  it("an event with a time that isn't a number is ignored", () => {
+    const s = store();
+    loopIn(s, dm, { revisit: { onEvent: "build-finished:web" } });
+    expect(s.eventOccurred("build-finished:web", Number.NaN, "bad", T0)).toBe(0);
   });
 
   it("an event dated in the future counts as now, so it can't pin later loops as already fired", () => {
@@ -488,5 +499,17 @@ describe("schema", () => {
         .update(MIGRATIONS[0] as string)
         .digest("hex"),
     ).toBe("5b96bb3abd84dff3b5d7803a23c7083cc673b1961c13f6b1e14a0b9a800ba1ae");
+  });
+});
+
+describe("links", () => {
+  it("a host's own schemes replace the defaults; none means URLs only, and a bare colon never passes", () => {
+    const custom = linkRule(["jira"]);
+    expect(custom.test("jira:OPS-4")).toBe(true);
+    expect(custom.test("linear:ABC-1")).toBe(false);
+    const none = linkRule([]);
+    expect(none.test("https://example.test/a")).toBe(true);
+    expect(none.test(":x")).toBe(false);
+    expect(none.rule).toBe("an http(s) URL; no spaces, <, > or |");
   });
 });

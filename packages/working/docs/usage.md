@@ -109,4 +109,14 @@ working__lift({ subject: "releases:api", ... })
 → "Couldn't lift it: There's no active order on \"releases:api\". List orders to see the subjects that have one."
 ```
 
+## Errors, generally
+
+A refusal is an answer, not a failure: it says what's wrong and what to do, and nothing was written. When the store itself can't be read or written, a tool answers "Working memory is temporarily unavailable this turn; nothing was recorded." and recall says the same in both blocks; the agent should act on what it can see and say so if it matters, never that nothing is open. Only the per-session write cap throws.
+
+## Known limits
+
+- Recall shows what's recorded, not what's true: verify a loop against live state before acting on it.
+- Links aren't resolved: a `linear:` or `working:` reference is stored and shown as written.
+- Observations and recurrence aren't in this version.
+
 See the [README](../README.md) for the options, storage and security model.

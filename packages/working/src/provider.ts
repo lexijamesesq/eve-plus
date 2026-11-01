@@ -28,7 +28,9 @@ import {
   STANDING_ID,
 } from "./render.js";
 import {
+  DEFAULT_LINK_SCHEMES,
   type ListView,
+  linkRule,
   type Origin,
   type OriginKind,
   openWorkingStore,
@@ -46,16 +48,6 @@ export interface OriginSession {
   readonly parent?: unknown;
 }
 
-/** The link references accepted beside http(s) URLs unless the host names its own. */
-export const DEFAULT_LINK_SCHEMES = [
-  "knowledge",
-  "working",
-  "vault",
-  "linear",
-  "slack",
-  "github",
-] as const;
-
 export interface WorkingMemoryOptions {
   /** The store's directory; the file is `<dir>/working.sqlite`. A mounted volume in a container. */
   readonly dir: string;
@@ -70,7 +62,7 @@ export interface WorkingMemoryOptions {
   readonly originKind?: (auth: SessionAuthContext | null, session: OriginSession) => OriginKind;
   /** The event keys the host fires (through `eventOccurred`), which `revisit.on` may name. With none, `on` is refused. */
   readonly events?: readonly string[];
-  /** The `<scheme>:` references a link may be, beside http(s) URLs. Default: knowledge, working, vault, linear, slack, github. */
+  /** The `<scheme>:` references a link may be, beside http(s) URLs; empty means URLs only. Default: knowledge, working, vault, linear, slack, github. */
   readonly linkSchemes?: readonly string[];
   /** Most open loops, active orders and live notes held at once. Defaults 200, 50, 100. */
   readonly limits?: { readonly loops?: number; readonly orders?: number; readonly notes?: number };
@@ -115,16 +107,9 @@ const VIEWS = ["here", "elsewhere", "orders", "stale", "lifted", "notes", "all"]
  * pass, with no spaces and no `<`, `>` or `|` (which a Slack label like `<https://a.example|https://b.example>` needs).
  */
 export function toolSpecs(schemes: readonly string[] = DEFAULT_LINK_SCHEMES) {
-  const names = schemes.map((s) => s.replace(/[^a-z0-9-]/gi, "")).filter(Boolean);
-  const pattern = new RegExp(`^(?:https?://|(?:${names.join("|")}):)[^\\s<>|]+$`, "i");
-  const rule = `an http(s) URL or ${names.map((n) => `${n}:`).join(" ")} reference; no spaces, <, > or |`;
+  const { test, rule } = linkRule(schemes);
   // Checked by refine, not a schema pattern, so the rule is stated once in words rather than in every tool's schema.
-  const link = z
-    .string()
-    .trim()
-    .min(1)
-    .max(512)
-    .refine((v) => pattern.test(v), `a link is ${rule}`);
+  const link = z.string().trim().min(1).max(512).refine(test, `a link is ${rule}`);
   const links = z.array(link).max(10);
   const revisit = z
     .object({
@@ -225,6 +210,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
       eventsPerEntry: options.eventsPerEntry,
       retentionDays: options.retentionDays,
       principalAttributes: options.principalAttributes,
+      linkSchemes: options.linkSchemes,
     });
     return store;
   };

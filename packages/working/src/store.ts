@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 
-import { type Address, addressKey } from "./addresses.js";
+import { type Address, addressKey, addressSchema } from "./addresses.js";
 import { clip, flat, KIND } from "./render.js";
 
 export { type Address, addressKey } from "./addresses.js";
@@ -221,6 +221,37 @@ export interface WorkingStoreOptions {
    * attribute (email, names) is dropped before storage. Default: user_id, team_id, channel_id, thread_ts.
    */
   readonly principalAttributes?: readonly string[];
+  /** The `<scheme>:` references a link may be, beside http(s) URLs; empty means URLs only. Default: the six below. */
+  readonly linkSchemes?: readonly string[];
+}
+
+/** The link references accepted beside http(s) URLs unless the host names its own. */
+export const DEFAULT_LINK_SCHEMES: readonly string[] = [
+  "knowledge",
+  "working",
+  "vault",
+  "linear",
+  "slack",
+  "github",
+];
+
+/**
+ * The one link rule, for the tools and for imports alike: an http(s) URL or a `<scheme>:` reference, with no spaces
+ * and no `<`, `>` or `|` (which a Slack label like `<https://a.example|https://b.example>` needs). `rule` says it in
+ * words for the model.
+ */
+export function linkRule(schemes: readonly string[] = DEFAULT_LINK_SCHEMES): {
+  test: (link: string) => boolean;
+  rule: string;
+} {
+  const names = schemes.map((s) => s.replace(/[^a-z0-9-]/gi, "")).filter(Boolean);
+  const prefix = names.length ? `(?:https?://|(?:${names.join("|")}):)` : "https?://";
+  const pattern = new RegExp(`^${prefix}[^\\s<>|]+$`, "i");
+  const refs = names.length ? ` or a ${names.map((n) => `${n}:`).join(" ")} reference` : "";
+  return {
+    test: (link) => link.length <= 512 && pattern.test(link),
+    rule: `an http(s) URL${refs}; no spaces, <, > or |`,
+  };
 }
 
 // What a wake needs of the opening turn's auth to send as it, and nothing else: no email or names at rest.
@@ -444,6 +475,7 @@ export class WorkingStore {
   readonly #maxWakeAttempts: number;
   readonly #claimLimit: number;
   readonly #keep: readonly string[];
+  readonly #link: (link: string) => boolean;
   #prunedAt = 0;
   /** True when the file could only be opened for reading: recall works, every write refuses. */
   readonly readOnly: boolean;
@@ -477,6 +509,7 @@ export class WorkingStore {
     this.#maxWakeAttempts = Math.max(1, options.maxWakeAttempts ?? 5);
     this.#claimLimit = Math.max(1, options.claimLimit ?? 20);
     this.#keep = options.principalAttributes ?? KEPT_ATTRIBUTES;
+    this.#link = linkRule(options.linkSchemes).test;
     const opened = WorkingStore.#open(path, created);
     this.#db = opened.db;
     this.readOnly = opened.readOnly;
@@ -623,14 +656,18 @@ export class WorkingStore {
       .run(id, id, id, this.#eventsPerEntry - 1);
   }
 
-  // A tool step eve retries runs its call again with the same call id; the entry it already made is the answer.
+  // A tool step eve retries runs its call again with the same call id; the entry it already made is the answer. Call
+  // ids are unique only within a session, so the session is part of the key.
   #madeBy(table: Table, change: string, origin: Origin): Row | undefined {
     if (!origin.callId) return undefined;
     const e = this.#db
       .prepare(
-        "SELECT entry_id FROM events WHERE entry_kind = ? AND change = ? AND json_extract(origin, '$.callId') = ?",
+        `SELECT entry_id FROM events WHERE entry_kind = ? AND change = ?
+           AND json_extract(origin, '$.callId') = ? AND json_extract(origin, '$.sessionId') IS ?`,
       )
-      .get(TABLE_KIND[table], change, origin.callId) as { entry_id: string } | undefined;
+      .get(TABLE_KIND[table], change, origin.callId, origin.sessionId) as
+      | { entry_id: string }
+      | undefined;
     return e && this.#row(table, e.entry_id);
   }
 
@@ -1091,6 +1128,7 @@ export class WorkingStore {
    * is remembered, so a loop opened just after it is due at once. Answers how many became due.
    */
   eventOccurred(event: string, occurredAt: number, firedBy: string, now: number): number {
+    if (!Number.isFinite(occurredAt) || !Number.isFinite(now)) return 0;
     // A far-future time would otherwise mark every later loop on this event as already fired.
     const at = Math.min(occurredAt, now);
     return this.#tx(() => {
@@ -1217,13 +1255,20 @@ export class WorkingStore {
    */
   importLoop(input: ImportedLoop): "imported" | "exists" | "bad" | "capped" {
     // A row the host read from elsewhere is checked here, so one bad row is refused alone, never rolling back others.
+    // The same rules as open: a link the tools would refuse is refused here too.
     const time = (v: unknown) => v === null || v === undefined || Number.isFinite(v);
+    const links = input.links ?? [];
     if (
       !Number.isFinite(input.createdAt) ||
       !time(input.wake?.dueAt) ||
       typeof input.what !== "string" ||
       typeof input.next !== "string" ||
-      !["open", "done", "dropped"].includes(input.status)
+      !["open", "done", "dropped"].includes(input.status) ||
+      !addressSchema.safeParse(input.address).success ||
+      typeof input.origin?.kind !== "string" ||
+      !Array.isArray(links) ||
+      links.length > 10 ||
+      !links.every((l) => typeof l === "string" && this.#link(l))
     )
       return "bad";
     return this.#tx(() => {

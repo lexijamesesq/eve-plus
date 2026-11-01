@@ -104,9 +104,14 @@ describe("importLoop", () => {
     s.close();
   });
 
-  it("a row with a bad time is refused alone, and open rows past the cap are capped", () => {
+  it("a row open would refuse is refused alone, and open rows past the cap are capped", () => {
     const s = openWorkingStore({ dir: tempDir(), limits: { loops: 1 } });
     expect(s.importLoop(imported("bad", { createdAt: Number.NaN }))).toBe("bad");
+    expect(
+      s.importLoop(imported("bad2", { links: ["<https://a.example|https://b.example>"] })),
+    ).toBe("bad");
+    expect(s.importLoop(imported("bad3", { address: { kind: "slack-dm" } as never }))).toBe("bad");
+    expect(s.importLoop(imported("bad4", { origin: undefined as never }))).toBe("bad");
     expect(s.importLoop(imported("f1"))).toBe("imported");
     expect(s.importLoop(imported("f2"))).toBe("capped");
     expect(s.importLoop(imported("f3", { status: "done" }))).toBe("imported");
