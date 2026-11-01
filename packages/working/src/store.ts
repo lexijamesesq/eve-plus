@@ -797,6 +797,12 @@ export class WorkingStore {
     });
   }
 
+  /** One loop by id, whatever its status. */
+  loop(id: string): Loop | undefined {
+    const row = this.#row("loops", id);
+    return row && toLoop(row);
+  }
+
   /** Every recorded change to an entry, oldest first. */
   history(id: string): EntryEvent[] {
     return (
