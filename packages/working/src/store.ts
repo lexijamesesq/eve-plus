@@ -1,9 +1,10 @@
 // The working store: loops, orders and notes in one SQLite file per agent, with every change kept as an attributed
 // event. Closing a loop or lifting an order is an event, never a deletion. The host's wake engine drives loops' wakes
-// through claimDue / settleWake / releaseWake / eventOccurred; delivery stays with the host, which knows its channels.
+// through claimDue / settleWake / eventOccurred; delivery stays with the host, which knows its channels. A delivery
+// that fails isn't settled: its lease runs out and the next tick claims it again.
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SessionAuthContext } from "eve/context";
@@ -185,6 +186,32 @@ export interface WorkingStoreOptions {
   };
   /** Days a lifted or replaced order stays listed as lifted. Default 7. */
   readonly liftedVisibleDays?: number;
+  /**
+   * Most entries held at once, so one run that goes wrong can't fill the volume (a probe wrote 5,000 loops in a
+   * second). Defaults: open loops 200, active orders 50, live notes 100. A write past a cap is refused.
+   */
+  readonly limits?: { readonly loops?: number; readonly orders?: number; readonly notes?: number };
+  /** Events kept per entry: its first, and its latest up to this many in all. Default 50. */
+  readonly eventsPerEntry?: number;
+}
+
+// What a wake needs of the opening turn's auth to send as it, and nothing else: no email or names at rest.
+const KEPT_ATTRIBUTES = ["user_id", "team_id", "channel_id", "thread_ts"] as const;
+
+/** The opening turn's auth as a loop keeps it: the fields delivery needs, without personal details. */
+export function deliveryPrincipal(auth: SessionAuthContext): SessionAuthContext {
+  const attributes: Record<string, string | readonly string[]> = {};
+  for (const key of KEPT_ATTRIBUTES) {
+    const value = auth.attributes?.[key];
+    if (value !== undefined) attributes[key] = value;
+  }
+  return {
+    principalId: auth.principalId,
+    principalType: auth.principalType,
+    authenticator: auth.authenticator,
+    ...(auth.issuer !== undefined ? { issuer: auth.issuer } : {}),
+    attributes,
+  };
 }
 
 /** The store's file inside its directory. */
@@ -216,25 +243,27 @@ export function parseWhen(when: string, now: number): { at: number } | { refused
   return { at };
 }
 
-const DEPLOY_COMPLETED = /^deploy-completed:([a-z0-9-]+)$/;
-
-/** The event key `on` names, or why it isn't one. `fleet` is the agents a deploy can name. */
+/**
+ * The event key `on` names, or why it isn't one. `events` is every key the host can fire (its wake engine calls
+ * `eventOccurred` with them); matching ignores case.
+ */
 export function parseOn(
   on: string,
-  fleet: readonly string[],
+  events: readonly string[],
 ): { event: string } | { refused: string } {
-  if (fleet.length === 0)
-    return { refused: "this agent has no events to wait on; give a time with `when` instead" };
-  const match = DEPLOY_COMPLETED.exec(on.toLowerCase());
-  if (match === null)
+  if (events.length === 0)
+    return { refused: "there are no events to wait on here; give a time with `when` instead" };
+  const event = events.find((e) => e.toLowerCase() === on.trim().toLowerCase());
+  if (event === undefined)
     return {
-      refused: `"${on}" isn't an event a loop can wait on; the one there is, is deploy-completed:<agent>`,
+      refused: `"${on}" isn't an event a loop can wait on; the ones there are: ${events.join(", ")}`,
     };
-  const names = fleet.map((agent) => agent.toLowerCase());
-  if (!names.includes(match[1] as string))
-    return { refused: `${match[1]} isn't an agent in the fleet (${names.join(", ")})` };
-  return { event: `deploy-completed:${match[1]}` };
+  return { event };
 }
+
+/** An order's subject as it's matched and stored: trimmed, lowercased, inner whitespace collapsed. */
+export const normalSubject = (subject: string): string =>
+  subject.trim().replace(/\s+/g, " ").toLowerCase();
 
 // ----- schema -----
 
@@ -326,16 +355,31 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /** How a loop's wake begins, which the host's instructions can name. */
 export const LOOP_WAKE_OPENING = "A loop you opened is due";
 
-/** The wake's text, which the host posts as written: it stands alone after a restart and names the loop. */
+const OPENED: Record<OriginKind, string> = {
+  operator: "in the operator's own conversation",
+  colleague: "at a colleague's request",
+  scheduled: "by a scheduled run",
+  webhook: "by a webhook turn",
+  delegated: "by a delegated task",
+  other: "in a conversation with someone other than the operator",
+};
+// Model-written text goes into the wake on one line, so it can't pose as a recall block or a new instruction.
+const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/**
+ * The wake's text, which the host posts as written: it names the loop and who opened it, and stands alone after a
+ * restart. Every loop's wake, imported or not, is built here.
+ */
 export function followupNoteOf(loop: {
   id: string;
   what: string;
   next: string;
   links: readonly string[];
   createdAt: number;
+  origin: Pick<Origin, "kind">;
 }): string {
-  const links = loop.links.length > 0 ? `\nLinks: ${loop.links.join(" ")}` : "";
-  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${iso(loop.createdAt).slice(0, 16)}Z): ${loop.what}\nNext: ${loop.next}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
+  const links = loop.links.length > 0 ? `\nLinks: ${loop.links.map(flat).join(" ")}` : "";
+  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${iso(loop.createdAt).slice(0, 16)}Z ${OPENED[loop.origin.kind]}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
 }
 
 /**
@@ -347,9 +391,12 @@ export class WorkingStore {
   readonly #now: () => number;
   readonly #days: { loop: number; order: number; note: number };
   readonly #liftedMs: number;
+  readonly #limits: { loops: number; orders: number; notes: number };
+  readonly #eventsPerEntry: number;
 
   constructor(path: string, options: WorkingStoreOptions = {}) {
-    mkdirSync(dirname(path), { recursive: true });
+    // Only the agent's own user reads its working state: the directory it makes is 0700 and the file 0600.
+    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.#now = options.now ?? Date.now;
     this.#days = {
       loop: options.reviewAfterDays?.loop ?? 7,
@@ -357,9 +404,16 @@ export class WorkingStore {
       note: options.reviewAfterDays?.note ?? 7,
     };
     this.#liftedMs = (options.liftedVisibleDays ?? 7) * DAY;
+    this.#limits = {
+      loops: options.limits?.loops ?? 200,
+      orders: options.limits?.orders ?? 50,
+      notes: options.limits?.notes ?? 100,
+    };
+    this.#eventsPerEntry = Math.max(2, options.eventsPerEntry ?? 50);
     const db = new DatabaseSync(path);
     this.#db = db;
     try {
+      if (path !== ":memory:") chmodSync(path, 0o600);
       db.exec("PRAGMA busy_timeout = 5000");
       db.exec("PRAGMA journal_mode = WAL");
       this.#migrate();
@@ -430,11 +484,23 @@ export class WorkingStore {
         TABLE_KIND[table],
         id,
         change,
-        before && JSON.stringify(before),
-        after && JSON.stringify(after),
+        before && JSON.stringify(withoutPrincipal(before)),
+        after && JSON.stringify(withoutPrincipal(after)),
         JSON.stringify(origin),
         this.#now(),
       );
+    // Bounded history: an entry keeps its first event (how it began) and its latest ones.
+    this.#db
+      .prepare(
+        `DELETE FROM events WHERE entry_id = ?
+           AND seq != (SELECT min(seq) FROM events WHERE entry_id = ?)
+           AND seq NOT IN (SELECT seq FROM events WHERE entry_id = ? ORDER BY seq DESC LIMIT ?)`,
+      )
+      .run(id, id, id, this.#eventsPerEntry - 1);
+  }
+
+  #count(sql: string, ...params: number[]): number {
+    return Number((this.#db.prepare(sql).get(...params) as { n: number }).n);
   }
 
   // A delivering loop whose lease ran out has no live claimant: it counts as open again.
@@ -457,13 +523,21 @@ export class WorkingStore {
   /** Opens a loop in its conversation and answers it. */
   open(input: OpenInput, origin: Origin): Result<{ loop: Loop }> {
     const now = this.#now();
+    const open = this.#count(
+      "SELECT count(*) AS n FROM loops WHERE status IN ('open', 'delivering')",
+    );
+    if (open >= this.#limits.loops)
+      return {
+        ok: false,
+        reason: `There are already ${open} open loops, the most this agent keeps. Close the ones that are resolved or no longer worth doing (close), then open this one.`,
+      };
     const id = newId("L");
     const links = [...(input.links ?? [])];
     const row: Row = {
       id,
       conversation_key: addressKey(input.address),
       address: JSON.stringify(input.address),
-      principal: input.principal ? JSON.stringify(input.principal) : null,
+      principal: input.principal ? JSON.stringify(deliveryPrincipal(input.principal)) : null,
       what: input.what,
       waiting_on: input.waitingOn,
       next: input.next,
@@ -479,6 +553,7 @@ export class WorkingStore {
         next: input.next,
         links,
         createdAt: now,
+        origin,
       }),
       status: "open",
       why: null,
@@ -524,6 +599,7 @@ export class WorkingStore {
           next,
           links,
           createdAt: Number(before.created_at),
+          origin: JSON.parse(String(before.origin)) as Origin,
         }),
         updated_at: now,
       };
@@ -576,7 +652,14 @@ export class WorkingStore {
     return this.#tx(() => {
       const now = this.#now();
       const id = newId("O");
-      const current = this.#activeOrder(input.subject);
+      const subject = normalSubject(input.subject);
+      const current = this.#activeOrder(subject);
+      const active = this.#count("SELECT count(*) AS n FROM orders WHERE status = 'active'");
+      if (!current && active >= this.#limits.orders)
+        return {
+          ok: false,
+          reason: `There are already ${active} active orders, the most this agent keeps. Lift the ones no longer in force (lift), then set this one.`,
+        };
       let replaced: Row | null = null;
       if (current) {
         replaced = {
@@ -591,7 +674,7 @@ export class WorkingStore {
       }
       const row: Row = {
         id,
-        subject: input.subject,
+        subject,
         rule: input.rule,
         link: input.link,
         until: input.until ?? null,
@@ -611,7 +694,7 @@ export class WorkingStore {
   /** Lifts the active order on a subject, with why. */
   liftOrder(subject: string, why: string, origin: Origin): Result<{ order: Order }> {
     return this.#tx(() => {
-      const current = this.#activeOrder(subject);
+      const current = this.#activeOrder(normalSubject(subject));
       if (!current)
         return {
           ok: false,
@@ -633,23 +716,31 @@ export class WorkingStore {
   #activeOrder(subject: string): Row | undefined {
     return this.#db
       .prepare("SELECT * FROM orders WHERE subject = ? AND status = 'active'")
-      .get(subject) as Row | undefined;
+      .get(normalSubject(subject)) as Row | undefined;
   }
 
-  // Detection, not a gate: the counterpart of the graph's owner-overwrite line. An order set in the operator's own
-  // conversation, lifted or replaced from any other kind of turn, is logged with a running count.
+  // Detection, not a gate: the counterpart of the graph's owner-overwrite line. An order lifted or replaced by anyone
+  // other than whoever set it (another principal, or another kind of turn) is logged with both origins and a running
+  // count, so an operator's hold lifted from a colleague's thread can be found.
   #detectOrderChange(order: Row, origin: Origin): void {
     const set = JSON.parse(String(order.origin)) as Origin;
-    if (set.kind !== "operator" || origin.kind === "operator") return;
+    if (set.kind === origin.kind && set.principalId === origin.principalId) return;
     orderChanges++;
+    const who = (o: Origin) => `${o.kind}${o.principalId ? `(${o.principalId})` : ""}`;
     console.warn(
-      `[working] order-change subject=${JSON.stringify(order.subject)} by=${origin.kind} count=${orderChanges}`,
+      `[working] order-change subject=${JSON.stringify(order.subject)} set_by=${who(set)} by=${who(origin)} count=${orderChanges}`,
     );
   }
 
   /** Adds a note, which expires on its own. */
   addNote(input: { text: string; expiresAt?: number }, origin: Origin): Result<{ note: Note }> {
     const now = this.#now();
+    const live = this.#count("SELECT count(*) AS n FROM notes WHERE expires_at > ?", now);
+    if (live >= this.#limits.notes)
+      return {
+        ok: false,
+        reason: `There are already ${live} live notes, the most this agent keeps. Let older ones expire, or keep this as a loop instead.`,
+      };
     const row: Row = {
       id: newId("N"),
       text: input.text,
@@ -745,33 +836,20 @@ export class WorkingStore {
    * closes the loop or sets a new revisit. False when this claimant no longer holds it.
    */
   settleWake(id: string, leaseToken: string, firedBy: string): boolean {
-    return this.#endLease(id, leaseToken, "wake-delivered", (row, now) => ({
-      ...row,
-      ...this.#wake(null, true, now),
-      fired_by: firedBy,
-    }));
-  }
-
-  /** The wake couldn't be delivered: the loop is open again with its wake still due, for the next tick. */
-  releaseWake(id: string, leaseToken: string): boolean {
-    return this.#endLease(id, leaseToken, "wake-released", (row) => row);
-  }
-
-  #endLease(
-    id: string,
-    token: string,
-    change: string,
-    apply: (row: Row, now: number) => Row,
-  ): boolean {
     return this.#tx(() => {
       const now = this.#now();
       const before = this.#row("loops", id);
-      if (before?.status !== "delivering" || before.lease_token !== token) return false;
-      const after = apply(
-        { ...before, status: "open", lease_until: null, lease_token: null, updated_at: now },
-        now,
-      );
-      this.#put("loops", before, after, change, WAKE_ORIGIN);
+      if (before?.status !== "delivering" || before.lease_token !== leaseToken) return false;
+      const after: Row = {
+        ...before,
+        status: "open",
+        lease_until: null,
+        lease_token: null,
+        ...this.#wake(null, true, now),
+        fired_by: firedBy,
+        updated_at: now,
+      };
+      this.#put("loops", before, after, "wake-delivered", WAKE_ORIGIN);
       return true;
     });
   }
@@ -838,7 +916,11 @@ export class WorkingStore {
         if (!current) continue;
         const before = e.before === null ? null : (JSON.parse(String(e.before)) as Row);
         const after: Row = before
-          ? { ...before, updated_at: now }
+          ? {
+              ...before,
+              ...(table === "loops" ? { principal: current.principal } : {}),
+              updated_at: now,
+            }
           : table === "loops"
             ? {
                 ...current,
@@ -885,7 +967,8 @@ export class WorkingStore {
   /**
    * Imports the baseline's follow-ups file as loops, once: a pending follow-up becomes an open loop with its wake, a
    * done one a done loop, a cancelled one a dropped loop. The note's first line is the loop's `what`, the rest its
-   * `next`, and the note itself stays the wake text. `resolve` is the host's address resolver, given the follow-up's
+   * `next` (each capped as the tools cap them), and the wake text is built as any loop's. A row whose principal
+   * doesn't parse is skipped and counted in `skipped`. `resolve` is the host's address resolver, given the follow-up's
    * principal; a row it can't place is left out and counted. Re-running imports nothing twice.
    */
   migrateFollowups(
@@ -914,7 +997,13 @@ export class WorkingStore {
           report.skipped++;
           continue;
         }
-        const principal = JSON.parse(String(f.principal)) as SessionAuthContext;
+        let principal: SessionAuthContext;
+        try {
+          principal = deliveryPrincipal(JSON.parse(String(f.principal)) as SessionAuthContext);
+        } catch {
+          report.skipped++;
+          continue;
+        }
         const address = resolve(principal);
         const status = STATUS[String(f.status)];
         if (address === null || status === undefined) {
@@ -946,7 +1035,7 @@ export class WorkingStore {
           lease_until: null,
           lease_token: null,
           fired_by: f.fired_by,
-          followup_note: note,
+          followup_note: "",
           status,
           why: pending ? null : `migrated from a ${String(f.status)} follow-up`,
           review_by: now + this.#days.loop * DAY,
@@ -955,6 +1044,14 @@ export class WorkingStore {
           updated_at: now,
           followup_id: followupId,
         };
+        row.followup_note = followupNoteOf({
+          id: String(row.id),
+          what: String(row.what),
+          next: String(row.next),
+          links: [],
+          createdAt: Number(row.created_at),
+          origin,
+        });
         this.#put("loops", null, row, "migrated", origin);
         report.imported++;
       }
@@ -962,6 +1059,12 @@ export class WorkingStore {
     return report;
   }
 }
+
+// Event rows keep attribution (the origin) but not the sender auth, which only the live loop needs for its wake.
+const withoutPrincipal = (row: Row): Row => {
+  const { principal: _, ...rest } = row;
+  return rest;
+};
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -1065,7 +1168,12 @@ export function openWorkingStore(options: OpenWorkingStoreOptions): WorkingStore
     if (options.followups !== undefined) {
       if (options.resolve === undefined)
         throw new Error("openWorkingStore: followups needs resolve");
-      store.migrateFollowups(options.followups, options.resolve);
+      const r = store.migrateFollowups(options.followups, options.resolve);
+      // The import's only other trace is the stats' open count; a row with no address would vanish unremarked.
+      if (r.imported + r.unresolved > 0)
+        console.log(
+          `[working] imported follow-ups imported=${r.imported} skipped=${r.skipped} unresolved=${r.unresolved}`,
+        );
     }
   } catch (error) {
     store.close();

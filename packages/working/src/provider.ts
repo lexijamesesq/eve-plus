@@ -57,8 +57,12 @@ export interface WorkingMemoryOptions {
    * `delegated` for a delegated one, else `other`.
    */
   readonly originKind?: (auth: SessionAuthContext | null, session: OriginSession) => OriginKind;
-  /** The agents `revisit.on: deploy-completed:<agent>` may name. With none, `on` is refused. */
-  readonly fleet?: readonly string[];
+  /** The event keys the host fires (through `eventOccurred`), which `revisit.on` may name. With none, `on` is refused. */
+  readonly events?: readonly string[];
+  /** Most open loops, active orders and live notes held at once. Defaults 200, 50, 100. */
+  readonly limits?: { readonly loops?: number; readonly orders?: number; readonly notes?: number };
+  /** Events kept per entry: its first, and its latest up to this many in all. Default 50. */
+  readonly eventsPerEntry?: number;
   /** A follow-ups file to import, once, when the store is first opened; `conversation` places its rows. */
   readonly followups?: string;
   /** Max characters per recall message. Default 1,200. */
@@ -104,12 +108,25 @@ const revisit = z
       .min(1)
       .max(64)
       .optional()
-      .describe("an event to wait on: deploy-completed:<agent>"),
+      .describe("an event to wait on, one of those this agent's host fires"),
   })
   .strict()
   .describe("when to come back to this loop: give `when` or `on`, not both");
+// A link is shown to the model and may be shown to people, so only plain URLs and the reserved references pass: no
+// spaces, and no `<`, `>` or `|`, which a Slack label like <https://a.example|https://b.example> would need.
+const LINK =
+  /^(?:https?:\/\/[^\s<>|]+|(?:knowledge|working|vault|linear|slack|github):[^\s<>|]+)$/i;
+const link = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .regex(
+    LINK,
+    "a link is an http(s) URL or a knowledge:, working:, vault:, linear:, slack: or github: reference, with no spaces, <, > or |",
+  );
 const links = z
-  .array(z.string().trim().min(1).max(512))
+  .array(link)
   .max(10)
   .describe(
     "what anchors it: the message, PR, ticket or thread; each a URL or a reference: knowledge:<id>, working:<id>, vault:<path>, linear:<KEY-n>, slack:<channel>/<ts> or github:<owner>/<repo>#<n>",
@@ -124,7 +141,7 @@ const VIEWS = ["here", "elsewhere", "orders", "stale", "lifted", "notes", "all"]
 export const workingToolSpecs = {
   open: {
     description:
-      "Open a loop: something you're waiting on or owe in this conversation, so it's in front of you every turn until you close it. Say what it is, whose move it is, and your next action, written to stand alone later. Give `revisit` to be woken in this conversation when it's due. The loop belongs to the conversation you're in, which comes from your session, not from anything you write; in a help thread you opened to ask a colleague, it lands on, and wakes in, the conversation you asked from.",
+      "Open a loop: something you're waiting on or owe in this conversation, so it's in front of you every turn until you close it. Say what it is, whose move it is, and your next action, written to stand alone later. Give `revisit` to be woken in this conversation when it's due. The loop belongs to the conversation you're in, which comes from your session, not from anything you write. In a thread you started to ask someone else for help, a loop lands on, and wakes in, the conversation you asked from.",
     inputSchema: z
       .object({
         what: text(200).describe("one line: what's open"),
@@ -162,12 +179,12 @@ export const workingToolSpecs = {
   },
   order: {
     description:
-      "Record a standing order: a constraint on a subject you act on, such as a hold on deploys:ollie, with a link to where it was set. A second order on the same subject replaces the first; history is kept.",
+      "Record a standing order: a constraint on a subject you act on, such as a hold on releases:web, with a link to where it was set. A second order on the same subject replaces the first; history is kept.",
     inputSchema: z
       .object({
-        subject: text(80).describe("what it constrains, e.g. deploys:ollie"),
+        subject: text(80).describe("what it constrains, e.g. releases:web"),
         rule: text(200).describe("the constraint, as you'll apply it"),
-        link: text(512).describe(
+        link: link.describe(
           "where it was set: the message or comment, as a URL or a reference: knowledge:<id>, working:<id>, vault:<path>, linear:<KEY-n>, slack:<channel>/<ts> or github:<owner>/<repo>#<n>",
         ),
         until: when.optional().describe("when it ends on its own, if it does"),
@@ -203,7 +220,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
   const now = options.now ?? Date.now;
   const maxCharacters = options.maxCharacters ?? 1_200;
   const originKind = options.originKind ?? defaultOriginKind;
-  const fleet = options.fleet ?? [];
+  const events = options.events ?? [];
 
   // Opened on first use, so an agent with no volume still starts. A failed open isn't kept: the next turn retries,
   // so an outage is temporary, not sticky for the process.
@@ -217,6 +234,8 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
       now,
       reviewAfterDays: options.reviewAfterDays,
       liftedVisibleDays: options.liftedVisibleDays,
+      limits: options.limits,
+      eventsPerEntry: options.eventsPerEntry,
     });
     store = opened;
     return store;
@@ -267,7 +286,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
       return t.refused !== undefined ? { refused: t.refused } : { dueAt: t.at };
     }
     if (r.on !== undefined) {
-      const e = parseOn(r.on, fleet);
+      const e = parseOn(r.on, events);
       return "event" in e ? { onEvent: e.event } : { refused: e.refused };
     }
     return { refused: "a revisit needs `when` (a time) or `on` (an event)" };

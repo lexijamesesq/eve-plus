@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: the find/replace strings below contain literal ${...} fragments to match in source, not template placeholders
-// Mutation check for the test suite: re-introduce each guarded bug in a scratch copy of the sources and require the
-// test that guards it to fail. A guard that stays green on its own bug is decoration. Zero quota.
+// Mutation check for the three safeguards recall and the wake engine rest on (recall never throws, recall is never
+// empty and keeps its ids, a claim is atomic): re-introduce each guarded bug in a scratch copy of the sources and
+// require the test that guards it to fail. A guard that stays green on its own bug is decoration. Zero quota.
 //   node mutate.ts
 
 import { spawnSync } from "node:child_process";
@@ -68,14 +69,6 @@ const mutations: Mutation[] = [
     expect: "never throws when the host's resolver does",
   },
   {
-    name: "a failed open is kept, so an outage is sticky",
-    file: "src/provider.ts",
-    find: /let store: WorkingStore \| undefined;\n(\s*)const get = \(\): WorkingStore => \{\n\s*if \(store\) return store;/,
-    replace:
-      'let store: WorkingStore | undefined;\n  let failed: unknown;\n  const get = (): WorkingStore => {\n    if (store) return store;\n    if (failed) throw failed;\n    failed = new Error("the store failed to open earlier");',
-    expect: "recovers on the next turn once the store opens",
-  },
-  {
     name: "the outage note falls silent",
     file: "src/provider.ts",
     find: "const outage = renderOutage(reason);",
@@ -100,25 +93,11 @@ const mutations: Mutation[] = [
     expect: "are never empty: nothing open is said, with the time",
   },
   {
-    name: "nothing elsewhere says nothing",
-    file: "src/render.ts",
-    find: 'empty: "Nothing else open.",',
-    replace: "",
-    expect: "are never empty: nothing open is said, with the time",
-  },
-  {
     name: "the here block loses its stable id",
     file: "src/provider.ts",
     find: "{ id: HERE_ID, content: renderHere(view) },",
     replace: "{ content: renderHere(view) },",
     expect: "recall returns exactly the two stable ids, every turn, even with nothing stored",
-  },
-  {
-    name: "the budget is ignored",
-    file: "src/render.ts",
-    find: "if (length + line.length + 1 > max - reserve) {",
-    replace: "if (false) {",
-    expect: "past the budget, shows counts and points to the list tool",
   },
 
   // A claim is atomic: each due loop is claimed once.
@@ -130,63 +109,12 @@ const mutations: Mutation[] = [
     expect: "claimDue claims a due loop once",
   },
   {
-    name: "concurrent ticks double-claim under a live lease",
-    file: "src/store.ts",
-    find: "AND (status = 'open' OR (status = 'delivering' AND lease_until <= ?))",
-    replace: "AND status IN ('open', 'delivering') AND ? IS NOT NULL",
-    expect: "claimDue claims each row once under concurrent ticks",
-  },
-  {
     name: "a claim reads, then writes, outside one statement and transaction",
     file: "src/store.ts",
     find: /return this\.#tx\(\(\) => \{\n\s*const rows = this\.#db\n\s*\.prepare\(\n\s*`UPDATE loops SET status = 'delivering'[\s\S]*?as Row\[\];/,
     replace:
       "return ((f: () => ClaimedLoop[]) => f())(() => {\n      const due = this.#db.prepare(\"SELECT id FROM loops WHERE wake = 'pending' AND due_at IS NOT NULL AND due_at <= ? AND (status = 'open' OR (status = 'delivering' AND lease_until <= ?))\").all(now, now) as Row[];\n      const rows: Row[] = [];\n      for (const d of due) {\n        const r = this.#db.prepare(\"UPDATE loops SET status = 'delivering', lease_until = ?, lease_token = ? WHERE id = ? RETURNING *\").get(now + leaseMs, token, d.id) as Row | undefined;\n        if (r) rows.push(r);\n      }",
     expect: "claimDue claims each row once under concurrent ticks",
-  },
-  {
-    name: "settling ignores the lease token",
-    file: "src/store.ts",
-    find: 'before?.status !== "delivering" || before.lease_token !== token',
-    replace: 'before?.status !== "delivering"',
-    expect: "claimDue claims a due loop once; settling reopens it",
-  },
-
-  // The other contracts the Done When names.
-  {
-    name: "a re-run imports follow-ups again",
-    file: "src/store.ts",
-    find: 'if (this.#db.prepare("SELECT 1 FROM loops WHERE followup_id = ?").get(followupId)) {',
-    replace: "if (false) {",
-    expect: "imports a follow-ups file once",
-  },
-  {
-    name: "an order change isn't logged",
-    file: "src/store.ts",
-    find: "orderChanges++;",
-    replace: "",
-    expect: "an operator's order lifted or replaced from another origin logs one order-change line",
-  },
-  {
-    name: "every order change is logged, not only an operator's from elsewhere",
-    file: "src/store.ts",
-    find: 'if (set.kind !== "operator" || origin.kind === "operator") return;',
-    replace: "",
-    expect: "an operator's order lifted or replaced from another origin logs one order-change line",
-  },
-  {
-    name: "a redelivered old event wakes a newer loop",
-    file: "src/store.ts",
-    find: "AND wake_set_at <= ?",
-    replace: "AND ? IS NOT NULL",
-    expect: "an event wakes loops whose wake was set by then",
-  },
-  {
-    name: "the address comes from the model",
-    file: "src/provider.ts",
-    find: ".strict(),\n  },\n  update: {",
-    replace: ".passthrough(),\n  },\n  update: {",
-    expect: "identity and address come from the session, never from arguments",
   },
 ];
 

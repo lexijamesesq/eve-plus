@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -106,7 +106,7 @@ const turn = (auth: Input | null, extra: Input = {}) => ({
   abortSignal: new AbortController().signal,
 });
 const memory = {
-  scope: { key: "agent:zero", namespace: "zero-working-v1", value: "agent:zero" },
+  scope: { key: "agent:assistant", namespace: "assistant-working-v1", value: "agent:assistant" },
   slot: "working",
 };
 
@@ -118,7 +118,7 @@ async function agent(options: Partial<WorkingMemoryOptions> & { dir?: string } =
     conversation: conversation as WorkingMemoryOptions["conversation"],
     originKind: originKind as WorkingMemoryOptions["originKind"],
     deliverable: (a) => a.kind.startsWith("slack"),
-    fleet: ["zero", "felix", "ollie"],
+    events: ["build-finished:web", "build-finished:api"],
     now: () => clock,
     ...options,
   }) as unknown as Harness;
@@ -141,8 +141,8 @@ describe("the provider through eve's memory contract", () => {
     expect(() =>
       defineMemory({
         provider: provider as never,
-        scope: () => "agent:zero",
-        namespace: "zero-working-v1",
+        scope: () => "agent:assistant",
+        namespace: "assistant-working-v1",
       }),
     ).not.toThrow();
   });
@@ -160,13 +160,13 @@ describe("the provider through eve's memory contract", () => {
     const a = await agent();
     const opened = await a.call(
       "open",
-      { what: "zero digest approval", waitingOn: "lexi", next: "deploy zero" },
+      { what: "release notes approval", waitingOn: "alice", next: "publish the release" },
       ALICE_DM_1,
     );
     const id = /Opened loop (L[0-9a-f]+)/.exec(opened)?.[1];
     expect(id).toBeDefined();
     const here = text(await a.recall(ALICE_DM_2), HERE_ID);
-    expect(here).toContain(`${id} waiting on lexi: zero digest approval`);
+    expect(here).toContain(`${id} waiting on alice: release notes approval`);
     const elsewhere = text(await a.recall(ALICE_THREAD), STANDING_ID);
     expect(elsewhere).toContain(`${id} (Slack DM D1)`);
   });
@@ -187,7 +187,7 @@ describe("the provider through eve's memory contract", () => {
     const id = /(L[0-9a-f]+)/.exec(
       await a.call("open", { what: "w", waitingOn: "me", next: "n" }, ALICE_DM_1),
     )?.[1];
-    expect(await a.call("close", { id, outcome: "done", why: "deployed" }, ALICE_DM_1)).toContain(
+    expect(await a.call("close", { id, outcome: "done", why: "published" }, ALICE_DM_1)).toContain(
       "Closed",
     );
     const messages = await a.recall(ALICE_DM_1);
@@ -233,18 +233,18 @@ describe("the provider through eve's memory contract", () => {
     expect(await a.call("close", { id: "Lnope", outcome: "done", why: "x" }, ALICE_DM_1)).toMatch(
       /no loop Lnope.*List/,
     );
-    expect(await a.call("lift", { subject: "deploys:x", why: "x" }, ALICE_DM_1)).toMatch(
+    expect(await a.call("lift", { subject: "releases:x", why: "x" }, ALICE_DM_1)).toMatch(
       /no active order/,
     );
     expect(
       await a.call(
         "open",
-        { what: "w", waitingOn: "me", next: "n", revisit: { on: "deploy-completed:bob" } },
+        { what: "w", waitingOn: "me", next: "n", revisit: { on: "build-finished:docs" } },
         ALICE_DM_1,
       ),
-    ).toMatch(/isn't an agent in the fleet/);
+    ).toMatch(/isn't an event a loop can wait on/);
     expect(() =>
-      workingToolSpecs.order.inputSchema.parse({ subject: "deploys:x", rule: "hold" }),
+      workingToolSpecs.order.inputSchema.parse({ subject: "releases:x", rule: "hold" }),
     ).toThrow();
   });
 
@@ -254,16 +254,16 @@ describe("the provider through eve's memory contract", () => {
     const before = orderChangeCount();
     await a.call(
       "order",
-      { subject: "deploys:ollie", rule: "hold", link: "https://example.test/m/1" },
+      { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
       ALICE_DM_1,
     );
-    await a.call("lift", { subject: "deploys:ollie", why: "Bob says it's fixed" }, BOB_THREAD);
+    await a.call("lift", { subject: "releases:web", why: "Bob says it's fixed" }, BOB_THREAD);
     expect(warn).toHaveBeenCalledWith(
-      `[working] order-change subject="deploys:ollie" by=colleague count=${before + 1}`,
+      `[working] order-change subject="releases:web" set_by=operator(U-alice) by=colleague(U-bob) count=${before + 1}`,
     );
     const standing = text(await a.recall(ALICE_THREAD), STANDING_ID);
     expect(standing).toMatch(
-      /deploys:ollie: hold, lifted at a colleague's request \(principal U-bob\).*Bob says it's fixed/,
+      /releases:web: lifted by colleague \d{4}-\d\d-\d\d: Bob says it's fixed/,
     );
   });
 
@@ -271,11 +271,11 @@ describe("the provider through eve's memory contract", () => {
     const a = await agent();
     await a.call(
       "order",
-      { subject: "deploys:ollie", rule: "hold", link: "https://example.test/m/1" },
+      { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
       ALICE_THREAD,
     );
     expect(text(await a.recall(BOB_THREAD), STANDING_ID)).toContain(
-      "deploys:ollie: hold (set in the operator's own conversation",
+      "releases:web: hold (by operator ",
     );
   });
 
@@ -294,19 +294,67 @@ describe("the provider through eve's memory contract", () => {
       "100.1",
       JSON.stringify(ALICE_DM_1),
       clock + 3_600_000,
-      "ask Lexi about the digest",
+      "ask Alice about the notes",
       "pending",
       clock - 1,
     );
     db.close();
     const a = await agent({ dir: join(dir, "working"), followups: source });
-    expect(text(await a.recall(ALICE_DM_2), HERE_ID)).toContain("ask Lexi about the digest");
+    expect(text(await a.recall(ALICE_DM_2), HERE_ID)).toContain("ask Alice about the notes");
   });
 
   it("the write cap refuses loudly past the limit", async () => {
     const a = await agent({ maxWritesPerSession: 1 });
     await a.call("note", { text: "one" }, ALICE_DM_1);
     await expect(a.call("note", { text: "two" }, ALICE_DM_1)).rejects.toThrow(/write limit/);
+  });
+});
+
+describe("what the store keeps", () => {
+  it("links are URLs or the reserved references, nothing that can spoof a label", () => {
+    const parse = (link: string) =>
+      workingToolSpecs.order.inputSchema.safeParse({ subject: "s", rule: "r", link }).success;
+    for (const ok of [
+      "https://example.test/a?b=1",
+      "linear:ABC-12",
+      "slack:C123/1.2",
+      "working:L1a2b3c4d",
+    ])
+      expect(parse(ok)).toBe(true);
+    for (const bad of [
+      "<https://evil.example|https://slack.com>",
+      "javascript:alert(1)",
+      "data:text/html,hi",
+      "see the thread",
+    ])
+      expect(parse(bad)).toBe(false);
+  });
+
+  it("keeps no personal details of the sender, and only its own user can read the store", async () => {
+    const dir = join(tempDir(), "working");
+    const a = await agent({ dir });
+    const withEmail = {
+      ...ALICE_DM_1,
+      attributes: {
+        ...ALICE_DM_1.attributes,
+        email: "alice@example.test",
+        full_name: "Alice Example",
+      },
+    };
+    await a.call("open", { what: "w", waitingOn: "me", next: "n" }, withEmail);
+    const raw = new DatabaseSync(workingStorePath(dir), { readOnly: true });
+    const dump = JSON.stringify([
+      raw.prepare("SELECT * FROM loops").all(),
+      raw.prepare("SELECT * FROM events").all(),
+    ]);
+    raw.close();
+    expect(dump).not.toContain("alice@example.test");
+    expect(dump).not.toContain("Alice Example");
+    expect(dump).toContain("D1");
+    if (process.platform !== "win32") {
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(workingStorePath(dir)).mode & 0o777).toBe(0o600);
+    }
   });
 });
 

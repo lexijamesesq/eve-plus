@@ -6,10 +6,11 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import type { SessionAuthContext } from "eve/context";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Address } from "./addresses.js";
 import {
+  LOOP_WAKE_OPENING,
   type Origin,
   openWorkingStore,
   SCHEMA_VERSION,
@@ -26,6 +27,7 @@ const tempDir = () => {
 };
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  vi.restoreAllMocks();
 });
 
 const slack = (channel: string, thread: string): SessionAuthContext => ({
@@ -69,7 +71,7 @@ function followupsFile(dir: string): string {
     JSON.stringify(slack("D1", "1.1")),
     2_000,
     null,
-    "check the digest\nthen deploy zero",
+    "check the notes\nthen publish the release",
     "pending",
     1_000,
   );
@@ -79,8 +81,8 @@ function followupsFile(dir: string): string {
     "2.2",
     JSON.stringify(slack("C1", "2.2")),
     null,
-    "deploy-completed:ollie",
-    "ask Ollie",
+    "build-finished:api",
+    "ask Bob",
     "pending",
     1_000,
   );
@@ -98,6 +100,7 @@ function followupsFile(dir: string): string {
   );
   const linear = { ...slack("C1", "5.5"), authenticator: "linear-webhook" };
   add.run("f5", "C1", "5.5", JSON.stringify(linear), 1_500, null, "elsewhere", "pending", 1_000);
+  add.run("f6", "C1", "6.6", "{not json", 1_500, null, "garbled", "pending", 1_000);
   db.close();
   return path;
 }
@@ -132,46 +135,56 @@ describe("migrateFollowups", () => {
     const dir = tempDir();
     const source = followupsFile(dir);
     const s = new WorkingStore(workingStorePath(dir), { now: () => 1_800 });
-    expect(s.migrateFollowups(source, resolve)).toEqual({ imported: 4, skipped: 0, unresolved: 1 });
+    // A row whose principal doesn't parse is skipped; one the host can't place is counted as unresolved.
+    expect(s.migrateFollowups(source, resolve)).toEqual({ imported: 4, skipped: 1, unresolved: 1 });
     const loops = s.list({ view: "all" }).loops;
     const dm = loops.find((l) => l.address.kind === "slack-dm");
     expect(dm).toMatchObject({
-      what: "check the digest",
-      next: "then deploy zero",
-      followupNote: "check the digest\nthen deploy zero",
+      what: "check the notes",
+      next: "then publish the release",
       dueAt: 2_000,
       wake: "pending",
       origin: { principalId: "U-alice", kind: "other" },
     });
-    expect(loops.find((l) => l.onEvent === "deploy-completed:ollie")?.address).toEqual({
+    // An imported loop wakes as any loop does: the opening, its id, then the note.
+    expect(dm?.followupNote).toMatch(
+      new RegExp(
+        `^${LOOP_WAKE_OPENING} \\(${dm?.id}, opened .*\\): check the notes\nNext: then publish the release\n`,
+      ),
+    );
+    expect(loops.find((l) => l.onEvent === "build-finished:api")?.address).toEqual({
       kind: "slack-thread",
       teamId: "T1",
       channelId: "C1",
       threadTs: "2.2",
     });
     expect(s.list({ view: "all", limit: 200 }).totals.loops).toBe(2);
-    expect(s.migrateFollowups(source, resolve)).toEqual({ imported: 0, skipped: 4, unresolved: 1 });
+    expect(s.migrateFollowups(source, resolve)).toEqual({ imported: 0, skipped: 5, unresolved: 1 });
     expect(s.list({ view: "all" }).totals.loops).toBe(2);
     // The imported wake still fires: due, then claimed with the follow-up's principal to send as.
     const [claimed] = s.claimDue(2_000, 60_000);
     expect(claimed).toMatchObject({ address: { kind: "slack-dm" }, principal: slack("D1", "1.1") });
     // The event loop keeps the old store's guard: an event before it was scheduled wakes nothing.
-    expect(s.eventOccurred("deploy-completed:ollie", 999, "old run", 2_000)).toBe(0);
-    expect(s.eventOccurred("deploy-completed:ollie", 1_000, "run 7", 2_000)).toBe(1);
+    expect(s.eventOccurred("build-finished:api", 999, "old run", 2_000)).toBe(0);
+    expect(s.eventOccurred("build-finished:api", 1_000, "run 7", 2_000)).toBe(1);
     s.close();
   });
 
   it("openWorkingStore imports before the wake engine's first claim, and only once", () => {
     const dir = tempDir();
     const followups = followupsFile(dir);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const engine = openWorkingStore({
       dir: join(dir, "working"),
       followups,
       resolve,
       now: () => 2_000,
     });
+    expect(log).toHaveBeenCalledWith(
+      "[working] imported follow-ups imported=4 skipped=1 unresolved=1",
+    );
     expect(engine.claimDue(2_000, 60_000).map((c) => c.followupNote)).toEqual([
-      "check the digest\nthen deploy zero",
+      expect.stringContaining("check the notes"),
     ]);
     const provider = openWorkingStore({ dir: join(dir, "working"), followups, resolve });
     expect(provider.list({ view: "all" }).totals.loops).toBe(2);
