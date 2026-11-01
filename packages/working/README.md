@@ -108,13 +108,13 @@ eve's default memory namespace is derived from your application's build path, so
 
 ## Storage
 
-One SQLite file per agent, `<dir>/working.sqlite`, in WAL mode with a 5-second busy timeout. Tables: `loops`, `orders`, `notes`, `events` (one row per change with the row before and after and its origin) and `event_occurrences`. The schema is versioned by `user_version`, and migrations are additive only. The store opens lazily on first use, so an agent with no volume still starts; a failed open isn't kept, and the next turn retries. A file it creates is `0600`, and its directory is set to `0700` when the agent owns it; a directory or file the host made otherwise keeps the host's modes.
+One SQLite file per agent, `<dir>/working.sqlite`, in WAL mode with a 5-second busy timeout. Tables: `loops`, `orders`, `notes`, `events` (one row per change with the row before and after and its origin), `event_occurrences` and `import_keys`. The schema is versioned by `user_version`, and migrations are additive only. The store opens lazily on first use, so an agent with no volume still starts; a failed open isn't kept, and the next turn retries. A file it creates is `0600`, and its directory is set to `0700` when the agent owns it; a directory or file the host made otherwise keeps the host's modes.
 
 Retention: closed loops, ended orders and expired notes are pruned with their history after `retentionDays` (30); each entry keeps its first change and its latest, 50 in all; `revertBatch` can undo only what's still in history.
 
 A loop keeps the opening turn's auth for its wake, cut to `principalId`, `principalType`, `authenticator`, `issuer` and the `principalAttributes`. No email or names are stored, and event rows keep the origin but not the auth.
 
-**Bringing in an earlier store.** Reading another store's schema is the host's; the package gives it `importLoop({ externalId, address, principal, what, next, status, wake, createdAt, origin, … })`, which stores a loop as `open` would, once per `externalId`, and answers `imported`, `exists`, `bad` (a non-numeric time or unknown status) or `capped` (an open row past the open-loop cap). Run it from `onFirstOpen` on both the provider and the wake engine: whichever opens first imports, and a throw from it is logged and never stops the store opening.
+**Bringing in an earlier store.** Reading another store's schema is the host's; the package gives it `importLoop({ externalId, address, principal, what, next, status, wake, createdAt, origin, … })`, which stores a loop as `open` would, once per `externalId`, and answers `imported`, `exists`, `bad` (a non-numeric time or unknown status) or `capped` (an open row past the open-loop cap). Run it from `onFirstOpen` on both the provider and the wake engine: whichever opens first imports, and a throw from it is logged and never stops the store opening. Imported ids are kept after their loops are pruned, so importing the same source again never brings a closed loop back.
 
 Observations and recurrence aren't in this version.
 

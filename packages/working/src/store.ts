@@ -378,6 +378,9 @@ export const MIGRATIONS: readonly string[] = [
     at INTEGER NOT NULL
   );
   CREATE INDEX events_entry ON events (entry_id, seq);
+  CREATE TABLE import_keys (
+    external_id TEXT PRIMARY KEY
+  );
   CREATE TABLE event_occurrences (
     event TEXT PRIMARY KEY,
     occurred_at INTEGER NOT NULL,
@@ -1224,7 +1227,9 @@ export class WorkingStore {
     )
       return "bad";
     return this.#tx(() => {
-      if (this.#db.prepare("SELECT 1 FROM loops WHERE external_id = ?").get(input.externalId))
+      // The key outlives the loop: a closed import pruned after the retention window must not come back when the host
+      // imports the same source again.
+      if (this.#db.prepare("SELECT 1 FROM import_keys WHERE external_id = ?").get(input.externalId))
         return "exists";
       const now = this.#now();
       const open = input.status === "open";
@@ -1268,6 +1273,7 @@ export class WorkingStore {
         external_id: input.externalId,
       };
       this.#put("loops", null, row, "imported", input.origin);
+      this.#db.prepare("INSERT INTO import_keys (external_id) VALUES (?)").run(input.externalId);
       return "imported";
     });
   }

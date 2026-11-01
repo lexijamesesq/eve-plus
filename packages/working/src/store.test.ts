@@ -487,6 +487,6 @@ describe("schema", () => {
       createHash("sha256")
         .update(MIGRATIONS[0] as string)
         .digest("hex"),
-    ).toBe("d517b71f28290e39b9377fd9857ffa6e3abc8479b222f41dba5c56c82b435118");
+    ).toBe("5b96bb3abd84dff3b5d7803a23c7083cc673b1961c13f6b1e14a0b9a800ba1ae");
   });
 });

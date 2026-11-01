@@ -113,6 +113,26 @@ describe("importLoop", () => {
     s.close();
   });
 
+  it("a closed import pruned after the retention window isn't brought back by the next import", () => {
+    let now = 1_000;
+    const dir = tempDir();
+    const s = openWorkingStore({ dir, now: () => now, retentionDays: 30 });
+    expect(s.importLoop(imported("f9"))).toBe("imported");
+    const [loop] = s.list({ view: "all" }).loops;
+    s.closeLoop(loop?.id as string, "done", "handled", {
+      principalId: null,
+      kind: "other",
+      sessionId: null,
+    });
+    s.close();
+    now += 31 * 86_400_000;
+    const again = openWorkingStore({ dir, now: () => now, retentionDays: 30 });
+    expect(again.loop(loop?.id as string)).toBeUndefined();
+    expect(again.importLoop(imported("f9"))).toBe("exists");
+    expect(again.list({ view: "all" }).totals.loops).toBe(0);
+    again.close();
+  });
+
   it("an imported event wake keeps the guard: an old event from before it was set wakes nothing", () => {
     const s = openWorkingStore({ dir: tempDir() });
     s.importLoop(imported("f3", { wake: { onEvent: "build-finished:api" } }));
