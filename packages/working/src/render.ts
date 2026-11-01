@@ -13,7 +13,7 @@ const FRAME =
 // A bad time renders as unknown rather than throwing, so one odd row can't take a whole block down.
 export const day = (ms: number): string =>
   Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : "an unknown day";
-const minute = (ms: number) =>
+export const minute = (ms: number): string =>
   Number.isFinite(ms) ? `${new Date(ms).toISOString().slice(0, 16)}Z` : "an unknown time";
 /** Model-written text on one line, so it can't pose as a header or a new entry. */
 export const flat = (s: string): string => s.replace(/\s+/g, " ").trim();

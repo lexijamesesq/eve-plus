@@ -11,7 +11,7 @@ import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 
 import { type Address, addressKey, addressSchema } from "./addresses.js";
-import { clip, flat, KIND } from "./render.js";
+import { clip, flat, KIND, minute } from "./render.js";
 
 export { type Address, addressKey } from "./addresses.js";
 
@@ -439,8 +439,6 @@ export const orderChangeCount = (): number => orderChanges;
 const who = (o: Origin) => `${o.kind}${o.principalId ? `(${o.principalId})` : ""}`;
 
 const newId = (prefix: string) => `${prefix}${randomBytes(4).toString("hex")}`;
-// A bad time renders as unknown rather than throwing, so one odd row can't take a whole recall down.
-const iso = (ms: number) => (Number.isFinite(ms) ? new Date(ms).toISOString() : "an unknown time");
 
 /** How a loop's wake begins, which the host's instructions can name. */
 export const LOOP_WAKE_OPENING = "A loop you opened is due";
@@ -460,7 +458,7 @@ export function followupNoteOf(
     loop.lastEditedBy && loop.lastEditedBy.kind !== loop.origin.kind
       ? `, last changed ${KIND[loop.lastEditedBy.kind]}`
       : "";
-  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${iso(loop.createdAt).slice(0, 16)}Z ${KIND[loop.origin.kind]}${edited}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
+  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${minute(loop.createdAt)} ${KIND[loop.origin.kind]}${edited}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
 }
 
 /**
@@ -816,7 +814,7 @@ export class WorkingStore {
         const closing = this.history(id)
           .filter((e) => e.change === "closed")
           .at(-1);
-        const when = closing ? ` on ${iso(closing.at)}` : "";
+        const when = closing ? ` on ${minute(closing.at)}` : "";
         return {
           ok: false,
           reason: `Loop ${id} was already closed as ${before.status}${when}${before.why ? `: ${before.why}` : ""}. Nothing changed.`,
