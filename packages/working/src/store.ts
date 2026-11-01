@@ -272,9 +272,9 @@ function deliveryPrincipal(auth: SessionAuthContext, keep: readonly string[]): S
   };
 }
 
-/** The store's file inside its directory. */
 /** The store's file name, in one place for the store and the stats reader. */
 export const STORE_FILE = "working.sqlite";
+/** The store's file inside its directory. */
 export const workingStorePath = (dir: string): string => join(dir, STORE_FILE);
 
 const DAY = 24 * 60 * 60_000;
