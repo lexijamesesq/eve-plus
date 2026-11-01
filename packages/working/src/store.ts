@@ -323,6 +323,9 @@ export const orderChangeCount = (): number => orderChanges;
 const newId = (prefix: string) => `${prefix}${randomBytes(4).toString("hex")}`;
 const iso = (ms: number) => new Date(ms).toISOString();
 
+/** How a loop's wake begins, which the host's instructions can name. */
+export const LOOP_WAKE_OPENING = "A loop you opened is due";
+
 /** The wake's text, which the host posts as written: it stands alone after a restart and names the loop. */
 export function followupNoteOf(loop: {
   id: string;
@@ -332,7 +335,7 @@ export function followupNoteOf(loop: {
   createdAt: number;
 }): string {
   const links = loop.links.length > 0 ? `\nLinks: ${loop.links.join(" ")}` : "";
-  return `A loop you opened is due (${loop.id}, opened ${iso(loop.createdAt).slice(0, 16)}Z): ${loop.what}\nNext: ${loop.next}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
+  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${iso(loop.createdAt).slice(0, 16)}Z): ${loop.what}\nNext: ${loop.next}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
 }
 
 /**
