@@ -375,6 +375,24 @@ describe("the provider through eve's memory contract", () => {
     expect(await a.call("list", { view: "lifted" }, ALICE_DM_1)).toContain("releases:api: lifted");
   });
 
+  it("update changes a loop, records an undeliverable revisit as such, and null removes it", async () => {
+    const a = await agent();
+    const id = /(L[0-9a-f]+)/.exec(
+      await a.call("open", { what: "w", waitingOn: "me", next: "n" }, LINEAR),
+    )?.[1] as string;
+    expect(
+      await a.call("update", { id, next: "n2", revisit: { when: "in 1 hour" } }, LINEAR),
+    ).toMatch(
+      /Updated loop .*wake can't be delivered there; it will show as due in working:standing/,
+    );
+    const store = new WorkingStore(workingStorePath(a.dir));
+    expect(store.loop(id)).toMatchObject({ next: "n2", wake: "undeliverable" });
+    expect(await a.call("update", { id, revisit: null }, LINEAR)).toBe(`Updated loop ${id}.`);
+    expect(store.loop(id)).toMatchObject({ wake: null, dueAt: null });
+    expect(await a.call("update", { id: "Lnope", next: "x" }, LINEAR)).toMatch(/no loop Lnope/);
+    store.close();
+  });
+
   it("the write cap refuses loudly past the limit", async () => {
     const a = await agent({ maxWritesPerSession: 1 });
     await a.call("note", { text: "one" }, ALICE_DM_1);
