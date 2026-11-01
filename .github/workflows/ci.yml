@@ -97,4 +97,5 @@ jobs:
           bash .github/scripts/tag-package-release.sh packages/memory memory || FAILED=1
           bash .github/scripts/tag-package-release.sh packages/sandbox-microsandbox sandbox-microsandbox || FAILED=1
           bash .github/scripts/tag-package-release.sh packages/commissioning commissioning || FAILED=1
+          bash .github/scripts/tag-package-release.sh packages/working working || FAILED=1
           exit "$FAILED"
