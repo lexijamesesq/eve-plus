@@ -419,14 +419,26 @@ describe("recall never throws", () => {
     );
   });
 
-  it("never throws when the host's resolver does", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("a resolver that fails costs the turn its here block, never its holds", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = tempDir();
+    const seed = await agent({ dir });
+    await seed.call(
+      "order",
+      { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
+      ALICE_DM_1,
+    );
     const a = await agent({
+      dir,
       conversation: () => {
         throw new Error("resolver broke");
       },
     });
-    outage(await a.recall(ALICE_DM_1));
+    const messages = await a.recall(ALICE_DM_1);
+    expect(messages.map((m) => m.id)).toEqual([HERE_ID, STANDING_ID]);
+    expect(text(messages, HERE_ID)).toContain("No conversation address for this turn");
+    expect(text(messages, STANDING_ID)).toContain("releases:web: hold");
+    expect(warn).toHaveBeenCalledWith("[working] conversation resolver failed: resolver broke");
   });
 
   it("recovers on the next turn once the store opens", async () => {

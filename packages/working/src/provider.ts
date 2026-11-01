@@ -302,7 +302,14 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
     try {
       checkScope(context.memory.scope.key);
       const auth = context.session?.auth?.current ?? null;
-      const address = addressOf(auth);
+      // A resolver that fails costs this turn its `here`, not its holds: standing doesn't depend on the conversation.
+      let address: Address | null;
+      try {
+        address = addressOf(auth);
+      } catch (error) {
+        console.warn(`[working] conversation resolver failed: ${reasonOf(error)}`);
+        address = null;
+      }
       const s = get();
       const key = address === null ? null : addressKey(address);
       const pick = (view: ListView, limit = 30) => s.list({ view, conversationKey: key, limit });
