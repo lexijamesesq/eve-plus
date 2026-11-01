@@ -197,6 +197,41 @@ describe("recall blocks", () => {
     );
   });
 
+  // Each re-layout can show fewer entries and so name more on the closing line; these states settle only on the second
+  // and the third pass, and with a pass fewer their body would be cut short.
+  for (const [pass, subjects, max] of [
+    ["second", Array.from({ length: 6 }, (_, i) => `releases:service-${i}`), 518],
+    [
+      "third",
+      Array.from({ length: 3 }, (_, i) => `releases:${"s".repeat((24 * (i + 1)) % 61)}-${i}`),
+      442,
+    ],
+  ] as const)
+    it(`settles on the ${pass} re-layout without cutting a line`, () => {
+      const orders = subjects.map((s) =>
+        order(s, { rule: "hold until the migration on this service lands" }),
+      );
+      const standing = renderStanding({
+        ...empty,
+        maxCharacters: max,
+        orders: { orders, total: orders.length },
+      });
+      expect(standing.length).toBeLessThanOrEqual(max);
+      expect(standing).not.toContain("…");
+      expect(standing).toMatch(/: working__list lists them\.$/);
+    });
+
+  it("a loop elsewhere carries its next step clipped to 60 characters", () => {
+    const long = loop("L9", {
+      conversationKey: "k9",
+      next: `publish ${"the release ".repeat(10)}`,
+    });
+    const line = renderStanding({ ...empty, elsewhere: { loops: [long], total: 1 } })
+      .split("\n")
+      .find((l) => l.startsWith("• L9 "));
+    expect(line).toContain(`Next: ${`publish ${"the release ".repeat(10)}`.slice(0, 59)}…`);
+  });
+
   it("when even the header leaves no room, the body is cut and the closing line is kept whole", () => {
     const orders = Array.from({ length: 5 }, (_, i) => order(`releases:service-${i}`));
     const standing = renderStanding({ ...empty, maxCharacters: 260, orders: { orders, total: 5 } });
