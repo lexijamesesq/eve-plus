@@ -104,11 +104,20 @@ describe("importLoop", () => {
     s.close();
   });
 
-  it("an imported event wake keeps the guard: an event before it was set wakes nothing", () => {
+  it("a row with a bad time is refused alone, and open rows past the cap are capped", () => {
+    const s = openWorkingStore({ dir: tempDir(), limits: { loops: 1 } });
+    expect(s.importLoop(imported("bad", { createdAt: Number.NaN }))).toBe("bad");
+    expect(s.importLoop(imported("f1"))).toBe("imported");
+    expect(s.importLoop(imported("f2"))).toBe("capped");
+    expect(s.importLoop(imported("f3", { status: "done" }))).toBe("imported");
+    s.close();
+  });
+
+  it("an imported event wake keeps the guard: an old event from before it was set wakes nothing", () => {
     const s = openWorkingStore({ dir: tempDir() });
     s.importLoop(imported("f3", { wake: { onEvent: "build-finished:api" } }));
-    expect(s.eventOccurred("build-finished:api", 999, "old run", 2_000)).toBe(0);
-    expect(s.eventOccurred("build-finished:api", 1_000, "run 7", 2_000)).toBe(1);
+    expect(s.eventOccurred("build-finished:api", 999, "old run", 1_000 + 30 * 60_000)).toBe(0);
+    expect(s.eventOccurred("build-finished:api", 1_000, "run 7", 1_000 + 30 * 60_000)).toBe(1);
     s.close();
   });
 

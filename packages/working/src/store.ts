@@ -109,6 +109,8 @@ export interface ClaimedLoop {
   readonly dueAt: number | null;
   readonly onEvent: string | null;
   readonly firedBy: string | null;
+  /** Which arming of the loop's wake this is: new each time a revisit is set, so `loop:<id>:<wakeSeq>` keys one send. */
+  readonly wakeSeq: number;
   readonly leaseToken: string;
   readonly createdAt: number;
 }
@@ -310,7 +312,7 @@ function normalSubject(subject: string): string | null {
 // ----- schema -----
 
 // Additive only: each step runs once, in order, so a store written by an earlier version opens in a later one.
-const MIGRATIONS: readonly string[] = [
+export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE loops (
     id TEXT PRIMARY KEY,
@@ -330,6 +332,8 @@ const MIGRATIONS: readonly string[] = [
     fired_by TEXT,
     wake_attempts INTEGER NOT NULL DEFAULT 0,
     wake_error TEXT,
+    wake_seq INTEGER NOT NULL DEFAULT 0,
+    fired_at INTEGER,
     status TEXT NOT NULL CHECK (status IN ('open', 'delivering', 'done', 'dropped')),
     why TEXT,
     review_by INTEGER NOT NULL,
@@ -399,7 +403,8 @@ export const orderChangeCount = (): number => orderChanges;
 const who = (o: Origin) => `${o.kind}${o.principalId ? `(${o.principalId})` : ""}`;
 
 const newId = (prefix: string) => `${prefix}${randomBytes(4).toString("hex")}`;
-const iso = (ms: number) => new Date(ms).toISOString();
+// A bad time renders as unknown rather than throwing, so one odd row can't take a whole recall down.
+const iso = (ms: number) => (Number.isFinite(ms) ? new Date(ms).toISOString() : "an unknown time");
 
 /** How a loop's wake begins, which the host's instructions can name. */
 export const LOOP_WAKE_OPENING = "A loop you opened is due";
@@ -636,22 +641,32 @@ export class WorkingStore {
   }
 
   // A new or changed revisit starts its attempts afresh: it's a new wake, not a retry of the old one.
-  #wake(revisit: Revisit | undefined | null, deliverable: boolean, now: number): Row {
+  // Each arming gets a new sequence, so the host's idempotency key is unique per wake, not per loop and firing.
+  #wake(revisit: Revisit | undefined | null, deliverable: boolean, now: number, before?: Row): Row {
     const fresh = { wake_attempts: 0, wake_error: null };
     if (!revisit || (revisit.dueAt === undefined && revisit.onEvent === undefined))
       return { due_at: null, on_event: null, wake: null, wake_set_at: null, ...fresh };
+    // A recent occurrence counts, except the one that already fired this loop: re-arming on the same event after a
+    // wake waits for the next occurrence instead of firing again at once.
+    const firedAt = before?.fired_at == null ? null : Number(before.fired_at);
     const recent =
       revisit.onEvent === undefined
         ? undefined
         : (this.#db
-            .prepare("SELECT fired_by FROM event_occurrences WHERE event = ? AND occurred_at >= ?")
-            .get(revisit.onEvent, now - RECENT_EVENT_MS) as { fired_by: string } | undefined);
+            .prepare(
+              "SELECT fired_by, occurred_at FROM event_occurrences WHERE event = ? AND occurred_at >= ? AND occurred_at > ?",
+            )
+            .get(revisit.onEvent, now - RECENT_EVENT_MS, firedAt ?? -1) as
+            | { fired_by: string; occurred_at: number }
+            | undefined);
     return {
       due_at: revisit.dueAt ?? (recent ? now : null),
       on_event: revisit.onEvent ?? null,
       wake: deliverable ? "pending" : "undeliverable",
       wake_set_at: now,
+      wake_seq: Number(before?.wake_seq ?? 0) + 1,
       fired_by: recent?.fired_by ?? null,
+      fired_at: recent ? Number(recent.occurred_at) : firedAt,
       ...fresh,
     };
   }
@@ -682,6 +697,8 @@ export class WorkingStore {
       next: input.next,
       links: JSON.stringify([...(input.links ?? [])]),
       fired_by: null,
+      fired_at: null,
+      wake_seq: 0,
       ...this.#wake(input.revisit, input.deliverable !== false, now),
       lease_until: null,
       lease_token: null,
@@ -730,7 +747,7 @@ export class WorkingStore {
         next: input.next ?? before.next,
         links: input.links ? JSON.stringify([...input.links]) : before.links,
         ...(input.revisit !== undefined
-          ? this.#wake(input.revisit, input.deliverable !== false, now)
+          ? this.#wake(input.revisit, input.deliverable !== false, now, before)
           : {}),
         review_by: input.reviewBy ?? before.review_by,
         last_edited_by: JSON.stringify(origin),
@@ -922,7 +939,7 @@ export class WorkingStore {
       all: ["expires_at > ?", [now]],
     };
     const first: Record<Table, string> = {
-      loops: `((wake IS NOT NULL AND due_at IS NOT NULL AND due_at <= ${Number(now)}) OR review_by <= ${Number(now)}) DESC, `,
+      loops: `(wake IS NOT NULL AND due_at IS NOT NULL AND due_at <= ${Number(now)}) DESC, (review_by <= ${Number(now)}) DESC, `,
       orders: `(json_extract(origin, '$.kind') = 'operator') DESC, `,
       notes: "",
     };
@@ -1002,6 +1019,7 @@ export class WorkingStore {
           dueAt: loop.dueAt,
           onEvent: loop.onEvent,
           firedBy: loop.firedBy,
+          wakeSeq: Number(row.wake_seq ?? 0),
           leaseToken: token,
           createdAt: loop.createdAt,
         };
@@ -1073,14 +1091,18 @@ export class WorkingStore {
     // A far-future time would otherwise mark every later loop on this event as already fired.
     const at = Math.min(occurredAt, now);
     return this.#tx(() => {
+      // Due: a loop armed by now, so one opened between the event and its recording isn't missed; but a loop armed
+      // after an occurrence older than the recent window is a redelivery's, and waits; and no loop fires twice on the
+      // same occurrence.
       const rows = this.#db
         .prepare(
-          `UPDATE loops SET due_at = ?, fired_by = ?, updated_at = ?
+          `UPDATE loops SET due_at = ?, fired_by = ?, fired_at = ?, updated_at = ?
            WHERE status = 'open' AND wake IS NOT NULL AND on_event = ? AND due_at IS NULL
-             AND wake_set_at <= ?
+             AND (wake_set_at <= ? OR (? >= ? AND wake_set_at <= ?))
+             AND (fired_at IS NULL OR fired_at < ?)
            RETURNING *`,
         )
-        .all(now, firedBy, now, event, at) as Row[];
+        .all(now, firedBy, at, now, event, at, at, now - RECENT_EVENT_MS, now, at) as Row[];
       this.#db
         .prepare(
           `INSERT INTO event_occurrences (event, occurred_at, fired_by) VALUES (?, ?, ?)
@@ -1187,15 +1209,31 @@ export class WorkingStore {
   /**
    * Brings in a loop the host read from another store, once: a second call with the same `externalId` changes nothing
    * and answers "exists". The loop is stored as `open` would store it (text capped as the tools cap it, the sender auth
-   * trimmed), with `createdAt` as when its wake was set, so an event that fired before it wakes nothing. An import is
-   * the host's one-off, so it isn't held to the open-loop cap.
+   * trimmed), with `createdAt` as when its wake was set, so an event that fired before it wakes nothing. A row with a
+   * non-numeric time or an unknown status answers "bad"; an open one past the open-loop cap answers "capped".
    */
-  importLoop(input: ImportedLoop): "imported" | "exists" {
+  importLoop(input: ImportedLoop): "imported" | "exists" | "bad" | "capped" {
+    // A row the host read from elsewhere is checked here, so one bad row is refused alone, never rolling back others.
+    const time = (v: unknown) => v === null || v === undefined || Number.isFinite(v);
+    if (
+      !Number.isFinite(input.createdAt) ||
+      !time(input.wake?.dueAt) ||
+      typeof input.what !== "string" ||
+      typeof input.next !== "string" ||
+      !["open", "done", "dropped"].includes(input.status)
+    )
+      return "bad";
     return this.#tx(() => {
       if (this.#db.prepare("SELECT 1 FROM loops WHERE external_id = ?").get(input.externalId))
         return "exists";
       const now = this.#now();
       const open = input.status === "open";
+      if (
+        open &&
+        this.#count("SELECT count(*) AS n FROM loops WHERE status IN ('open', 'delivering')") >=
+          this.#limits.loops
+      )
+        return "capped";
       const hasWake = open && (input.wake?.dueAt != null || input.wake?.onEvent != null);
       const what = clip(input.what, 200) || "imported loop";
       const row: Row = {
@@ -1218,6 +1256,8 @@ export class WorkingStore {
         fired_by: input.wake?.firedBy ?? null,
         wake_attempts: 0,
         wake_error: null,
+        wake_seq: hasWake ? 1 : 0,
+        fired_at: null,
         status: input.status,
         why: open ? null : (input.why ?? "imported"),
         review_by: now + this.#days.loop * DAY,

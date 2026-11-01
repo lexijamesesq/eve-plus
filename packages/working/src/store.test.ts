@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Address } from "./addresses.js";
 import { addressKey } from "./addresses.js";
 import {
   LOOP_WAKE_OPENING,
+  MIGRATIONS,
   type Origin,
   orderChangeCount,
   parseOn,
@@ -281,24 +283,54 @@ describe("wakes", () => {
     expect(s.claimDue(T0 + DAY, 30_000)).toEqual([]);
   });
 
-  it("an event wakes loops whose wake was set by then, and not one set after", () => {
+  it("an old event redelivered wakes loops armed before it, not ones armed since", () => {
     const s = store();
     const early = loopIn(s, dm, { revisit: { onEvent: "build-finished:web" } });
-    clock = T0 + 10_000;
+    clock = T0 + 30 * 60_000;
     const late = loopIn(s, thread, { revisit: { onEvent: "build-finished:web" } });
     expect(s.eventOccurred("build-finished:web", T0 + 5_000, "run 41", clock)).toBe(1);
     const claimed = s.claimDue(clock, 30_000);
     expect(claimed.map((c) => c.id)).toEqual([early.id]);
     expect(claimed[0]?.firedBy).toBe("run 41");
-    expect(s.list({ view: "all" }).loops.find((l) => l.id === late.id)?.dueAt).toBeNull();
+    expect(s.loop(late.id)?.dueAt).toBeNull();
   });
 
-  it("a revisit added later to an old loop isn't woken by an earlier event", () => {
+  it("a loop opened after its event happened but before it was recorded is still woken", () => {
     const s = store();
-    const loop = loopIn(s);
-    clock = T0 + 10_000;
+    clock = T0 + 1_000;
+    const loop = loopIn(s, dm, { revisit: { onEvent: "build-finished:web" } });
+    clock = T0 + 3_000;
+    expect(s.eventOccurred("build-finished:web", T0, "run 8", clock)).toBe(1);
+    expect(s.loop(loop.id)?.dueAt).toBe(clock);
+  });
+
+  it("re-arming on the event that just woke a loop waits for the next one, with a new wake key", () => {
+    const s = store();
+    const loop = loopIn(s, dm, { revisit: { onEvent: "build-finished:web" } });
+    clock += 1_000;
+    s.eventOccurred("build-finished:web", clock, "run 1", clock);
+    const [first] = s.claimDue(clock, 30_000);
+    s.settleWake(loop.id, first?.leaseToken as string, "run 1");
+    clock += 1_000;
     s.update(loop.id, { revisit: { onEvent: "build-finished:web" } }, operator);
-    expect(s.eventOccurred("build-finished:web", T0 + 5_000, "old run", clock)).toBe(0);
+    expect(s.loop(loop.id)?.dueAt).toBeNull();
+    expect(s.eventOccurred("build-finished:web", clock - 1_500, "run 1", clock)).toBe(0);
+    clock += 60_000;
+    expect(s.eventOccurred("build-finished:web", clock, "run 2", clock)).toBe(1);
+    const [second] = s.claimDue(clock, 30_000);
+    expect(second?.firedBy).toBe("run 2");
+    expect(second?.wakeSeq).toBeGreaterThan(first?.wakeSeq as number);
+  });
+
+  it("due loops come before stale ones, however recently the stale ones changed", () => {
+    const s = store();
+    const due = loopIn(s, dm, { revisit: { dueAt: T0 + 60_000 } });
+    for (let i = 0; i < 12; i++) {
+      clock += 1;
+      loopIn(s, thread, { reviewBy: T0 + 1 });
+    }
+    clock = T0 + 2 * 60_000;
+    expect(s.list({ view: "all", limit: 5 }).loops[0]?.id).toBe(due.id);
   });
 });
 
@@ -446,5 +478,15 @@ describe("revertBatch", () => {
     expect(all.loops.map((l) => l.id)).toEqual([kept.id]);
     expect(all.orders.map((o) => o.rule)).toEqual(["hold"]);
     expect(created.ok && s.history(created.loop.id).at(-1)?.change).toBe("reverted");
+  });
+});
+
+describe("schema", () => {
+  it("a released migration step never changes: a change to the schema is a new step", () => {
+    expect(
+      createHash("sha256")
+        .update(MIGRATIONS[0] as string)
+        .digest("hex"),
+    ).toBe("d517b71f28290e39b9377fd9857ffa6e3abc8479b222f41dba5c56c82b435118");
   });
 });
