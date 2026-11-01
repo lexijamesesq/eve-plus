@@ -30,11 +30,11 @@ import {
   type ListView,
   type Origin,
   type OriginKind,
+  openWorkingStore,
   parseOn,
   parseWhen,
   type Revisit,
-  WorkingStore,
-  workingStorePath,
+  type WorkingStore,
 } from "./store.js";
 
 export { HERE_ID, STANDING_ID } from "./render.js";
@@ -200,24 +200,20 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
   const maxCharacters = options.maxCharacters ?? 1_200;
   const originKind = options.originKind ?? defaultOriginKind;
   const fleet = options.fleet ?? [];
-  const path = workingStorePath(options.dir);
 
   // Opened on first use, so an agent with no volume still starts. A failed open isn't kept: the next turn retries,
   // so an outage is temporary, not sticky for the process.
   let store: WorkingStore | undefined;
   const get = (): WorkingStore => {
     if (store) return store;
-    const opened = new WorkingStore(path, {
+    const opened = openWorkingStore({
+      dir: options.dir,
+      followups: options.followups,
+      resolve: options.conversation,
       now,
       reviewAfterDays: options.reviewAfterDays,
       liftedVisibleDays: options.liftedVisibleDays,
     });
-    try {
-      if (options.followups) opened.migrateFollowups(options.followups, options.conversation);
-    } catch (error) {
-      opened.close();
-      throw error;
-    }
     store = opened;
     return store;
   };

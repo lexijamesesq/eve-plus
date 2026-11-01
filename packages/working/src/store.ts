@@ -1045,3 +1045,31 @@ function toEvent(row: Row): EntryEvent {
     at: Number(row.at),
   };
 }
+
+export interface OpenWorkingStoreOptions extends WorkingStoreOptions {
+  /** The store's directory; the file is `<dir>/working.sqlite`. */
+  readonly dir: string;
+  /** A follow-ups file to import, once, as the store opens; `resolve` places its rows. */
+  readonly followups?: string;
+  readonly resolve?: (principal: SessionAuthContext) => Address | null;
+}
+
+/**
+ * Opens the agent's store, importing a follow-ups file first when given one. The provider and the host's wake engine
+ * both open through here, so whichever runs first after a start migrates, and neither reads before the import. The
+ * import is one IMMEDIATE transaction and skips rows already imported, so running it from both is harmless.
+ */
+export function openWorkingStore(options: OpenWorkingStoreOptions): WorkingStore {
+  const store = new WorkingStore(workingStorePath(options.dir), options);
+  try {
+    if (options.followups !== undefined) {
+      if (options.resolve === undefined)
+        throw new Error("openWorkingStore: followups needs resolve");
+      store.migrateFollowups(options.followups, options.resolve);
+    }
+  } catch (error) {
+    store.close();
+    throw error;
+  }
+  return store;
+}

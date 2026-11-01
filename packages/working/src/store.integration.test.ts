@@ -8,7 +8,13 @@ import type { SessionAuthContext } from "eve/context";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import type { Address } from "./addresses.js";
-import { type Origin, SCHEMA_VERSION, WorkingStore, workingStorePath } from "./store.js";
+import {
+  type Origin,
+  openWorkingStore,
+  SCHEMA_VERSION,
+  WorkingStore,
+  workingStorePath,
+} from "./store.js";
 
 const operator: Origin = { principalId: "U-alice", kind: "operator", sessionId: "s1" };
 const dirs: string[] = [];
@@ -152,6 +158,25 @@ describe("migrateFollowups", () => {
     expect(s.eventOccurred("deploy-completed:ollie", 999, "old run", 2_000)).toBe(0);
     expect(s.eventOccurred("deploy-completed:ollie", 1_000, "run 7", 2_000)).toBe(1);
     s.close();
+  });
+
+  it("openWorkingStore imports before the wake engine's first claim, and only once", () => {
+    const dir = tempDir();
+    const followups = followupsFile(dir);
+    const engine = openWorkingStore({
+      dir: join(dir, "working"),
+      followups,
+      resolve,
+      now: () => 2_000,
+    });
+    expect(engine.claimDue(2_000, 60_000).map((c) => c.followupNote)).toEqual([
+      "check the digest\nthen deploy zero",
+    ]);
+    const provider = openWorkingStore({ dir: join(dir, "working"), followups, resolve });
+    expect(provider.list({ view: "all" }).totals.loops).toBe(2);
+    engine.close();
+    provider.close();
+    expect(() => openWorkingStore({ dir: join(dir, "x"), followups })).toThrow(/needs resolve/);
   });
 
   it("a missing follow-ups file imports nothing", () => {
