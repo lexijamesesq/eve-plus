@@ -471,6 +471,19 @@ describe("notes", () => {
 });
 
 describe("revertBatch", () => {
+  it("never brings back a reminder already sent", () => {
+    const s = store();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const loop = loopIn(s, dm, { revisit: { dueAt: T0 } });
+    s.update(loop.id, { next: "edited by Bob" }, bob);
+    const [claimed] = s.claimDue(T0, 30_000);
+    s.settleWake(loop.id, claimed?.leaseToken as string, "schedule");
+    expect(s.revertBatch({ sessionId: bob.sessionId as string }, operator)).toBe(1);
+    expect(s.loop(loop.id)).toMatchObject({ next: "publish the release", wake: null });
+    clock += 60_000;
+    expect(s.claimDue(clock, 30_000)).toEqual([]);
+  });
+
   it("undoes one session's changes and leaves the rest", () => {
     const s = store();
     vi.spyOn(console, "warn").mockImplementation(() => {});

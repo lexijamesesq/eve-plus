@@ -1201,7 +1201,7 @@ export class WorkingStore {
         const after: Row = before
           ? {
               ...before,
-              ...(table === "loops" ? { principal: current.principal } : {}),
+              ...(table === "loops" ? wakeStateOf(current) : {}),
               updated_at: now,
             }
           : table === "loops"
@@ -1322,6 +1322,31 @@ export class WorkingStore {
       return "imported";
     });
   }
+}
+
+// What a revert never rolls back on a loop: its wake, which the engine owns, and the sender auth, which events don't
+// keep. Restoring an earlier wake would re-arm a reminder already sent under a send key already used, so the host
+// would either send it twice or drop it as a duplicate. A revert restores what the loop says; the agent re-arms it.
+const WAKE_STATE = [
+  "principal",
+  "due_at",
+  "on_event",
+  "wake",
+  "wake_set_at",
+  "wake_seq",
+  "fired_by",
+  "fired_at",
+  "wake_attempts",
+  "wake_error",
+  "lease_until",
+  "lease_token",
+] as const;
+function wakeStateOf(row: Row): Row {
+  const kept: Row = {};
+  for (const col of WAKE_STATE) kept[col] = row[col] ?? null;
+  // A loop mid-delivery stays mid-delivery, so its claimant can still settle or fail it.
+  if (row.status === "delivering") kept.status = "delivering";
+  return kept;
 }
 
 // Event rows keep attribution (the origin) but not the sender auth, which only the live loop needs for its wake.
