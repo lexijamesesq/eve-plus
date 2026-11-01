@@ -111,7 +111,9 @@ const revisit = z
 const links = z
   .array(z.string().trim().min(1).max(512))
   .max(10)
-  .describe("URLs or addresses that anchor it: the message, PR, ticket or thread");
+  .describe(
+    "what anchors it: the message, PR, ticket or thread; each a URL or a reference: knowledge:<id>, working:<id>, vault:<path>, linear:<KEY-n>, slack:<channel>/<ts> or github:<owner>/<repo>#<n>",
+  );
 const id = z.string().trim().min(1).max(32);
 const VIEWS = ["here", "elsewhere", "orders", "stale", "lifted", "notes", "all"] as const;
 
@@ -122,7 +124,7 @@ const VIEWS = ["here", "elsewhere", "orders", "stale", "lifted", "notes", "all"]
 export const workingToolSpecs = {
   open: {
     description:
-      "Open a loop: something you're waiting on or owe in this conversation, so it's in front of you every turn until you close it. Say what it is, whose move it is, and your next action, written to stand alone later. Give `revisit` to be woken in this conversation when it's due. The loop belongs to the conversation you're in, which comes from your session, not from anything you write; in a help thread you were asked from, it lands on the conversation that asked for help, and its wake arrives there too.",
+      "Open a loop: something you're waiting on or owe in this conversation, so it's in front of you every turn until you close it. Say what it is, whose move it is, and your next action, written to stand alone later. Give `revisit` to be woken in this conversation when it's due. The loop belongs to the conversation you're in, which comes from your session, not from anything you write; in a help thread you opened to ask a colleague, it lands on, and wakes in, the conversation you asked from.",
     inputSchema: z
       .object({
         what: text(200).describe("one line: what's open"),
@@ -165,7 +167,9 @@ export const workingToolSpecs = {
       .object({
         subject: text(80).describe("what it constrains, e.g. deploys:ollie"),
         rule: text(200).describe("the constraint, as you'll apply it"),
-        link: text(512).describe("where it was set: the message or comment"),
+        link: text(512).describe(
+          "where it was set: the message or comment, as a URL or a reference: knowledge:<id>, working:<id>, vault:<path>, linear:<KEY-n>, slack:<channel>/<ts> or github:<owner>/<repo>#<n>",
+        ),
         until: when.optional().describe("when it ends on its own, if it does"),
       })
       .strict(),

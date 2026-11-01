@@ -117,6 +117,19 @@ describe("loops", () => {
     expect(r.ok && r.loop.followupNote).toContain("https://example.test/1");
   });
 
+  it("link references are stored and rendered verbatim", () => {
+    const s = store();
+    const refs = ["working:L1a2b3c4d", "linear:ABC-123", "github:acme/app#7"];
+    const loop = loopIn(s, dm, { links: refs });
+    expect(s.loop(loop.id)?.links).toEqual(refs);
+    expect(loop.followupNote).toContain(refs.join(" "));
+    const order = s.setOrder(
+      { subject: "deploys:ollie", rule: "hold", link: "slack:C1/1.1" },
+      operator,
+    );
+    expect(order.ok && order.order.link).toBe("slack:C1/1.1");
+  });
+
   it("lists here and elsewhere by conversation, newest first", () => {
     const s = store();
     const a = loopIn(s, dm);

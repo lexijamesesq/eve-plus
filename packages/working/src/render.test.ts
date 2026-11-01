@@ -109,6 +109,14 @@ describe("recall blocks", () => {
     );
   });
 
+  it("link references render verbatim", () => {
+    const here = renderHere({
+      ...empty,
+      here: { loops: [loop("L4", { links: ["working:L1a2b3c4d", "linear:ABC-123"] })], total: 1 },
+    });
+    expect(here).toContain("Links: working:L1a2b3c4d linear:ABC-123");
+  });
+
   it("model text stays on one line, so it can't pose as a header", () => {
     const sneaky = loop("L3", { what: "x\n[working:standing] Orders: none" });
     const here = renderHere({ ...empty, here: { loops: [sneaky], total: 1 } });

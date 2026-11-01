@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -203,7 +204,7 @@ describe("claimDue under concurrent ticks", () => {
     execFileSync(
       process.execPath,
       [
-        join(import.meta.dirname, "..", "node_modules", "typescript", "bin", "tsc"),
+        createRequire(import.meta.url).resolve("typescript/bin/tsc"),
         "-p",
         "tsconfig.build.json",
         "--outDir",
