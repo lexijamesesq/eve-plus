@@ -1,0 +1,66 @@
+{
+  "name": "@eve-plus/working",
+  "version": "0.1.0",
+  "description": "A working-memory provider for Vercel eve: an agent's open loops, standing orders and notes, in front of it every turn, in an embedded SQLite store.",
+  "license": "MIT",
+  "keywords": [
+    "eve",
+    "agent-memory",
+    "memory-provider",
+    "working-memory",
+    "sqlite"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lexijamesesq/eve-plus.git",
+    "directory": "packages/working"
+  },
+  "homepage": "https://github.com/lexijamesesq/eve-plus/tree/main/packages/working#readme",
+  "bugs": {
+    "url": "https://github.com/lexijamesesq/eve-plus/issues"
+  },
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "eve-working-stats": "./dist/stats-cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./store": {
+      "types": "./dist/store.d.ts",
+      "import": "./dist/store.js"
+    },
+    "./stats": {
+      "types": "./dist/stats.d.ts",
+      "import": "./dist/stats.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.check.json && tsc -p tsconfig.build.json",
+    "test": "pnpm run test:unit && pnpm run test:integration",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "eve": "0.91.0",
+    "typescript": "^5.0.0",
+    "vitest": "4.1.10"
+  },
+  "peerDependencies": {
+    "eve": "^0.91.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -25,6 +25,10 @@ repos:
         alias: commissioning-version
         args: [package, packages/commissioning, commissioning]
         stages: [pre-push]
+      - id: release-version
+        alias: working-version
+        args: [package, packages/working, working]
+        stages: [pre-push]
       - id: house-code
         stages: [pre-commit]
       - id: vale-self-narration
