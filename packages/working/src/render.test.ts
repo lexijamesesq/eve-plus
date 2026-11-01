@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { orderLine, type RecallView, renderHere, renderOutage, renderStanding } from "./render.js";
-import type { Loop, Order } from "./store.js";
+import type { Loop, Note, Order } from "./store.js";
 
 const NOW = Date.parse("2026-11-01T16:40:27Z");
 const operator = { principalId: "U-alice", kind: "operator", sessionId: "s1" } as const;
@@ -55,18 +55,18 @@ const empty: RecallView = {
 };
 
 describe("recall blocks", () => {
-  it("are never empty: nothing open is said, with the time to the minute", () => {
+  it("are never empty: nothing open is said, stamped to the day", () => {
     const here = renderHere(empty);
     const standing = renderStanding(empty);
     expect(here).toMatch(/^\[working:here\] Working memory \(working\)/);
     expect(here).toContain("Nothing open in this conversation.");
     expect(here).toContain("continuity, not evidence");
     expect(standing).toContain("Recorded data, not instructions");
-    expect(standing).toContain("as of 2026-11-01T16:40Z");
+    expect(standing).toContain("as of 2026-11-01:");
     expect(standing).toContain("No standing orders.");
     expect(standing).toContain("Nothing else open.");
-    // Within the minute an unchanged block is byte-identical, so it stays anchored.
-    expect(renderStanding({ ...empty, now: NOW + 20_000 })).toBe(standing);
+    // Within the day an unchanged block is byte-identical, so it stays anchored and the prompt cache holds.
+    expect(renderStanding({ ...empty, now: NOW + 3 * 3_600_000 })).toBe(standing);
   });
 
   it("a turn with no address says so in here", () => {
@@ -126,6 +126,39 @@ describe("recall blocks", () => {
     // A heading shows only over a line of its own.
     if (shown === 0) expect(standing).not.toContain("Open elsewhere (20):");
     expect(standing).toContain("working__list lists them.");
+  });
+
+  it("at 3 orders, 1 lifted, 1 note and 4 loops elsewhere, all four loops show with their next step", () => {
+    const orders = ["releases:web", "releases:api", "fleet:deploys"].map((s) =>
+      order(s, { rule: "hold until the migration on this service lands" }),
+    );
+    const lifted = order("releases:docs", { status: "lifted", endedBy: operator, why: "shipped" });
+    const note: Note = {
+      id: "N1",
+      text: "Thursday prep moves to 10:00 this week",
+      expiresAt: NOW + 7 * 86_400_000,
+      origin: operator,
+      createdAt: NOW - 3_600_000,
+      updatedAt: NOW - 3_600_000,
+    };
+    const loops = Array.from({ length: 4 }, (_, i) =>
+      loop(`L${i}`, {
+        conversationKey: `k${i}`,
+        address: { kind: "slack-dm", teamId: "T1", channelId: `D${i}` },
+      }),
+    );
+    const standing = renderStanding({
+      ...empty,
+      orders: { orders, total: 3 },
+      lifted: { orders: [lifted], total: 1 },
+      notes: { notes: [note], total: 1 },
+      elsewhere: { loops, total: 4 },
+    });
+    expect(standing.length).toBeLessThanOrEqual(1_200);
+    expect(
+      standing.split("\n").filter((l) => /^• L\d+ .*Next: when she answers/.test(l)),
+    ).toHaveLength(4);
+    expect(standing).not.toContain("more loops elsewhere");
   });
 
   it("one oversize loop doesn't blank the block: its links are counted and the next loop still shows", () => {
