@@ -4,7 +4,7 @@
 // that fails isn't settled: its lease runs out and the next tick claims it again.
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SessionAuthContext } from "eve/context";
@@ -173,10 +173,25 @@ export interface RevertFilter {
   readonly principalId?: string;
 }
 
-export interface MigrationReport {
-  readonly imported: number;
-  readonly skipped: number;
-  readonly unresolved: number;
+/** A loop brought in from another store by the host, once: `externalId` is its id there. */
+export interface ImportedLoop {
+  readonly externalId: string;
+  readonly address: Address;
+  readonly principal: SessionAuthContext | null;
+  readonly what: string;
+  readonly next: string;
+  readonly waitingOn?: string;
+  readonly links?: readonly string[];
+  readonly status: "open" | "done" | "dropped";
+  /** Its wake, kept only while it's open. */
+  readonly wake?: {
+    readonly dueAt?: number | null;
+    readonly onEvent?: string | null;
+    readonly firedBy?: string | null;
+  };
+  readonly createdAt: number;
+  readonly why?: string;
+  readonly origin: Origin;
 }
 
 export interface WorkingStoreOptions {
@@ -308,7 +323,7 @@ const MIGRATIONS: readonly string[] = [
     origin TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    followup_id TEXT UNIQUE
+    external_id TEXT UNIQUE
   );
   CREATE INDEX loops_due ON loops (status, due_at);
   CREATE INDEX loops_conversation ON loops (conversation_key, status);
@@ -595,7 +610,7 @@ export class WorkingStore {
       origin: JSON.stringify(origin),
       created_at: now,
       updated_at: now,
-      followup_id: null,
+      external_id: null,
     };
     this.#tx(() => this.#put("loops", null, row, "opened", origin));
     return { ok: true, loop: toLoop(row) };
@@ -1049,115 +1064,60 @@ export class WorkingStore {
   }
 
   /**
-   * Imports the baseline's follow-ups file as loops, once: a pending follow-up becomes an open loop with its wake, a
-   * done one a done loop, a cancelled one a dropped loop. The note's first line is the loop's `what`, the rest its
-   * `next` (each capped as the tools cap them), and the wake text is built as any loop's. A row whose principal
-   * doesn't parse is skipped and counted in `skipped`. `resolve` is the host's address resolver, given the follow-up's
-   * principal; a row it can't place is left out and counted. Re-running imports nothing twice.
+   * Brings in a loop the host read from another store, once: a second call with the same `externalId` changes nothing
+   * and answers "exists". The loop is stored as `open` would store it (text capped as the tools cap it, the sender auth
+   * trimmed, the wake text built by followupNoteOf), with `createdAt` as when its wake was set, so an event that fired
+   * before it wakes nothing.
    */
-  migrateFollowups(
-    path: string,
-    resolve: (principal: SessionAuthContext) => Address | null,
-  ): MigrationReport {
-    if (!existsSync(path)) return { imported: 0, skipped: 0, unresolved: 0 };
-    // A file that can't be read as a follow-ups store (empty, another schema, corrupt) imports nothing and never
-    // fails the open: a bad import must not take working memory down with it.
-    let rows: Row[];
-    try {
-      const source = new DatabaseSync(path, { readOnly: true });
-      try {
-        rows = source.prepare("SELECT * FROM followups ORDER BY created_at, id").all() as Row[];
-      } finally {
-        source.close();
-      }
-    } catch (error) {
-      console.warn(
-        `[working] follow-ups file not imported: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return { imported: 0, skipped: 0, unresolved: 0 };
-    }
-    const STATUS: Record<string, LoopStatus> = {
-      pending: "open",
-      done: "done",
-      cancelled: "dropped",
-    };
-    const report = { imported: 0, skipped: 0, unresolved: 0 };
-    this.#tx(() => {
+  importLoop(input: ImportedLoop): "imported" | "exists" {
+    return this.#tx(() => {
+      if (this.#db.prepare("SELECT 1 FROM loops WHERE external_id = ?").get(input.externalId))
+        return "exists";
       const now = this.#now();
-      for (const f of rows) {
-        const followupId = String(f.id);
-        if (this.#db.prepare("SELECT 1 FROM loops WHERE followup_id = ?").get(followupId)) {
-          report.skipped++;
-          continue;
-        }
-        // One bad row is skipped and named, never the whole import.
-        let principal: SessionAuthContext;
-        let address: Address | null;
-        try {
-          const parsed = JSON.parse(String(f.principal)) as SessionAuthContext | null;
-          if (typeof parsed?.attributes !== "object" || parsed.attributes === null)
-            throw new Error("its principal has no attributes");
-          principal = deliveryPrincipal(parsed);
-          address = resolve(principal);
-        } catch (error) {
-          report.skipped++;
-          console.warn(
-            `[working] follow-up ${followupId} skipped: ${error instanceof Error ? error.message : String(error)}`,
-          );
-          continue;
-        }
-        const status = STATUS[String(f.status)];
-        if (address === null || status === undefined) {
-          report.unresolved++;
-          continue;
-        }
-        const note = String(f.note);
-        const [head = "", ...rest] = note.split("\n");
-        const origin: Origin = {
-          principalId: principal.principalId ?? null,
-          kind: "other",
-          sessionId: null,
-        };
-        const pending = status === "open";
-        const row: Row = {
-          id: newId("L"),
-          conversation_key: addressKey(address),
-          address: JSON.stringify(address),
-          principal: JSON.stringify(principal),
-          what: clip(head.trim() || "follow-up", 200),
-          waiting_on: "me",
-          next: clip(rest.join("\n").trim() || head.trim(), 500),
-          links: "[]",
-          signature: null,
-          due_at: f.due_at,
-          on_event: f.on_event,
-          wake: pending ? "pending" : null,
-          wake_set_at: pending ? Number(f.created_at) : null,
-          lease_until: null,
-          lease_token: null,
-          fired_by: f.fired_by,
-          followup_note: "",
-          status,
-          why: pending ? null : `migrated from a ${String(f.status)} follow-up`,
-          review_by: now + this.#days.loop * DAY,
-          origin: JSON.stringify(origin),
-          created_at: Number(f.created_at),
-          updated_at: now,
-          followup_id: followupId,
-        };
-        row.followup_note = followupNoteOf({
-          id: String(row.id),
-          what: String(row.what),
-          next: String(row.next),
-          links: [],
-          createdAt: Number(row.created_at),
-          origin,
-        });
-        this.#put("loops", null, row, "migrated", origin);
-        report.imported++;
-      }
+      const id = newId("L");
+      const open = input.status === "open";
+      const hasWake = open && (input.wake?.dueAt != null || input.wake?.onEvent != null);
+      const links = [...(input.links ?? [])];
+      const what = clip(flat(input.what) || "imported loop", 200);
+      const next = clip(input.next.trim() || what, 500);
+      const row: Row = {
+        id,
+        conversation_key: addressKey(input.address),
+        address: JSON.stringify(input.address),
+        principal: input.principal ? JSON.stringify(deliveryPrincipal(input.principal)) : null,
+        what,
+        waiting_on: clip(input.waitingOn ?? "me", 40),
+        next,
+        links: JSON.stringify(links),
+        signature: null,
+        due_at: hasWake ? (input.wake?.dueAt ?? null) : null,
+        on_event: hasWake ? (input.wake?.onEvent ?? null) : null,
+        wake: hasWake ? "pending" : null,
+        wake_set_at: hasWake ? input.createdAt : null,
+        lease_until: null,
+        lease_token: null,
+        fired_by: input.wake?.firedBy ?? null,
+        wake_attempts: 0,
+        wake_error: null,
+        followup_note: followupNoteOf({
+          id,
+          what,
+          next,
+          links,
+          createdAt: input.createdAt,
+          origin: input.origin,
+        }),
+        status: input.status,
+        why: open ? null : (input.why ?? "imported"),
+        review_by: now + this.#days.loop * DAY,
+        origin: JSON.stringify(input.origin),
+        created_at: input.createdAt,
+        updated_at: now,
+        external_id: input.externalId,
+      };
+      this.#put("loops", null, row, "imported", input.origin);
+      return "imported";
     });
-    return report;
   }
 }
 
@@ -1255,33 +1215,23 @@ function toEvent(row: Row): EntryEvent {
 export interface OpenWorkingStoreOptions extends WorkingStoreOptions {
   /** The store's directory; the file is `<dir>/working.sqlite`. */
   readonly dir: string;
-  /** A follow-ups file to import, once, as the store opens; `resolve` places its rows. */
-  readonly followups?: string;
-  readonly resolve?: (principal: SessionAuthContext) => Address | null;
+  /** Run once the store is open, before it's returned: where a host imports loops from an earlier store. */
+  readonly onFirstOpen?: (store: WorkingStore) => void;
 }
 
 /**
- * Opens the agent's store, importing a follow-ups file first when given one. The provider and the host's wake engine
- * both open through here, so whichever runs first after a start migrates, and neither reads before the import. The
- * import is one IMMEDIATE transaction and skips rows already imported, so running it from both is harmless.
+ * Opens the agent's store and runs the host's `onFirstOpen` on it. The provider and the host's wake engine both open
+ * through here, so whichever opens first after a start runs it, and neither reads before it has run. A throw from it is
+ * logged and the store opens anyway: a one-off import must not take working memory down.
  */
 export function openWorkingStore(options: OpenWorkingStoreOptions): WorkingStore {
-  if (options.followups !== undefined && options.resolve === undefined)
-    throw new Error("openWorkingStore: followups needs resolve");
   const store = new WorkingStore(workingStorePath(options.dir), options);
-  if (options.followups !== undefined && options.resolve !== undefined) {
-    // The import is a one-off; a failure in it is logged, and the store opens without it.
+  if (options.onFirstOpen !== undefined) {
     try {
-      const r = store.migrateFollowups(options.followups, options.resolve);
-      // The import's only other trace is the stats' open count; a row with no address would vanish unremarked. Rows
-      // already imported are skipped on every later start, so they alone don't log; a bad row logs its own line.
-      if (r.imported + r.unresolved > 0)
-        console.log(
-          `[working] imported follow-ups imported=${r.imported} skipped=${r.skipped} unresolved=${r.unresolved}`,
-        );
+      options.onFirstOpen(store);
     } catch (error) {
       console.warn(
-        `[working] follow-ups import failed: ${error instanceof Error ? error.message : String(error)}`,
+        `[working] onFirstOpen failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

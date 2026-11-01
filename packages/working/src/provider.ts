@@ -65,8 +65,8 @@ export interface WorkingMemoryOptions {
   readonly eventsPerEntry?: number;
   /** How recent an event may be for a loop opened to wait on it to be due at once. Default 10 minutes. */
   readonly recentEventMs?: number;
-  /** A follow-ups file to import, once, when the store is first opened; `conversation` places its rows. */
-  readonly followups?: string;
+  /** Run once the store is open, before it's first read: where a host imports loops from an earlier store. */
+  readonly onFirstOpen?: (store: WorkingStore) => void;
   /** Max characters per recall message. Default 1,200. */
   readonly maxCharacters?: number;
   /** Days before an entry is marked stale. Defaults: loop 7, order 14, note 7 (a note expires then). */
@@ -235,8 +235,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
     if (store) return store;
     const opened = openWorkingStore({
       dir: options.dir,
-      followups: options.followups,
-      resolve: options.conversation,
+      onFirstOpen: options.onFirstOpen,
       now,
       reviewAfterDays: options.reviewAfterDays,
       liftedVisibleDays: options.liftedVisibleDays,

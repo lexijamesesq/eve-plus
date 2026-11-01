@@ -8,8 +8,8 @@ import { Worker } from "node:worker_threads";
 import type { SessionAuthContext } from "eve/context";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Address } from "./addresses.js";
 import {
+  type ImportedLoop,
   LOOP_WAKE_OPENING,
   type Origin,
   openWorkingStore,
@@ -29,81 +29,6 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
-
-const slack = (channel: string, thread: string): SessionAuthContext => ({
-  principalId: "U-alice",
-  principalType: "user",
-  authenticator: "slack-webhook",
-  attributes: { channel_id: channel, thread_ts: thread, team_id: "T1" },
-});
-// The host's resolver, as a baseline would write it: a DM is its channel, any other Slack channel its thread.
-const resolve = (p: SessionAuthContext): Address | null => {
-  const {
-    channel_id: channelId,
-    thread_ts: threadTs,
-    team_id: teamId,
-  } = p.attributes as Record<string, string>;
-  if (p.authenticator !== "slack-webhook" || !channelId || !teamId) return null;
-  return channelId.startsWith("D")
-    ? { kind: "slack-dm", teamId, channelId }
-    : { kind: "slack-thread", teamId, channelId, threadTs: threadTs ?? "" };
-};
-
-// The baseline follow-ups store's own schema, so the import reads the file it will meet.
-const FOLLOWUPS_SCHEMA = `
-CREATE TABLE followups (
-  id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL, principal TEXT NOT NULL,
-  due_at INTEGER, on_event TEXT, note TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'done', 'cancelled')),
-  lease_until INTEGER, lease_token TEXT, fired_by TEXT, created_at INTEGER NOT NULL, settled_at INTEGER
-);`;
-function followupsFile(dir: string): string {
-  const path = join(dir, "followups.sqlite");
-  const db = new DatabaseSync(path);
-  db.exec(FOLLOWUPS_SCHEMA);
-  const add = db.prepare(
-    "INSERT INTO followups (id, channel_id, thread_ts, principal, due_at, on_event, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  );
-  add.run(
-    "f1",
-    "D1",
-    "1.1",
-    JSON.stringify(slack("D1", "1.1")),
-    2_000,
-    null,
-    "check the notes\nthen publish the release",
-    "pending",
-    1_000,
-  );
-  add.run(
-    "f2",
-    "C1",
-    "2.2",
-    JSON.stringify(slack("C1", "2.2")),
-    null,
-    "build-finished:api",
-    "ask Bob",
-    "pending",
-    1_000,
-  );
-  add.run("f3", "C1", "3.3", JSON.stringify(slack("C1", "3.3")), 1_500, null, "old", "done", 1_000);
-  add.run(
-    "f4",
-    "C1",
-    "4.4",
-    JSON.stringify(slack("C1", "4.4")),
-    1_500,
-    null,
-    "never mind",
-    "cancelled",
-    1_000,
-  );
-  const linear = { ...slack("C1", "5.5"), authenticator: "linear-webhook" };
-  add.run("f5", "C1", "5.5", JSON.stringify(linear), 1_500, null, "elsewhere", "pending", 1_000);
-  add.run("f6", "C1", "6.6", "{not json", 1_500, null, "garbled", "pending", 1_000);
-  db.close();
-  return path;
-}
 
 describe("on disk", () => {
   it("a store survives a restart at the current schema version", () => {
@@ -130,78 +55,78 @@ describe("on disk", () => {
   });
 });
 
-describe("migrateFollowups", () => {
-  it("imports a follow-ups file once: pending, done and cancelled mapped, unplaceable rows counted", () => {
+describe("importLoop", () => {
+  const alice: SessionAuthContext = {
+    principalId: "U-alice",
+    principalType: "user",
+    authenticator: "slack-webhook",
+    attributes: { channel_id: "D1", thread_ts: "1.1", team_id: "T1", email: "alice@example.test" },
+  };
+  const imported = (externalId: string, extra: Partial<ImportedLoop> = {}): ImportedLoop => ({
+    externalId,
+    address: { kind: "slack-dm", teamId: "T1", channelId: "D1" },
+    principal: alice,
+    what: "check the notes",
+    next: "then publish the release",
+    status: "open",
+    wake: { dueAt: 2_000 },
+    createdAt: 1_000,
+    origin: { principalId: "U-alice", kind: "other", sessionId: null },
+    ...extra,
+  });
+
+  it("brings a loop in once, stored as open would store it, and its wake fires", () => {
     const dir = tempDir();
-    const source = followupsFile(dir);
-    const s = new WorkingStore(workingStorePath(dir), { now: () => 1_800 });
-    // A row whose principal doesn't parse is skipped; one the host can't place is counted as unresolved.
-    expect(s.migrateFollowups(source, resolve)).toEqual({ imported: 4, skipped: 1, unresolved: 1 });
-    const loops = s.list({ view: "all" }).loops;
-    const dm = loops.find((l) => l.address.kind === "slack-dm");
-    expect(dm).toMatchObject({
+    const s = openWorkingStore({ dir, now: () => 1_800 });
+    expect(s.importLoop(imported("f1"))).toBe("imported");
+    expect(s.importLoop(imported("f1", { what: "changed" }))).toBe("exists");
+    expect(s.importLoop(imported("f2", { status: "done", wake: { dueAt: 1_500 } }))).toBe(
+      "imported",
+    );
+    const [loop] = s.list({ view: "all" }).loops;
+    expect(loop).toMatchObject({
       what: "check the notes",
       next: "then publish the release",
-      dueAt: 2_000,
       wake: "pending",
-      origin: { principalId: "U-alice", kind: "other" },
     });
-    // An imported loop wakes as any loop does: the opening, its id, then the note.
-    expect(dm?.followupNote).toMatch(
+    expect(loop?.followupNote).toMatch(
       new RegExp(
-        `^${LOOP_WAKE_OPENING} \\(${dm?.id}, opened .*\\): check the notes\nNext: then publish the release\n`,
+        `^${LOOP_WAKE_OPENING} \\(${loop?.id}, opened .*\\): check the notes\nNext: then publish the release\n`,
       ),
     );
-    expect(loops.find((l) => l.onEvent === "build-finished:api")?.address).toEqual({
-      kind: "slack-thread",
-      teamId: "T1",
-      channelId: "C1",
-      threadTs: "2.2",
-    });
-    expect(s.list({ view: "all", limit: 200 }).totals.loops).toBe(2);
-    expect(s.migrateFollowups(source, resolve)).toEqual({ imported: 0, skipped: 5, unresolved: 1 });
-    expect(s.list({ view: "all" }).totals.loops).toBe(2);
-    // The imported wake still fires: due, then claimed with the follow-up's principal to send as.
+    expect(s.list({ view: "all" }).totals.loops).toBe(1);
     const [claimed] = s.claimDue(2_000, 60_000);
-    expect(claimed).toMatchObject({ address: { kind: "slack-dm" }, principal: slack("D1", "1.1") });
-    // The event loop keeps the old store's guard: an event before it was scheduled wakes nothing.
+    expect(claimed?.principal?.attributes).toEqual({
+      channel_id: "D1",
+      thread_ts: "1.1",
+      team_id: "T1",
+    });
+    s.close();
+  });
+
+  it("an imported event wake keeps the guard: an event before it was set wakes nothing", () => {
+    const s = openWorkingStore({ dir: tempDir() });
+    s.importLoop(imported("f3", { wake: { onEvent: "build-finished:api" } }));
     expect(s.eventOccurred("build-finished:api", 999, "old run", 2_000)).toBe(0);
     expect(s.eventOccurred("build-finished:api", 1_000, "run 7", 2_000)).toBe(1);
     s.close();
   });
 
-  it("openWorkingStore imports before the wake engine's first claim, and only once", () => {
+  it("onFirstOpen runs before the store is returned, and a throw from it never fails the open", () => {
     const dir = tempDir();
-    const followups = followupsFile(dir);
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const engine = openWorkingStore({
-      dir: join(dir, "working"),
-      followups,
-      resolve,
-      now: () => 2_000,
-    });
-    expect(log).toHaveBeenCalledWith(
-      "[working] imported follow-ups imported=4 skipped=1 unresolved=1",
-    );
-    expect(engine.claimDue(2_000, 60_000).map((c) => c.followupNote)).toEqual([
-      expect.stringContaining("check the notes"),
-    ]);
-    const provider = openWorkingStore({ dir: join(dir, "working"), followups, resolve });
-    expect(provider.list({ view: "all" }).totals.loops).toBe(2);
-    engine.close();
-    provider.close();
-    expect(() => openWorkingStore({ dir: join(dir, "x"), followups })).toThrow(/needs resolve/);
-  });
-
-  it("a missing follow-ups file imports nothing", () => {
-    const dir = tempDir();
-    const s = new WorkingStore(workingStorePath(dir));
-    expect(s.migrateFollowups(join(dir, "absent.sqlite"), resolve)).toEqual({
-      imported: 0,
-      skipped: 0,
-      unresolved: 0,
-    });
+    const s = openWorkingStore({ dir, onFirstOpen: (store) => store.importLoop(imported("f4")) });
+    expect(s.list({ view: "all" }).totals.loops).toBe(1);
     s.close();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const again = openWorkingStore({
+      dir,
+      onFirstOpen: () => {
+        throw new Error("source unreadable");
+      },
+    });
+    expect(again.list({ view: "all" }).totals.loops).toBe(1);
+    expect(warn).toHaveBeenCalledWith("[working] onFirstOpen failed: source unreadable");
+    again.close();
   });
 });
 

@@ -279,57 +279,21 @@ describe("the provider through eve's memory contract", () => {
     );
   });
 
-  it("imports the follow-ups file on first open, and a bad row never takes the slot down", async () => {
-    const dir = tempDir();
-    const source = join(dir, "followups.sqlite");
-    const db = new DatabaseSync(source);
-    db.exec(`CREATE TABLE followups (id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL, principal TEXT NOT NULL,
-      due_at INTEGER, on_event TEXT, note TEXT NOT NULL, status TEXT NOT NULL, lease_until INTEGER, lease_token TEXT,
-      fired_by TEXT, created_at INTEGER NOT NULL, settled_at INTEGER)`);
-    const add = db.prepare(
-      "INSERT INTO followups (id, channel_id, thread_ts, principal, due_at, note, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    );
-    add.run(
-      "f1",
-      "D1",
-      "100.1",
-      JSON.stringify(ALICE_DM_1),
-      clock + 3_600_000,
-      "ask Alice about the notes",
-      "pending",
-      clock - 1,
-    );
-    add.run("f2", "D1", "100.1", "{not json", clock, "garbled", "pending", clock - 1);
-    add.run(
-      "f3",
-      "D1",
-      "100.1",
-      JSON.stringify({ principalId: "U-x", authenticator: "slack-webhook" }),
-      clock,
-      "no attributes",
-      "pending",
-      clock - 1,
-    );
-    db.close();
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const a = await agent({ dir: join(dir, "working"), followups: source });
-    const messages = await a.recall(ALICE_DM_2);
-    expect(text(messages, HERE_ID)).toContain("ask Alice about the notes");
-    expect(text(messages, STANDING_ID)).not.toContain("unavailable");
-    expect(log).toHaveBeenCalledWith(
-      "[working] imported follow-ups imported=1 skipped=2 unresolved=0",
-    );
-  });
-
-  it("an empty follow-ups file imports nothing and the slot works", async () => {
-    const dir = tempDir();
-    writeFileSync(join(dir, "followups.sqlite"), "");
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const a = await agent({ dir: join(dir, "working"), followups: join(dir, "followups.sqlite") });
-    expect(text(await a.recall(ALICE_DM_1), HERE_ID)).toContain(
-      "Nothing open in this conversation.",
-    );
+  it("loops the host imports on first open are there on the first turn", async () => {
+    const a = await agent({
+      onFirstOpen: (store) =>
+        store.importLoop({
+          externalId: "f1",
+          address: { kind: "slack-dm", teamId: "T1", channelId: "D1" },
+          principal: ALICE_DM_1,
+          what: "ask Alice about the notes",
+          next: "then publish",
+          status: "open",
+          createdAt: clock - 1,
+          origin: { principalId: "U-alice", kind: "other", sessionId: null },
+        }),
+    });
+    expect(text(await a.recall(ALICE_DM_2), HERE_ID)).toContain("ask Alice about the notes");
   });
 
   it("with 20 loops elsewhere, a due one updated longest ago is listed first", async () => {
