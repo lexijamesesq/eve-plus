@@ -145,7 +145,9 @@ export const workingToolSpecs = {
     inputSchema: z
       .object({
         what: text(200).describe("one line: what's open"),
-        waitingOn: text(40).describe("whose move it is: me, lexi, a colleague's name, or a system"),
+        waitingOn: text(40).describe(
+          "whose move it is: me, the person you're helping, a colleague, or a system",
+        ),
         next: text(500).describe("the next action, in your words"),
         links: links.optional(),
         signature: text(120)

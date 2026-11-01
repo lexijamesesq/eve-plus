@@ -36,9 +36,9 @@ function populated() {
   );
   const done = s.open({ ...base, address: { kind: "named", name: "c" } }, origin);
   if (done.ok) s.closeLoop(done.loop.id, "done", "ok", origin);
-  s.setOrder({ subject: "deploys:ollie", rule: "hold", link: "https://x.test/1" }, origin);
-  s.setOrder({ subject: "deploys:felix", rule: "hold", link: "https://x.test/2" }, origin);
-  s.liftOrder("deploys:felix", "fixed", origin);
+  s.setOrder({ subject: "releases:web", rule: "hold", link: "https://x.test/1" }, origin);
+  s.setOrder({ subject: "releases:api", rule: "hold", link: "https://x.test/2" }, origin);
+  s.liftOrder("releases:api", "fixed", origin);
   s.addNote({ text: "note" }, origin);
   s.close();
   return dir;
