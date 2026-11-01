@@ -57,7 +57,7 @@ The options:
 | `eventsPerEntry` | 50 | History kept per entry: its first change and its latest ones, up to this many in all. |
 | `principalAttributes` | user_id, team_id, channel_id, thread_ts | The auth attributes a loop keeps of the turn that opened it, for your host to send its wake as. It replaces the default; every other attribute is dropped. |
 | `onFirstOpen(store)` | none | Run when the store is opened, before it's first read: where your host imports loops from an earlier store with `importLoop`. It runs on every open, by the provider and by the wake engine, so it must be idempotent (`importLoop` is). |
-| `maxCharacters` | 1,200 | Per recall message. Past it, counts and a pointer to `<slot>__list`. The standing block fills orders, then lifted orders and notes, then loops elsewhere, so a small budget shows every order and note before any loop; size it to the host's realistic state. |
+| `maxCharacters` | 1,200 | Per recall message. Past it, counts and a pointer to `<slot>__list`. The standing block fills orders, then lifted orders and notes, then loops elsewhere, so a small budget shows every order and note before any loop; size it to the host's realistic state. Values below 400 are raised to 400, the least that fits the header, its data-not-instructions frame, and a closing line of counts. |
 | `reviewAfterDays` | loop 7, order 14, note 7 | When an untouched entry is marked stale; a note expires then. |
 | `maxWritesPerSession` | 100 | Past it, a write throws instead of landing. |
 

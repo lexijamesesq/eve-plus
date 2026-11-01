@@ -77,7 +77,7 @@ export interface WorkingMemoryOptions {
    * The wake engine runs it on its own open too, so it must be idempotent, as importLoop is.
    */
   readonly onFirstOpen?: (store: WorkingStore) => void;
-  /** Max characters per recall message. Default 1,200. */
+  /** Max characters per recall message. Default 1,200; values below 400 are raised to 400. */
   readonly maxCharacters?: number;
   /** Days before an entry is marked stale. Defaults: loop 7, order 14, note 7 (a note expires then). */
   readonly reviewAfterDays?: {
@@ -191,10 +191,13 @@ const UNAVAILABLE =
 const reasonOf = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 160);
 
+const MIN_CHARACTERS = 400;
+
 /** An eve memory provider for the agent's working state. */
 export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
   const now = options.now ?? Date.now;
-  const maxCharacters = options.maxCharacters ?? 1_200;
+  // Below the floor the standing block's header, its frame, and a closing line of counts can't all fit.
+  const maxCharacters = Math.max(options.maxCharacters ?? 1_200, MIN_CHARACTERS);
   const originKind = options.originKind ?? defaultOriginKind;
   const events = options.events ?? [];
   const specs = toolSpecs(options.linkSchemes);

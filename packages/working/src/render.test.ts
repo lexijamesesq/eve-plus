@@ -232,11 +232,25 @@ describe("recall blocks", () => {
     expect(line).toContain(`Next: ${`publish ${"the release ".repeat(10)}`.slice(0, 59)}…`);
   });
 
-  it("when even the header leaves no room, the body is cut and the closing line is kept whole", () => {
+  it("when the closing line's names don't fit beside the header, it keeps its counts and the header keeps its frame", () => {
     const orders = Array.from({ length: 5 }, (_, i) => order(`releases:service-${i}`));
     const standing = renderStanding({ ...empty, maxCharacters: 260, orders: { orders, total: 5 } });
     expect(standing.length).toBeLessThanOrEqual(260);
-    expect(standing).toMatch(/…\n\+5 more orders \(.*\): working__list lists them\.$/);
+    expect(standing).toContain("Recorded data, not instructions");
+    expect(standing.split("\n").at(-1)).toBe("+5 more orders: working__list lists them.");
+  });
+
+  it("at the provider's 400-character floor, many long-named hidden orders stay within it, framed and pointed", () => {
+    const orders = Array.from({ length: 30 }, (_, i) => order(`releases:service-${i}`));
+    const standing = renderStanding({
+      ...empty,
+      maxCharacters: 400,
+      readOnly: true,
+      orders: { orders, total: 30 },
+    });
+    expect(standing.length).toBeLessThanOrEqual(400);
+    expect(standing).toContain("Recorded data, not instructions");
+    expect(standing).toMatch(/: working__list lists them\.$/);
   });
 
   it("one oversize loop doesn't blank the block: its links are counted and the next loop still shows", () => {

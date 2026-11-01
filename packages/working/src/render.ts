@@ -155,8 +155,10 @@ const NAMES_BUDGET = 240;
  *
  * The room kept for the closing line is what that line actually needs, not a fixed allowance: lay out with room for
  * the pointer alone, measure the closing line that layout produces, and lay out again with room for it until it fits.
+ * The header, with its frame, is never given up for the closing line: when the two don't fit together, the closing
+ * line drops the names it lists and keeps its counts and pointer.
  * A fixed allowance large enough for every name hid entries that would have fit. The pointer is reserved first and
- * never cut; if the layouts don't settle, the body is cut, never the closing line.
+ * never cut; if the layouts don't settle, the body is cut, never the header or the closing line's counts.
  */
 export function fitBlock(
   header: string,
@@ -171,10 +173,16 @@ export function fitBlock(
     reserve = laid.tail.length + 1;
     laid = layout(header, sections, max - reserve, pointer);
   }
-  const body = laid.lines.join("\n");
-  if (!laid.tail) return body.length > max ? `${body.slice(0, max - 1)}…` : body;
-  const room = max - laid.tail.length - 1;
-  return `${body.length > room ? `${body.slice(0, Math.max(0, room - 1))}…` : body}\n${laid.tail}`;
+  const [head = header, ...rest] = laid.lines;
+  const cap = (text: string, room: number) =>
+    text.length > room ? `${text.slice(0, Math.max(0, room - 1))}…` : text;
+  if (!laid.tail) return cap(laid.lines.join("\n"), max);
+  // The header and its frame come first; then the closing line, without its names if they don't fit beside the
+  // header; the body gets what remains. Below the provider's floor even that can't fit, and the whole block is capped.
+  const tail = head.length + 1 + laid.tail.length <= max ? laid.tail : laid.plainTail;
+  const room = max - head.length - tail.length - 2;
+  const body = rest.join("\n");
+  return cap(body && room > 0 ? `${head}\n${cap(body, room)}\n${tail}` : `${head}\n${tail}`, max);
 }
 
 /** One layout of the block's lines within `budget`, and the closing line naming what it left out (null when nothing). */
@@ -183,10 +191,11 @@ function layout(
   sections: readonly Section[],
   budget: number,
   pointer: string,
-): { lines: string[]; tail: string | null } {
+): { lines: string[]; tail: string | null; plainTail: string } {
   const out = [header];
   let length = header.length;
   const left: string[] = [];
+  const counts: string[] = [];
   const fits = (line: string) => length + line.length + 1 <= budget;
   const push = (line: string) => {
     out.push(line);
@@ -227,8 +236,13 @@ function layout(
         : "";
     }
     left.push(`+${unshown} more ${s.noun}${names}`);
+    counts.push(`+${unshown} more ${s.noun}`);
   }
-  return { lines: out, tail: left.length ? `${left.join("; ")}${pointer}` : null };
+  return {
+    lines: out,
+    tail: left.length ? `${left.join("; ")}${pointer}` : null,
+    plainTail: `${counts.join("; ")}${pointer}`,
+  };
 }
 
 export interface RecallView {
