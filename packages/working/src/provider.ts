@@ -17,6 +17,7 @@ import { type Address, addressKey, addressSchema } from "./addresses.js";
 import {
   describeAddress,
   HERE_ID,
+  KIND,
   liftedLine,
   loopLine,
   noteLine,
@@ -45,6 +46,16 @@ export interface OriginSession {
   readonly parent?: unknown;
 }
 
+/** The link references accepted beside http(s) URLs unless the host names its own. */
+export const DEFAULT_LINK_SCHEMES = [
+  "knowledge",
+  "working",
+  "vault",
+  "linear",
+  "slack",
+  "github",
+] as const;
+
 export interface WorkingMemoryOptions {
   /** The store's directory; the file is `<dir>/working.sqlite`. A mounted volume in a container. */
   readonly dir: string;
@@ -54,17 +65,21 @@ export interface WorkingMemoryOptions {
   readonly deliverable?: (address: Address) => boolean;
   /**
    * The kind of turn a write came from. Default: `scheduled` for a scheduled session or the schedule principal,
-   * `delegated` for a delegated one, else `other`.
+   * `delegated` for a delegated one, else `other`; only the host can say a turn is the operator's or a colleague's.
    */
   readonly originKind?: (auth: SessionAuthContext | null, session: OriginSession) => OriginKind;
   /** The event keys the host fires (through `eventOccurred`), which `revisit.on` may name. With none, `on` is refused. */
   readonly events?: readonly string[];
+  /** The `<scheme>:` references a link may be, beside http(s) URLs. Default: knowledge, working, vault, linear, slack, github. */
+  readonly linkSchemes?: readonly string[];
   /** Most open loops, active orders and live notes held at once. Defaults 200, 50, 100. */
   readonly limits?: { readonly loops?: number; readonly orders?: number; readonly notes?: number };
   /** Events kept per entry: its first, and its latest up to this many in all. Default 50. */
   readonly eventsPerEntry?: number;
-  /** How recent an event may be for a loop opened to wait on it to be due at once. Default 10 minutes. */
-  readonly recentEventMs?: number;
+  /** Days a closed loop, an ended order or an expired note is kept before it's pruned. Default 30. */
+  readonly retentionDays?: number;
+  /** The auth attributes a loop keeps for its wake. Default: user_id, team_id, channel_id, thread_ts. */
+  readonly principalAttributes?: readonly string[];
   /** Run once the store is open, before it's first read: where a host imports loops from an earlier store. */
   readonly onFirstOpen?: (store: WorkingStore) => void;
   /** Max characters per recall message. Default 1,200. */
@@ -75,151 +90,118 @@ export interface WorkingMemoryOptions {
     readonly order?: number;
     readonly note?: number;
   };
-  /** Days a lifted or replaced order stays in the standing block. Default 7. */
-  readonly liftedVisibleDays?: number;
-  /** Max write calls in one session, counting refused ones. Off by default. */
+  /** Max write calls in one session, counting refused ones; past it a write throws. Default 100. */
   readonly maxWritesPerSession?: number;
   /** The clock, for tests. */
   readonly now?: () => number;
 }
 
-// A schedule may send as a user's auth (a prep schedule sending as the operator), so the session's schedule marker
-// decides first; the schedule principal covers a schedule sent as the app.
-export function defaultOriginKind(
-  auth: SessionAuthContext | null,
-  session: OriginSession,
-): OriginKind {
+// A schedule may send as a user's auth, so the session's schedule marker decides first; the schedule principal covers
+// a schedule sent as the app.
+function defaultOriginKind(auth: SessionAuthContext | null, session: OriginSession): OriginKind {
   if (session.schedule !== undefined || isScheduleAuth(auth)) return "scheduled";
   if (session.parent !== undefined) return "delegated";
   return "other";
 }
 
 const text = (max: number) => z.string().trim().min(1).max(max);
-const when = z
-  .string()
-  .trim()
-  .min(1)
-  .max(64)
-  .describe('an ISO 8601 time with its offset, or "in N minutes|hours|days"');
-const revisit = z
-  .object({
-    when: when.optional(),
-    on: z
-      .string()
-      .trim()
-      .min(1)
-      .max(64)
-      .optional()
-      .describe("an event to wait on, one of those this agent's host fires"),
-  })
-  .strict()
-  .describe("when to come back to this loop: give `when` or `on`, not both");
-// A link is shown to the model and may be shown to people, so only plain URLs and the reserved references pass: no
-// spaces, and no `<`, `>` or `|`, which a Slack label like <https://a.example|https://b.example> would need.
-const LINK =
-  /^(?:https?:\/\/[^\s<>|]+|(?:knowledge|working|vault|linear|slack|github):[^\s<>|]+)$/i;
-const link = z
-  .string()
-  .trim()
-  .min(1)
-  .max(512)
-  .regex(
-    LINK,
-    "a link is an http(s) URL or a knowledge:, working:, vault:, linear:, slack: or github: reference, with no spaces, <, > or |",
-  );
-const links = z
-  .array(link)
-  .max(10)
-  .describe(
-    "what anchors it: the message, PR, ticket or thread; each a URL or a reference: knowledge:<id>, working:<id>, vault:<path>, linear:<KEY-n>, slack:<channel>/<ts> or github:<owner>/<repo>#<n>",
-  );
+const when = z.string().trim().min(1).max(64);
 const id = z.string().trim().min(1).max(32);
 const VIEWS = ["here", "elsewhere", "orders", "stale", "lifted", "notes", "all"] as const;
 
 /**
- * The tools' descriptions and input schemas, keyed by tool name. eve qualifies each as `<slot>__<name>`. Exported so a
- * harness can show a model the same tools without an eve runtime.
+ * The tools' descriptions and input schemas for a set of link schemes, keyed by tool name; eve qualifies each as
+ * `<slot>__<name>`. A link is shown to the model and may be shown to people, so only http(s) URLs and the schemes
+ * pass, with no spaces and no `<`, `>` or `|` (which a Slack label like `<https://a.example|https://b.example>` needs).
  */
-export const workingToolSpecs = {
-  open: {
-    description:
-      "Open a loop: something you're waiting on or owe in this conversation, so it's in front of you every turn until you close it. Say what it is, whose move it is, and your next action, written to stand alone later. Give `revisit` to be woken in this conversation when it's due. The loop belongs to the conversation you're in, which comes from your session, not from anything you write. In a thread you started to ask someone else for help, a loop lands on, and wakes in, the conversation you asked from.",
-    inputSchema: z
-      .object({
-        what: text(200).describe("one line: what's open"),
-        waitingOn: text(40).describe(
-          "whose move it is: me, the person you're helping, a colleague, or a system",
-        ),
-        next: text(500).describe("the next action, in your words"),
-        links: links.optional(),
-        signature: text(120)
-          .optional()
-          .describe(
-            "a recurring problem's key (check name plus distinctive behaviour), so a repeat is recognised",
-          ),
-        revisit: revisit.optional(),
-        reviewBy: when.optional().describe("when it goes stale if untouched; default 7 days"),
-      })
-      .strict(),
-  },
-  update: {
-    description:
-      "Change an open loop: its next action, whose move it is, its links, its revisit (null removes it) or when it goes stale. Use the id from your working memory.",
-    inputSchema: z
-      .object({
-        id,
-        next: text(500).optional(),
-        waitingOn: text(40).optional(),
-        links: links.optional(),
-        revisit: revisit.nullable().optional(),
-        reviewBy: when.optional(),
-      })
-      .strict(),
-  },
-  close: {
-    description:
-      "Close a loop when it's resolved (done) or no longer worth doing (dropped), with why. Any revisit goes with it. History is kept.",
-    inputSchema: z.object({ id, outcome: z.enum(["done", "dropped"]), why: text(500) }).strict(),
-  },
-  order: {
-    description:
-      "Record a standing order: a constraint on a subject you act on, such as a hold on releases:web, with a link to where it was set. A second order on the same subject replaces the first; history is kept.",
-    inputSchema: z
-      .object({
-        subject: text(80).describe("what it constrains, e.g. releases:web"),
-        rule: text(200).describe("the constraint, as you'll apply it"),
-        link: link.describe(
-          "where it was set: the message or comment, as a URL or a reference: knowledge:<id>, working:<id>, vault:<path>, linear:<KEY-n>, slack:<channel>/<ts> or github:<owner>/<repo>#<n>",
-        ),
-        until: when.optional().describe("when it ends on its own, if it does"),
-      })
-      .strict(),
-  },
-  lift: {
-    description:
-      "Lift the standing order on a subject, with why. It stays visible as lifted for a week, with who lifted it.",
-    inputSchema: z.object({ subject: text(80), why: text(500) }).strict(),
-  },
-  note: {
-    description:
-      "Keep a short note that matters for the next few days across all your conversations. It expires on its own.",
-    inputSchema: z
-      .object({
-        text: text(500),
-        expires: when.optional().describe("when it expires; default 7 days"),
-      })
-      .strict(),
-  },
-  list: {
-    description:
-      "List your working memory beyond what each turn shows: loops here or elsewhere, standing orders, stale entries, recently lifted orders, notes, or all of it.",
-    inputSchema: z.object({ view: z.enum(VIEWS).default("all") }).strict(),
-  },
-} as const;
+export function toolSpecs(schemes: readonly string[] = DEFAULT_LINK_SCHEMES) {
+  const names = schemes.map((s) => s.replace(/[^a-z0-9-]/gi, "")).filter(Boolean);
+  const pattern = new RegExp(`^(?:https?://|(?:${names.join("|")}):)[^\\s<>|]+$`, "i");
+  const rule = `an http(s) URL or ${names.map((n) => `${n}:`).join(" ")} reference; no spaces, <, > or |`;
+  // Checked by refine, not a schema pattern, so the rule is stated once in words rather than in every tool's schema.
+  const link = z
+    .string()
+    .trim()
+    .min(1)
+    .max(512)
+    .refine((v) => pattern.test(v), `a link is ${rule}`);
+  const links = z.array(link).max(10);
+  const revisit = z
+    .object({
+      when: when.optional(),
+      on: text(64).optional().describe("an event key the host fires"),
+    })
+    .strict()
+    .describe("wake you here at `when` or `on` an event");
+  return {
+    open: {
+      description: `Open a loop in this conversation: something you're waiting on or owe. It shows every turn until closed; write it to stand alone. The conversation is the one your host resolves for this turn. Times: ISO 8601 with offset, or "in N minutes|hours|days". Links: ${rule}.`,
+      inputSchema: z
+        .object({
+          what: text(200),
+          waitingOn: text(40).describe("whose move: me, a person, a system"),
+          next: text(500).describe("your next action"),
+          links: links.optional(),
+          revisit: revisit.optional(),
+          reviewBy: when.optional().describe("default 7 days"),
+        })
+        .strict(),
+    },
+    update: {
+      description: "Change an open loop; rules as in open. revisit null removes it.",
+      inputSchema: z
+        .object({
+          id,
+          next: text(500).optional(),
+          waitingOn: text(40).optional(),
+          links: links.optional(),
+          revisit: revisit.nullable().optional(),
+          reviewBy: when.optional(),
+        })
+        .strict(),
+    },
+    close: {
+      description: "Close a loop as done or dropped, with why. Its revisit goes with it.",
+      inputSchema: z.object({ id, outcome: z.enum(["done", "dropped"]), why: text(500) }).strict(),
+    },
+    order: {
+      description:
+        "Set a standing order: a constraint on a subject you act on (e.g. releases:web), linked (rules as in open) to where it was set. It replaces any order on that subject.",
+      inputSchema: z
+        .object({ subject: text(80), rule: text(200), link, until: when.optional() })
+        .strict(),
+    },
+    lift: {
+      description:
+        "Lift a subject's standing order, with why. It shows as lifted for 7 days, with who lifted it.",
+      inputSchema: z.object({ subject: text(80), why: text(500) }).strict(),
+    },
+    note: {
+      description:
+        "Keep a short note for all your conversations; it expires (default 7 days). Loop details go in update.",
+      inputSchema: z.object({ text: text(500), expires: when.optional() }).strict(),
+    },
+    list: {
+      description: "List working memory in full: one view, or all.",
+      inputSchema: z.object({ view: z.enum(VIEWS).default("all") }).strict(),
+    },
+  } as const;
+}
+
+/**
+ * The default tools' descriptions and input schemas, for an eval harness that shows a model the same tools without
+ * an eve runtime.
+ */
+export const workingToolSpecs = toolSpecs();
 
 type Ctx = Pick<ToolContext, "session" | "callId">;
 
 class WriteLimitError extends Error {}
+
+const UNAVAILABLE =
+  "Working memory is temporarily unavailable this turn; nothing was recorded. Act on what you can see, and say so if it matters.";
+const reasonOf = (error: unknown) =>
+  (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 160);
 
 /** An eve memory provider for the agent's working state. */
 export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
@@ -227,24 +209,37 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
   const maxCharacters = options.maxCharacters ?? 1_200;
   const originKind = options.originKind ?? defaultOriginKind;
   const events = options.events ?? [];
+  const specs = toolSpecs(options.linkSchemes);
+  const orderCap = Math.min(options.limits?.orders ?? 50, 200);
 
   // Opened on first use, so an agent with no volume still starts. A failed open isn't kept: the next turn retries,
   // so an outage is temporary, not sticky for the process.
   let store: WorkingStore | undefined;
   const get = (): WorkingStore => {
-    if (store) return store;
-    const opened = openWorkingStore({
+    store ??= openWorkingStore({
       dir: options.dir,
       onFirstOpen: options.onFirstOpen,
       now,
       reviewAfterDays: options.reviewAfterDays,
-      liftedVisibleDays: options.liftedVisibleDays,
       limits: options.limits,
       eventsPerEntry: options.eventsPerEntry,
-      recentEventMs: options.recentEventMs,
+      retentionDays: options.retentionDays,
+      principalAttributes: options.principalAttributes,
     });
-    store = opened;
     return store;
+  };
+
+  // One store for the whole agent, whatever scope eve resolves; a host whose scope changes is told once, since the
+  // loops would otherwise seem to follow a scope they don't.
+  let scope: string | undefined;
+  const checkScope = (key: string) => {
+    if (scope === undefined) scope = key;
+    else if (key !== scope) {
+      console.warn(
+        `[working] working memory is agent-wide; scope changed from ${scope} to ${key}, serving the same store`,
+      );
+      scope = key;
+    }
   };
 
   const addressOf = (auth: SessionAuthContext | null): Address | null => {
@@ -254,17 +249,19 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
 
   const originOf = (ctx: Ctx): Origin => {
     const auth = ctx.session?.auth?.current ?? null;
+    const turn = ctx.session?.turn;
     return {
       principalId: auth?.principalId ?? null,
       kind: originKind(auth, { schedule: ctx.session?.schedule, parent: ctx.session?.parent }),
       sessionId: ctx.session?.id ?? null,
-      ...(ctx.session?.turn?.id ? { turnId: ctx.session.turn.id } : {}),
+      ...(turn?.id ? { turnId: turn.id } : {}),
+      ...(typeof turn?.sequence === "number" ? { turnSequence: turn.sequence } : {}),
       ...(ctx.callId ? { callId: ctx.callId } : {}),
     };
   };
 
-  // A store failure inside a tool comes back to the model as a refusal it can act on, never a raw database error; the
-  // write cap alone still throws, so a runaway run fails loudly.
+  // A store failure inside a tool comes back to the model as fixed text, its reason to the log only; the write cap
+  // alone still throws, so a runaway run fails loudly.
   const safely =
     <A extends unknown[]>(fn: (...args: A) => Promise<string>) =>
     async (...args: A): Promise<string> => {
@@ -272,21 +269,17 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
         return await fn(...args);
       } catch (error) {
         if (error instanceof WriteLimitError) throw error;
-        const reason = (error instanceof Error ? error.message : String(error)).replace(
-          /\s+/g,
-          " ",
-        );
-        console.warn(`[working] tool failed: ${reason}`);
-        return `Working memory is unavailable: ${reason.slice(0, 160)}; nothing was recorded.`;
+        console.warn(`[working] tool failed: ${reasonOf(error)}`);
+        return UNAVAILABLE;
       }
     };
 
   // Writes per session, for maxWritesPerSession. Bounded: the oldest sessions drop out first.
   const writes = new Map<string, number>();
   const countWrite = (ctx: Ctx) => {
-    const cap = options.maxWritesPerSession;
+    const cap = options.maxWritesPerSession ?? 100;
     const sessionId = ctx.session?.id;
-    if (cap === undefined || sessionId === undefined) return;
+    if (sessionId === undefined) return;
     const n = (writes.get(sessionId) ?? 0) + 1;
     if (n > cap)
       throw new WriteLimitError(
@@ -318,14 +311,15 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
 
   const recall = async (context: MemoryOperationContext): Promise<MemoryRecallResult> => {
     try {
+      checkScope(context.memory.scope.key);
       const auth = context.session?.auth?.current ?? null;
       const address = addressOf(auth);
       const s = get();
       const key = address === null ? null : addressKey(address);
-      const LIMIT = 30;
-      const pick = (view: ListView) => s.list({ view, conversationKey: key, limit: LIMIT });
+      const pick = (view: ListView, limit = 30) => s.list({ view, conversationKey: key, limit });
       const here = address === null ? null : pick("here");
-      const orders = pick("orders");
+      // Every active order is fetched, so the block can name each one even when it can't show it.
+      const orders = pick("orders", orderCap);
       const lifted = pick("lifted");
       const notes = pick("notes");
       const elsewhere = pick("elsewhere");
@@ -333,6 +327,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
         slot: context.memory.slot,
         now: now(),
         maxCharacters,
+        readOnly: s.readOnly,
         here: here && { loops: here.loops, total: here.totals.loops },
         orders: { orders: orders.orders, total: orders.totals.orders },
         lifted: { orders: lifted.orders, total: lifted.totals.orders },
@@ -347,9 +342,8 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
       };
     } catch (error) {
       // Never throw, never fall silent: an unreadable store must not look like an empty one.
-      const reason = error instanceof Error ? error.message : String(error);
-      console.warn(`[working] turn-start recall failed: ${reason}`);
-      const outage = renderOutage(reason);
+      console.warn(`[working] turn-start recall failed: ${reasonOf(error)}`);
+      const outage = renderOutage(context.memory?.slot ?? "working");
       return {
         messages: [
           { id: HERE_ID, content: outage.here },
@@ -363,7 +357,6 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
     recall: { "turn.started": recall },
     async tools(context) {
       const slot = context.memory.slot;
-      const specs = workingToolSpecs;
       return {
         open: defineTool({
           ...specs.open,
@@ -386,7 +379,6 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
                   waitingOn: input.waitingOn,
                   next: input.next,
                   links: input.links,
-                  signature: input.signature,
                   reviewBy: review.at,
                   revisit: wake,
                   deliverable,
@@ -512,7 +504,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
                   "Loops:",
                   ...r.loops.map(
                     (l) =>
-                      `${loopLine(l, t, l.conversationKey !== key)} (opened ${setByShort(l.origin)})`,
+                      `${loopLine(l, t, l.conversationKey !== key)} (opened ${KIND[l.origin.kind]}${l.origin.principalId ? `, principal ${l.origin.principalId}` : ""})`,
                   ),
                 );
               const active = r.orders.filter((o) => o.status === "active");
@@ -532,5 +524,3 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
     },
   });
 }
-
-const setByShort = (o: Origin) => `${o.kind}${o.principalId ? ` by ${o.principalId}` : ""}`;

@@ -89,13 +89,13 @@ describe("importLoop", () => {
       next: "then publish the release",
       wake: "pending",
     });
-    expect(loop?.followupNote).toMatch(
+    expect(s.list({ view: "all" }).totals.loops).toBe(1);
+    const [claimed] = s.claimDue(2_000, 60_000);
+    expect(claimed?.followupNote).toMatch(
       new RegExp(
         `^${LOOP_WAKE_OPENING} \\(${loop?.id}, opened .*\\): check the notes\nNext: then publish the release\n`,
       ),
     );
-    expect(s.list({ view: "all" }).totals.loops).toBe(1);
-    const [claimed] = s.claimDue(2_000, 60_000);
     expect(claimed?.principal?.attributes).toEqual({
       channel_id: "D1",
       thread_ts: "1.1",

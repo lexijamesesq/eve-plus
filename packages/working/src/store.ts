@@ -1,16 +1,17 @@
 // The working store: loops, orders and notes in one SQLite file per agent, with every change kept as an attributed
-// event. Closing a loop or lifting an order is an event, never a deletion. The host's wake engine drives loops' wakes
-// through claimDue / settleWake / eventOccurred; delivery stays with the host, which knows its channels. A delivery
-// that fails isn't settled: its lease runs out and the next tick claims it again.
+// event. Closing a loop or lifting an order is an event, never a deletion; closed entries are pruned after a retention
+// window. The host's wake engine drives loops' wakes through claimDue / settleWake / failWake / eventOccurred; delivery
+// stays with the host, which knows its channels.
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 
 import { type Address, addressKey } from "./addresses.js";
+import { clip, flat, KIND } from "./render.js";
 
 export { type Address, addressKey } from "./addresses.js";
 
@@ -23,6 +24,7 @@ export interface Origin {
   readonly kind: OriginKind;
   readonly sessionId: string | null;
   readonly turnId?: string;
+  readonly turnSequence?: number;
   readonly callId?: string;
 }
 
@@ -33,7 +35,6 @@ export type WakeState = "pending" | "undeliverable";
 
 export interface Loop {
   readonly id: string;
-  readonly kind: "loop";
   readonly status: LoopStatus;
   readonly conversationKey: string;
   readonly address: Address;
@@ -41,25 +42,24 @@ export interface Loop {
   readonly waitingOn: string;
   readonly next: string;
   readonly links: readonly string[];
-  readonly signature: string | null;
   readonly dueAt: number | null;
   readonly onEvent: string | null;
   readonly wake: WakeState | null;
   readonly firedBy: string | null;
-  /** Failed deliveries of the current wake, and the last failure's reason. */
+  /** Claims of the current wake that weren't settled, and the last failure's reason. */
   readonly wakeAttempts: number;
   readonly wakeError: string | null;
   readonly why: string | null;
-  readonly followupNote: string;
   readonly reviewBy: number;
   readonly origin: Origin;
+  /** Who last changed it after it was opened, if anyone did. */
+  readonly lastEditedBy: Origin | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
 
 export interface Order {
   readonly id: string;
-  readonly kind: "order";
   readonly status: OrderStatus;
   readonly subject: string;
   readonly rule: string;
@@ -76,8 +76,6 @@ export interface Order {
 
 export interface Note {
   readonly id: string;
-  readonly kind: "note";
-  readonly status: "active" | "expired";
   readonly text: string;
   readonly expiresAt: number;
   readonly origin: Origin;
@@ -85,14 +83,12 @@ export interface Note {
   readonly updatedAt: number;
 }
 
-export type Entry = Loop | Order | Note;
-
 export type Row = Record<string, string | number | null>;
 
-/** One recorded change to an entry. `before` and `after` are its stored row. */
+/** One recorded change to an entry. `before` and `after` are its stored row, without the sender auth. */
 export interface EntryEvent {
   readonly seq: number;
-  readonly entryKind: Entry["kind"];
+  readonly entryKind: "loop" | "order" | "note";
   readonly entryId: string;
   readonly change: string;
   readonly before: Row | null;
@@ -101,13 +97,14 @@ export interface EntryEvent {
   readonly at: number;
 }
 
-/** A loop leased for delivery. Only the holder of `leaseToken` can settle or release it. */
+/** A loop leased for delivery. Only the holder of `leaseToken` can settle or fail it. */
 export interface ClaimedLoop {
   readonly id: string;
   readonly address: Address;
   readonly conversationKey: string;
   /** The opening turn's session auth, for the host to send the wake as. Attribution is `Loop.origin`'s. */
   readonly principal: SessionAuthContext | null;
+  /** The wake's text, to send as written. */
   readonly followupNote: string;
   readonly dueAt: number | null;
   readonly onEvent: string | null;
@@ -129,7 +126,6 @@ export interface OpenInput {
   readonly waitingOn: string;
   readonly next: string;
   readonly links?: readonly string[];
-  readonly signature?: string;
   readonly reviewBy?: number;
   readonly revisit?: Revisit;
   /** False when the host can't hand a wake off at this address: the wake is kept as undeliverable. */
@@ -202,8 +198,6 @@ export interface WorkingStoreOptions {
     readonly order?: number;
     readonly note?: number;
   };
-  /** Days a lifted or replaced order stays listed as lifted. Default 7. */
-  readonly liftedVisibleDays?: number;
   /**
    * Most entries held at once, so one run that goes wrong can't fill the volume (a probe wrote 5,000 loops in a
    * second). Defaults: open loops 200, active orders 50, live notes 100. A write past a cap is refused.
@@ -211,24 +205,28 @@ export interface WorkingStoreOptions {
   readonly limits?: { readonly loops?: number; readonly orders?: number; readonly notes?: number };
   /** Events kept per entry: its first, and its latest up to this many in all. Default 50. */
   readonly eventsPerEntry?: number;
-  /** Failed deliveries before a wake is given up as undeliverable. Default 5. */
+  /**
+   * Days a closed loop, an ended order or an expired note is kept, with its history, before it's pruned (20,000
+   * open-close cycles grew a store to 248 MB without it). Default 30.
+   */
+  readonly retentionDays?: number;
+  /** Unsettled claims before a wake is given up as undeliverable. Default 5. */
   readonly maxWakeAttempts?: number;
   /** Most loops one `claimDue` claims, oldest due first, so a backlog drains over several ticks. Default 20. */
   readonly claimLimit?: number;
   /**
-   * How recent an event may be for a loop that waits on it to be due at once: a loop opened just after its event
-   * fired would otherwise wait for the next one. Default 10 minutes.
+   * The auth attributes a loop keeps of the turn that opened it, for the host to send its wake as; every other
+   * attribute (email, names) is dropped before storage. Default: user_id, team_id, channel_id, thread_ts.
    */
-  readonly recentEventMs?: number;
+  readonly principalAttributes?: readonly string[];
 }
 
 // What a wake needs of the opening turn's auth to send as it, and nothing else: no email or names at rest.
-const KEPT_ATTRIBUTES = ["user_id", "team_id", "channel_id", "thread_ts"] as const;
+const KEPT_ATTRIBUTES = ["user_id", "team_id", "channel_id", "thread_ts"];
 
-/** The opening turn's auth as a loop keeps it: the fields delivery needs, without personal details. */
-export function deliveryPrincipal(auth: SessionAuthContext): SessionAuthContext {
+function deliveryPrincipal(auth: SessionAuthContext, keep: readonly string[]): SessionAuthContext {
   const attributes: Record<string, string | readonly string[]> = {};
-  for (const key of KEPT_ATTRIBUTES) {
+  for (const key of keep) {
     const value = auth.attributes?.[key];
     if (value !== undefined) attributes[key] = value;
   }
@@ -245,8 +243,14 @@ export function deliveryPrincipal(auth: SessionAuthContext): SessionAuthContext 
 export const workingStorePath = (dir: string): string => join(dir, "working.sqlite");
 
 const DAY = 24 * 60 * 60_000;
+/** How long a lifted or replaced order stays listed as lifted, so the change that unblocks an action stays visible. */
+const LIFTED_MS = 7 * DAY;
+// A loop opened to wait on an event that fired this recently is due at once: one opened just after its event would
+// otherwise wait for the next.
+const RECENT_EVENT_MS = 10 * 60_000;
+const PRUNE_EVERY_MS = 60 * 60_000;
 
-// ----- the follow-ups grammar, absorbed from the baseline's follow-ups store so the baseline can retire its own -----
+// ----- the revisit grammar -----
 
 const RELATIVE = /^in (\d{1,4}) (minute|hour|day)s?$/i;
 const UNIT_MS = { minute: 60_000, hour: 60 * 60_000, day: DAY } as const;
@@ -288,9 +292,20 @@ export function parseOn(
   return { event };
 }
 
-/** An order's subject as it's matched and stored: trimmed, lowercased, inner whitespace collapsed. */
-export const normalSubject = (subject: string): string =>
-  subject.trim().replace(/\s+/g, " ").toLowerCase();
+/**
+ * An order's subject as it's matched and stored: compatibility-normalised, invisible format characters removed,
+ * whitespace collapsed, lowercased. Null when what's left isn't plain ASCII, since a lookalike letter (a Cyrillic о
+ * for an o) would otherwise make a second "same" subject beside the first.
+ */
+function normalSubject(subject: string): string | null {
+  const s = subject
+    .normalize("NFKC")
+    .replace(/\p{Cf}/gu, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  return s.length > 0 && /^[\x21-\x7e]+(?: [\x21-\x7e]+)*$/.test(s) ? s : null;
+}
 
 // ----- schema -----
 
@@ -306,7 +321,6 @@ const MIGRATIONS: readonly string[] = [
     waiting_on TEXT NOT NULL,
     next TEXT NOT NULL,
     links TEXT NOT NULL,
-    signature TEXT,
     due_at INTEGER,
     on_event TEXT,
     wake TEXT CHECK (wake IN ('pending', 'undeliverable')),
@@ -316,17 +330,16 @@ const MIGRATIONS: readonly string[] = [
     fired_by TEXT,
     wake_attempts INTEGER NOT NULL DEFAULT 0,
     wake_error TEXT,
-    followup_note TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('open', 'delivering', 'done', 'dropped')),
     why TEXT,
     review_by INTEGER NOT NULL,
     origin TEXT NOT NULL,
+    last_edited_by TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     external_id TEXT UNIQUE
   );
-  CREATE INDEX loops_due ON loops (status, due_at);
-  CREATE INDEX loops_conversation ON loops (conversation_key, status);
+  CREATE INDEX loops_open ON loops (conversation_key, due_at) WHERE status IN ('open', 'delivering');
   CREATE TABLE orders (
     id TEXT PRIMARY KEY,
     subject TEXT NOT NULL,
@@ -380,8 +393,10 @@ const WAKE_ORIGIN: Origin = { principalId: null, kind: "scheduled", sessionId: n
 const EVENT_ORIGIN: Origin = { principalId: null, kind: "webhook", sessionId: null };
 
 let orderChanges = 0;
-/** Order changes this process has logged: an operator's order lifted or replaced from another origin kind. */
+let loopChanges = 0;
+/** Order changes this process has logged: an order lifted or replaced by anyone but its setter. */
 export const orderChangeCount = (): number => orderChanges;
+const who = (o: Origin) => `${o.kind}${o.principalId ? `(${o.principalId})` : ""}`;
 
 const newId = (prefix: string) => `${prefix}${randomBytes(4).toString("hex")}`;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -389,31 +404,22 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /** How a loop's wake begins, which the host's instructions can name. */
 export const LOOP_WAKE_OPENING = "A loop you opened is due";
 
-const OPENED: Record<OriginKind, string> = {
-  operator: "in the operator's own conversation",
-  colleague: "at a colleague's request",
-  scheduled: "by a scheduled run",
-  webhook: "by a webhook turn",
-  delegated: "by a delegated task",
-  other: "in a conversation with someone other than the operator",
-};
-// Model-written text goes into the wake on one line, so it can't pose as a recall block or a new instruction.
-const flat = (s: string) => s.replace(/\s+/g, " ").trim();
-
 /**
- * The wake's text, which the host posts as written: it names the loop and who opened it, and stands alone after a
- * restart. Every loop's wake, imported or not, is built here.
+ * The wake's text, which the host posts as written: it names the loop, who opened it and who last changed it if that
+ * was another kind of turn, and stands alone after a restart. Model text stays on one line, so it can't pose as a
+ * recall block or a new instruction.
  */
-export function followupNoteOf(loop: {
-  id: string;
-  what: string;
-  next: string;
-  links: readonly string[];
-  createdAt: number;
-  origin: Pick<Origin, "kind">;
-}): string {
+export function followupNoteOf(
+  loop: Pick<Loop, "id" | "what" | "next" | "links" | "createdAt" | "origin"> & {
+    readonly lastEditedBy?: Origin | null;
+  },
+): string {
   const links = loop.links.length > 0 ? `\nLinks: ${loop.links.map(flat).join(" ")}` : "";
-  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${iso(loop.createdAt).slice(0, 16)}Z ${OPENED[loop.origin.kind]}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
+  const edited =
+    loop.lastEditedBy && loop.lastEditedBy.kind !== loop.origin.kind
+      ? `, last changed ${KIND[loop.lastEditedBy.kind]}`
+      : "";
+  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${iso(loop.createdAt).slice(0, 16)}Z ${KIND[loop.origin.kind]}${edited}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
 }
 
 /**
@@ -424,41 +430,88 @@ export class WorkingStore {
   readonly #db: DatabaseSync;
   readonly #now: () => number;
   readonly #days: { loop: number; order: number; note: number };
-  readonly #liftedMs: number;
   readonly #limits: { loops: number; orders: number; notes: number };
   readonly #eventsPerEntry: number;
+  readonly #retentionMs: number;
   readonly #maxWakeAttempts: number;
   readonly #claimLimit: number;
-  readonly #recentEventMs: number;
+  readonly #keep: readonly string[];
+  #prunedAt = 0;
+  /** True when the file could only be opened for reading: recall works, every write refuses. */
+  readonly readOnly: boolean;
 
   constructor(path: string, options: WorkingStoreOptions = {}) {
-    // Only the agent's own user reads its working state: the directory it makes is 0700 and the file 0600.
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    // Only the agent's own user reads its working state: its directory is 0700 when the agent owns it (a volume the
+    // host made stays the host's to set), and a file it creates is 0600.
+    const created = path !== ":memory:" && !existsSync(path);
+    if (path !== ":memory:") {
+      const dir = dirname(path);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      try {
+        if (statSync(dir).uid === process.getuid?.()) chmodSync(dir, 0o700);
+      } catch {
+        // Not ours to change.
+      }
+    }
     this.#now = options.now ?? Date.now;
     this.#days = {
       loop: options.reviewAfterDays?.loop ?? 7,
       order: options.reviewAfterDays?.order ?? 14,
       note: options.reviewAfterDays?.note ?? 7,
     };
-    this.#liftedMs = (options.liftedVisibleDays ?? 7) * DAY;
     this.#limits = {
       loops: options.limits?.loops ?? 200,
       orders: options.limits?.orders ?? 50,
       notes: options.limits?.notes ?? 100,
     };
     this.#eventsPerEntry = Math.max(2, options.eventsPerEntry ?? 50);
+    this.#retentionMs = (options.retentionDays ?? 30) * DAY;
     this.#maxWakeAttempts = Math.max(1, options.maxWakeAttempts ?? 5);
     this.#claimLimit = Math.max(1, options.claimLimit ?? 20);
-    this.#recentEventMs = options.recentEventMs ?? 10 * 60_000;
+    this.#keep = options.principalAttributes ?? KEPT_ATTRIBUTES;
+    const opened = WorkingStore.#open(path, created);
+    this.#db = opened.db;
+    this.readOnly = opened.readOnly;
+    if (!this.readOnly) {
+      try {
+        this.#migrate();
+        this.#prune();
+      } catch (error) {
+        this.#db.close();
+        throw error;
+      }
+    }
+  }
+
+  // A file the agent can't write (a read-only mount, another owner) is still read, so a hold stays visible; writes
+  // then refuse. A store at an older schema can't be read that way, since it can't be migrated.
+  static #open(path: string, created: boolean): { db: DatabaseSync; readOnly: boolean } {
     const db = new DatabaseSync(path);
-    this.#db = db;
     try {
-      if (path !== ":memory:") chmodSync(path, 0o600);
+      if (created) chmodSync(path, 0o600);
       db.exec("PRAGMA busy_timeout = 5000");
       db.exec("PRAGMA journal_mode = WAL");
-      this.#migrate();
+      // A lock alone succeeds on a read-only file; only a write shows it, so write and roll back.
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.exec("CREATE TABLE IF NOT EXISTS write_probe (x)");
+      } finally {
+        if (db.isTransaction) db.exec("ROLLBACK");
+      }
+      return { db, readOnly: false };
     } catch (error) {
       db.close();
+      if (!/readonly|read-only/i.test(String((error as Error).message))) throw error;
+    }
+    const ro = new DatabaseSync(path, { readOnly: true });
+    try {
+      ro.exec("PRAGMA busy_timeout = 5000");
+      const { user_version } = ro.prepare("PRAGMA user_version").get() as { user_version: number };
+      if (Number(user_version) !== MIGRATIONS.length)
+        throw new Error(`read-only store at schema ${user_version}, not ${MIGRATIONS.length}`);
+      return { db: ro, readOnly: true };
+    } catch (error) {
+      ro.close();
       throw error;
     }
   }
@@ -472,6 +525,29 @@ export class WorkingStore {
         this.#db.exec(MIGRATIONS[v] as string);
       if (Number(version) < MIGRATIONS.length)
         this.#db.exec(`PRAGMA user_version = ${MIGRATIONS.length}`);
+    });
+  }
+
+  // Closed loops, ended orders and expired notes past the retention window go, with their history; at most hourly.
+  #prune(): void {
+    if (this.readOnly) return;
+    const now = this.#now();
+    if (now - this.#prunedAt < PRUNE_EVERY_MS) return;
+    this.#prunedAt = now;
+    const cutoff = now - this.#retentionMs;
+    this.#tx(() => {
+      this.#db
+        .prepare("DELETE FROM loops WHERE status IN ('done', 'dropped') AND updated_at < ?")
+        .run(cutoff);
+      this.#db
+        .prepare("DELETE FROM orders WHERE status != 'active' AND updated_at < ?")
+        .run(cutoff);
+      this.#db.prepare("DELETE FROM notes WHERE expires_at < ?").run(cutoff);
+      this.#db.exec(`DELETE FROM events WHERE
+        (entry_kind = 'loop' AND entry_id NOT IN (SELECT id FROM loops)) OR
+        (entry_kind = 'order' AND entry_id NOT IN (SELECT id FROM orders)) OR
+        (entry_kind = 'note' AND entry_id NOT IN (SELECT id FROM notes))`);
+      this.#db.prepare("DELETE FROM event_occurrences WHERE occurred_at < ?").run(cutoff);
     });
   }
 
@@ -539,6 +615,17 @@ export class WorkingStore {
       .run(id, id, id, this.#eventsPerEntry - 1);
   }
 
+  // A tool step eve retries runs its call again with the same call id; the entry it already made is the answer.
+  #madeBy(table: Table, change: string, origin: Origin): Row | undefined {
+    if (!origin.callId) return undefined;
+    const e = this.#db
+      .prepare(
+        "SELECT entry_id FROM events WHERE entry_kind = ? AND change = ? AND json_extract(origin, '$.callId') = ?",
+      )
+      .get(TABLE_KIND[table], change, origin.callId) as { entry_id: string } | undefined;
+    return e && this.#row(table, e.entry_id);
+  }
+
   #count(sql: string, ...params: number[]): number {
     return Number((this.#db.prepare(sql).get(...params) as { n: number }).n);
   }
@@ -548,17 +635,17 @@ export class WorkingStore {
     return row.status === "delivering" && Number(row.lease_until ?? 0) > now;
   }
 
+  // A new or changed revisit starts its attempts afresh: it's a new wake, not a retry of the old one.
   #wake(revisit: Revisit | undefined | null, deliverable: boolean, now: number): Row {
     const fresh = { wake_attempts: 0, wake_error: null };
     if (!revisit || (revisit.dueAt === undefined && revisit.onEvent === undefined))
       return { due_at: null, on_event: null, wake: null, wake_set_at: null, ...fresh };
-    // An event that fired moments before the loop was opened still counts, so a fast host doesn't strand it.
     const recent =
       revisit.onEvent === undefined
         ? undefined
         : (this.#db
             .prepare("SELECT fired_by FROM event_occurrences WHERE event = ? AND occurred_at >= ?")
-            .get(revisit.onEvent, now - this.#recentEventMs) as { fired_by: string } | undefined);
+            .get(revisit.onEvent, now - RECENT_EVENT_MS) as { fired_by: string } | undefined);
     return {
       due_at: revisit.dueAt ?? (recent ? now : null),
       on_event: revisit.onEvent ?? null,
@@ -571,6 +658,9 @@ export class WorkingStore {
 
   /** Opens a loop in its conversation and answers it. */
   open(input: OpenInput, origin: Origin): Result<{ loop: Loop }> {
+    this.#prune();
+    const again = this.#madeBy("loops", "opened", origin);
+    if (again) return { ok: true, loop: toLoop(again) };
     const now = this.#now();
     const open = this.#count(
       "SELECT count(*) AS n FROM loops WHERE status IN ('open', 'delivering')",
@@ -580,40 +670,43 @@ export class WorkingStore {
         ok: false,
         reason: `There are already ${open} open loops, the most this agent keeps. Close the ones that are resolved or no longer worth doing (close), then open this one.`,
       };
-    const id = newId("L");
-    const links = [...(input.links ?? [])];
     const row: Row = {
-      id,
+      id: newId("L"),
       conversation_key: addressKey(input.address),
       address: JSON.stringify(input.address),
-      principal: input.principal ? JSON.stringify(deliveryPrincipal(input.principal)) : null,
+      principal: input.principal
+        ? JSON.stringify(deliveryPrincipal(input.principal, this.#keep))
+        : null,
       what: input.what,
       waiting_on: input.waitingOn,
       next: input.next,
-      links: JSON.stringify(links),
-      signature: input.signature ?? null,
+      links: JSON.stringify([...(input.links ?? [])]),
       fired_by: null,
       ...this.#wake(input.revisit, input.deliverable !== false, now),
       lease_until: null,
       lease_token: null,
-      followup_note: followupNoteOf({
-        id,
-        what: input.what,
-        next: input.next,
-        links,
-        createdAt: now,
-        origin,
-      }),
       status: "open",
       why: null,
       review_by: input.reviewBy ?? now + this.#days.loop * DAY,
       origin: JSON.stringify(origin),
+      last_edited_by: null,
       created_at: now,
       updated_at: now,
       external_id: null,
     };
     this.#tx(() => this.#put("loops", null, row, "opened", origin));
     return { ok: true, loop: toLoop(row) };
+  }
+
+  // Detection, not a gate: a loop changed from another kind of turn than opened it is logged with both origins and
+  // counted, as an order change is, and the wake names who last changed it.
+  #detectLoopChange(loop: Row, origin: Origin): void {
+    const opened = JSON.parse(String(loop.origin)) as Origin;
+    if (opened.kind === origin.kind) return;
+    loopChanges++;
+    console.warn(
+      `[working] loop-change id=${loop.id} opened_by=${who(opened)} by=${who(origin)} count=${loopChanges}`,
+    );
   }
 
   /** Changes an open loop's next action, whose move it is, its links, its wake or its review date. */
@@ -628,31 +721,23 @@ export class WorkingStore {
           reason: `Loop ${id} is already ${before.status}; open a new loop if there's more to do.`,
         };
       if (this.#held(before, now)) return delivering(id);
-      const next = input.next ?? String(before.next);
-      const links = input.links ? [...input.links] : (JSON.parse(String(before.links)) as string[]);
       const after: Row = {
         ...before,
         status: "open",
         lease_until: null,
         lease_token: null,
         waiting_on: input.waitingOn ?? before.waiting_on,
-        next,
-        links: JSON.stringify(links),
+        next: input.next ?? before.next,
+        links: input.links ? JSON.stringify([...input.links]) : before.links,
         ...(input.revisit !== undefined
           ? this.#wake(input.revisit, input.deliverable !== false, now)
           : {}),
         review_by: input.reviewBy ?? before.review_by,
-        followup_note: followupNoteOf({
-          id,
-          what: String(before.what),
-          next,
-          links,
-          createdAt: Number(before.created_at),
-          origin: JSON.parse(String(before.origin)) as Origin,
-        }),
+        last_edited_by: JSON.stringify(origin),
         updated_at: now,
       };
       this.#put("loops", before, after, "updated", origin);
+      this.#detectLoopChange(before, origin);
       return { ok: true, loop: toLoop(after) };
     });
   }
@@ -686,9 +771,11 @@ export class WorkingStore {
         ...this.#wake(null, true, now),
         lease_until: null,
         lease_token: null,
+        last_edited_by: JSON.stringify(origin),
         updated_at: now,
       };
       this.#put("loops", before, after, "closed", origin);
+      this.#detectLoopChange(before, origin);
       return { ok: true, loop: toLoop(after) };
     });
   }
@@ -698,10 +785,13 @@ export class WorkingStore {
     input: { subject: string; rule: string; link: string; until?: number },
     origin: Origin,
   ): Result<{ order: Order; replaced: Order | null }> {
+    const subject = normalSubject(input.subject);
+    if (subject === null) return badSubject(input.subject);
+    const again = this.#madeBy("orders", "set", origin);
+    if (again) return { ok: true, order: toOrder(again), replaced: null };
     return this.#tx(() => {
       const now = this.#now();
       const id = newId("O");
-      const subject = normalSubject(input.subject);
       const current = this.#activeOrder(subject);
       const active = this.#count("SELECT count(*) AS n FROM orders WHERE status = 'active'");
       if (!current && active >= this.#limits.orders)
@@ -742,12 +832,14 @@ export class WorkingStore {
 
   /** Lifts the active order on a subject, with why. */
   liftOrder(subject: string, why: string, origin: Origin): Result<{ order: Order }> {
+    const normal = normalSubject(subject);
+    if (normal === null) return badSubject(subject);
     return this.#tx(() => {
-      const current = this.#activeOrder(normalSubject(subject));
+      const current = this.#activeOrder(normal);
       if (!current)
         return {
           ok: false,
-          reason: `There's no active order on "${subject}". List orders to see the subjects that have one.`,
+          reason: `There's no active order on "${normal}". List orders to see the subjects that have one.`,
         };
       const after: Row = {
         ...current,
@@ -765,7 +857,7 @@ export class WorkingStore {
   #activeOrder(subject: string): Row | undefined {
     return this.#db
       .prepare("SELECT * FROM orders WHERE subject = ? AND status = 'active'")
-      .get(normalSubject(subject)) as Row | undefined;
+      .get(subject) as Row | undefined;
   }
 
   // Detection, not a gate: the counterpart of the graph's owner-overwrite line. An order lifted or replaced by anyone
@@ -775,7 +867,6 @@ export class WorkingStore {
     const set = JSON.parse(String(order.origin)) as Origin;
     if (set.kind === origin.kind && set.principalId === origin.principalId) return;
     orderChanges++;
-    const who = (o: Origin) => `${o.kind}${o.principalId ? `(${o.principalId})` : ""}`;
     console.warn(
       `[working] order-change subject=${JSON.stringify(order.subject)} set_by=${who(set)} by=${who(origin)} count=${orderChanges}`,
     );
@@ -783,6 +874,8 @@ export class WorkingStore {
 
   /** Adds a note, which expires on its own. */
   addNote(input: { text: string; expiresAt?: number }, origin: Origin): Result<{ note: Note }> {
+    const again = this.#madeBy("notes", "added", origin);
+    if (again) return { ok: true, note: toNote(again) };
     const now = this.#now();
     const live = this.#count("SELECT count(*) AS n FROM notes WHERE expires_at > ?", now);
     if (live >= this.#limits.notes)
@@ -799,10 +892,13 @@ export class WorkingStore {
       updated_at: now,
     };
     this.#tx(() => this.#put("notes", null, row, "added", origin));
-    return { ok: true, note: toNote(row, now) };
+    return { ok: true, note: toNote(row) };
   }
 
-  /** Entries for one view, newest first, each kind capped at `limit` with its total. */
+  /**
+   * Entries for one view, each kind capped at `limit` with its total: loops due or stale first, orders the operator set
+   * first, then newest first, so the cap never hides what most needs seeing.
+   */
   list(filter: ListFilter): Listing {
     const now = this.#now();
     const limit = Math.min(Math.max(1, filter.limit ?? 50), 200);
@@ -818,15 +914,18 @@ export class WorkingStore {
     const orderWhere: Partial<Record<ListView, Where>> = {
       orders: ["status = 'active'", []],
       stale: ["status = 'active' AND (review_by <= ? OR until <= ?)", [now, now]],
-      lifted: ["status != 'active' AND updated_at > ?", [now - this.#liftedMs]],
+      lifted: ["status != 'active' AND updated_at > ?", [now - LIFTED_MS]],
       all: ["status = 'active'", []],
     };
     const noteWhere: Partial<Record<ListView, Where>> = {
       notes: ["expires_at > ?", [now]],
       all: ["expires_at > ?", [now]],
     };
-    // Loops that need action (due or stale) come first, so a cap never hides them behind newer ones.
-    const urgentFirst = `((wake IS NOT NULL AND due_at IS NOT NULL AND due_at <= ${Number(now)}) OR review_by <= ${Number(now)}) DESC, `;
+    const first: Record<Table, string> = {
+      loops: `((wake IS NOT NULL AND due_at IS NOT NULL AND due_at <= ${Number(now)}) OR review_by <= ${Number(now)}) DESC, `,
+      orders: `(json_extract(origin, '$.kind') = 'operator') DESC, `,
+      notes: "",
+    };
     const select = (table: Table, where: Where | undefined) => {
       if (!where) return { rows: [] as Row[], total: 0 };
       const [clause, params] = where;
@@ -835,7 +934,7 @@ export class WorkingStore {
         .get(...params) as { n: number };
       const rows = this.#db
         .prepare(
-          `SELECT * FROM ${table} WHERE ${clause} ORDER BY ${table === "loops" ? urgentFirst : ""}updated_at DESC, id LIMIT ?`,
+          `SELECT * FROM ${table} WHERE ${clause} ORDER BY ${first[table]}updated_at DESC, id LIMIT ?`,
         )
         .all(...params, limit) as Row[];
       return { rows, total: Number(n) };
@@ -846,21 +945,35 @@ export class WorkingStore {
     return {
       loops: loops.rows.map(toLoop),
       orders: orders.rows.map(toOrder),
-      notes: notes.rows.map((r) => toNote(r, now)),
+      notes: notes.rows.map(toNote),
       totals: { loops: loops.total, orders: orders.total, notes: notes.total },
     };
   }
 
   /**
-   * Leases every loop whose wake is due, however late, and isn't held by a live lease. A claimant that dies before
-   * settling leaves its lease to expire, and the loop is claimed again: delivery is at least once.
+   * Leases loops whose wake is due, however late, and isn't held by a live lease: at most `claimLimit`, oldest due
+   * first. Each claim counts as an attempt, so a loop whose delivery crashes the host before it can settle or fail is
+   * given up after `maxWakeAttempts`, not claimed forever. Delivery is at least once.
    */
   claimDue(now: number, leaseMs: number): ClaimedLoop[] {
+    this.#prune();
     const token = randomBytes(8).toString("hex");
     return this.#tx(() => {
+      const spent = this.#db
+        .prepare(
+          `UPDATE loops SET status = 'open', wake = 'undeliverable', lease_until = NULL, lease_token = NULL,
+             wake_error = coalesce(wake_error, 'delivery never settled'), updated_at = ?
+           WHERE wake = 'pending' AND wake_attempts >= ? AND status IN ('open', 'delivering')
+             AND (lease_until IS NULL OR lease_until <= ?)
+           RETURNING *`,
+        )
+        .all(now, this.#maxWakeAttempts, now) as Row[];
+      for (const row of spent)
+        this.#event("loops", String(row.id), "wake-given-up", null, row, WAKE_ORIGIN);
       const rows = this.#db
         .prepare(
-          `UPDATE loops SET status = 'delivering', lease_until = ?, lease_token = ?
+          `UPDATE loops SET status = 'delivering', lease_until = ?, lease_token = ?,
+             wake_attempts = wake_attempts + 1
            WHERE id IN (
              SELECT id FROM loops
              WHERE wake = 'pending' AND due_at IS NOT NULL AND due_at <= ?
@@ -875,19 +988,24 @@ export class WorkingStore {
       );
       for (const row of rows)
         this.#event("loops", String(row.id), "wake-claimed", null, row, WAKE_ORIGIN);
-      return rows.map((row) => ({
-        id: String(row.id),
-        address: JSON.parse(String(row.address)) as Address,
-        conversationKey: String(row.conversation_key),
-        principal:
-          row.principal === null ? null : (JSON.parse(String(row.principal)) as SessionAuthContext),
-        followupNote: String(row.followup_note),
-        dueAt: num(row.due_at),
-        onEvent: str(row.on_event),
-        firedBy: str(row.fired_by),
-        leaseToken: token,
-        createdAt: Number(row.created_at),
-      }));
+      return rows.map((row) => {
+        const loop = toLoop(row);
+        return {
+          id: loop.id,
+          address: loop.address,
+          conversationKey: loop.conversationKey,
+          principal:
+            row.principal === null
+              ? null
+              : (JSON.parse(String(row.principal)) as SessionAuthContext),
+          followupNote: followupNoteOf(loop),
+          dueAt: loop.dueAt,
+          onEvent: loop.onEvent,
+          firedBy: loop.firedBy,
+          leaseToken: token,
+          createdAt: loop.createdAt,
+        };
+      });
     });
   }
 
@@ -916,7 +1034,7 @@ export class WorkingStore {
 
   /**
    * The wake couldn't be handed off. A transient failure leaves the wake due, and the loop open for the agent to change,
-   * to be claimed again once the lease runs out; a final one, or the `maxWakeAttempts`th, gives the wake up as
+   * to be claimed again once the lease runs out; a final one, or one at `maxWakeAttempts` claims, gives the wake up as
    * undeliverable, so the loop shows as due in the standing block instead of retrying forever. False when this
    * claimant no longer holds it.
    */
@@ -929,16 +1047,15 @@ export class WorkingStore {
       const now = this.#now();
       const before = this.#row("loops", id);
       if (before?.status !== "delivering" || before.lease_token !== leaseToken) return false;
-      const attempts = Number(before.wake_attempts ?? 0) + 1;
-      const giveUp = failure.final === true || attempts >= this.#maxWakeAttempts;
+      const giveUp =
+        failure.final === true || Number(before.wake_attempts ?? 0) >= this.#maxWakeAttempts;
       const after: Row = {
         ...before,
         status: "open",
         lease_token: null,
         lease_until: giveUp ? null : before.lease_until,
         wake: giveUp ? "undeliverable" : "pending",
-        wake_attempts: attempts,
-        wake_error: clip(flat(failure.reason), 160),
+        wake_error: clip(failure.reason, 160),
         updated_at: now,
       };
       this.#put("loops", before, after, giveUp ? "wake-given-up" : "wake-failed", WAKE_ORIGIN);
@@ -947,11 +1064,14 @@ export class WorkingStore {
   }
 
   /**
-   * An event happened at `occurredAt`: every open loop waiting on it, whose wake was set by then, becomes due `now`.
-   * One set after it waits for the next, so a redelivered old event wakes nothing new. The wake's set time decides,
-   * not the loop's creation, since `update` can add a revisit to an old loop. Answers how many became due.
+   * An event happened at `occurredAt` (never later than `now`): every open loop waiting on it, whose wake was set by
+   * then, becomes due `now`. One set after it waits for the next, so a redelivered old event wakes nothing new. The
+   * wake's set time decides, not the loop's creation, since `update` can add a revisit to an old loop. The occurrence
+   * is remembered, so a loop opened just after it is due at once. Answers how many became due.
    */
   eventOccurred(event: string, occurredAt: number, firedBy: string, now: number): number {
+    // A far-future time would otherwise mark every later loop on this event as already fired.
+    const at = Math.min(occurredAt, now);
     return this.#tx(() => {
       const rows = this.#db
         .prepare(
@@ -960,14 +1080,14 @@ export class WorkingStore {
              AND wake_set_at <= ?
            RETURNING *`,
         )
-        .all(now, firedBy, now, event, occurredAt) as Row[];
+        .all(now, firedBy, now, event, at) as Row[];
       this.#db
         .prepare(
           `INSERT INTO event_occurrences (event, occurred_at, fired_by) VALUES (?, ?, ?)
            ON CONFLICT (event) DO UPDATE SET occurred_at = excluded.occurred_at, fired_by = excluded.fired_by
            WHERE excluded.occurred_at > event_occurrences.occurred_at`,
         )
-        .run(event, occurredAt, firedBy);
+        .run(event, at, firedBy);
       for (const row of rows)
         this.#event("loops", String(row.id), "event-occurred", null, row, EVENT_ORIGIN);
       return rows.length;
@@ -980,7 +1100,7 @@ export class WorkingStore {
     return row && toLoop(row);
   }
 
-  /** Every recorded change to an entry, oldest first. */
+  /** Every recorded change to an entry still in history, oldest first. */
   history(id: string): EntryEvent[] {
     return (
       this.#db.prepare("SELECT * FROM events WHERE entry_id = ? ORDER BY seq").all(id) as Row[]
@@ -989,8 +1109,9 @@ export class WorkingStore {
 
   /**
    * Undoes every change a session, turn, tool call or principal made: each entry it touched goes back to how it was
-   * before its first such change, and one it created is closed (a loop dropped, an order lifted, a note expired).
-   * Nothing is deleted; the revert is itself an event. An empty filter reverts nothing. Answers how many entries.
+   * before its first such change still in history, and one it created is closed (a loop dropped, an order lifted, a
+   * note expired). Nothing is deleted; the revert is itself an event. An empty filter reverts nothing. Answers how
+   * many entries.
    */
   revertBatch(filter: RevertFilter, origin: Origin): number {
     const fields = (["sessionId", "turnId", "callId", "principalId"] as const).filter(
@@ -1010,7 +1131,7 @@ export class WorkingStore {
         if (!first.has(key)) first.set(key, e);
       }
       for (const e of first.values()) {
-        const table: Table = KIND_TABLE[e.entry_kind as Entry["kind"]];
+        const table: Table = KIND_TABLE[e.entry_kind as EntryEvent["entryKind"]];
         const current = this.#row(table, String(e.entry_id));
         if (!current) continue;
         const before = e.before === null ? null : (JSON.parse(String(e.before)) as Row);
@@ -1066,30 +1187,28 @@ export class WorkingStore {
   /**
    * Brings in a loop the host read from another store, once: a second call with the same `externalId` changes nothing
    * and answers "exists". The loop is stored as `open` would store it (text capped as the tools cap it, the sender auth
-   * trimmed, the wake text built by followupNoteOf), with `createdAt` as when its wake was set, so an event that fired
-   * before it wakes nothing.
+   * trimmed), with `createdAt` as when its wake was set, so an event that fired before it wakes nothing. An import is
+   * the host's one-off, so it isn't held to the open-loop cap.
    */
   importLoop(input: ImportedLoop): "imported" | "exists" {
     return this.#tx(() => {
       if (this.#db.prepare("SELECT 1 FROM loops WHERE external_id = ?").get(input.externalId))
         return "exists";
       const now = this.#now();
-      const id = newId("L");
       const open = input.status === "open";
       const hasWake = open && (input.wake?.dueAt != null || input.wake?.onEvent != null);
-      const links = [...(input.links ?? [])];
-      const what = clip(flat(input.what) || "imported loop", 200);
-      const next = clip(input.next.trim() || what, 500);
+      const what = clip(input.what, 200) || "imported loop";
       const row: Row = {
-        id,
+        id: newId("L"),
         conversation_key: addressKey(input.address),
         address: JSON.stringify(input.address),
-        principal: input.principal ? JSON.stringify(deliveryPrincipal(input.principal)) : null,
+        principal: input.principal
+          ? JSON.stringify(deliveryPrincipal(input.principal, this.#keep))
+          : null,
         what,
         waiting_on: clip(input.waitingOn ?? "me", 40),
-        next,
-        links: JSON.stringify(links),
-        signature: null,
+        next: clip(input.next, 500) || what,
+        links: JSON.stringify([...(input.links ?? [])]),
         due_at: hasWake ? (input.wake?.dueAt ?? null) : null,
         on_event: hasWake ? (input.wake?.onEvent ?? null) : null,
         wake: hasWake ? "pending" : null,
@@ -1099,18 +1218,11 @@ export class WorkingStore {
         fired_by: input.wake?.firedBy ?? null,
         wake_attempts: 0,
         wake_error: null,
-        followup_note: followupNoteOf({
-          id,
-          what,
-          next,
-          links,
-          createdAt: input.createdAt,
-          origin: input.origin,
-        }),
         status: input.status,
         why: open ? null : (input.why ?? "imported"),
         review_by: now + this.#days.loop * DAY,
         origin: JSON.stringify(input.origin),
+        last_edited_by: null,
         created_at: input.createdAt,
         updated_at: now,
         external_id: input.externalId,
@@ -1127,8 +1239,6 @@ const withoutPrincipal = (row: Row): Row => {
   return rest;
 };
 
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-
 const unknownLoop = (id: string): Refusal => ({
   ok: false,
   reason: `There's no loop ${id}. List loops to see their ids.`,
@@ -1137,14 +1247,18 @@ const delivering = (id: string): Refusal => ({
   ok: false,
   reason: `Loop ${id}'s wake is being delivered right now. Try again after it arrives.`,
 });
+const badSubject = (subject: string): Refusal => ({
+  ok: false,
+  reason: `"${flat(subject).slice(0, 80)}" isn't a subject I can keep: use plain letters, digits and punctuation, such as releases:web.`,
+});
 
 const str = (v: Row[string] | undefined) => (v === null || v === undefined ? null : String(v));
 const num = (v: Row[string] | undefined) => (v === null || v === undefined ? null : Number(v));
+const originOf = (v: Row[string] | undefined) => (v ? (JSON.parse(String(v)) as Origin) : null);
 
 function toLoop(row: Row): Loop {
   return {
     id: String(row.id),
-    kind: "loop",
     status: row.status as LoopStatus,
     conversationKey: String(row.conversation_key),
     address: JSON.parse(String(row.address)) as Address,
@@ -1152,7 +1266,6 @@ function toLoop(row: Row): Loop {
     waitingOn: String(row.waiting_on),
     next: String(row.next),
     links: JSON.parse(String(row.links)) as string[],
-    signature: str(row.signature),
     dueAt: num(row.due_at),
     onEvent: str(row.on_event),
     wake: str(row.wake) as WakeState | null,
@@ -1160,9 +1273,9 @@ function toLoop(row: Row): Loop {
     wakeAttempts: Number(row.wake_attempts ?? 0),
     wakeError: str(row.wake_error),
     why: str(row.why),
-    followupNote: String(row.followup_note),
     reviewBy: Number(row.review_by),
     origin: JSON.parse(String(row.origin)) as Origin,
+    lastEditedBy: originOf(row.last_edited_by),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
@@ -1171,7 +1284,6 @@ function toLoop(row: Row): Loop {
 function toOrder(row: Row): Order {
   return {
     id: String(row.id),
-    kind: "order",
     status: row.status as OrderStatus,
     subject: String(row.subject),
     rule: String(row.rule),
@@ -1180,17 +1292,15 @@ function toOrder(row: Row): Order {
     why: str(row.why),
     reviewBy: Number(row.review_by),
     origin: JSON.parse(String(row.origin)) as Origin,
-    endedBy: row.ended_by ? (JSON.parse(String(row.ended_by)) as Origin) : null,
+    endedBy: originOf(row.ended_by),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
 }
 
-function toNote(row: Row, now: number): Note {
+function toNote(row: Row): Note {
   return {
     id: String(row.id),
-    kind: "note",
-    status: Number(row.expires_at) > now ? "active" : "expired",
     text: String(row.text),
     expiresAt: Number(row.expires_at),
     origin: JSON.parse(String(row.origin)) as Origin,
@@ -1202,7 +1312,7 @@ function toNote(row: Row, now: number): Note {
 function toEvent(row: Row): EntryEvent {
   return {
     seq: Number(row.seq),
-    entryKind: row.entry_kind as Entry["kind"],
+    entryKind: row.entry_kind as EntryEvent["entryKind"],
     entryId: String(row.entry_id),
     change: String(row.change),
     before: row.before === null ? null : (JSON.parse(String(row.before)) as Row),

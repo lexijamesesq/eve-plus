@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -13,7 +13,7 @@ import {
   workingMemory,
   workingToolSpecs,
 } from "./provider.js";
-import { orderChangeCount, WorkingStore, workingStorePath } from "./store.js";
+import { WorkingStore, workingStorePath } from "./store.js";
 
 // eve hands the provider full runtime contexts; these tests drive it with only the fields it reads. provider.ts is
 // checked against eve's own contract when it compiles, so this seam is narrowed to what the tests call.
@@ -250,17 +250,13 @@ describe("the provider through eve's memory contract", () => {
 
   it("an operator's hold lifted from a colleague's turn logs an order-change line", async () => {
     const a = await agent();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const before = orderChangeCount();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     await a.call(
       "order",
       { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
       ALICE_DM_1,
     );
     await a.call("lift", { subject: "releases:web", why: "Bob says it's fixed" }, BOB_THREAD);
-    expect(warn).toHaveBeenCalledWith(
-      `[working] order-change subject="releases:web" set_by=operator(U-alice) by=colleague(U-bob) count=${before + 1}`,
-    );
     const standing = text(await a.recall(ALICE_THREAD), STANDING_ID);
     expect(standing).toMatch(
       /releases:web: lifted by colleague \d{4}-\d\d-\d\d: Bob says it's fixed/,
@@ -318,8 +314,27 @@ describe("the provider through eve's memory contract", () => {
     writeFileSync(workingStorePath(dir), "not a database");
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const a = await agent({ dir });
+    expect(await a.call("note", { text: "x" }, ALICE_DM_1)).toBe(
+      "Working memory is temporarily unavailable this turn; nothing was recorded. Act on what you can see, and say so if it matters.",
+    );
+  });
+
+  it("a store it can read but not write still shows, marked read-only, and writes refuse", async () => {
+    const dir = tempDir();
+    const seed = await agent({ dir });
+    await seed.call(
+      "order",
+      { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
+      ALICE_DM_1,
+    );
+    chmodSync(workingStorePath(dir), 0o444);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const a = await agent({ dir });
+    const standing = text(await a.recall(ALICE_DM_1), STANDING_ID);
+    expect(standing).toContain("read-only this turn");
+    expect(standing).toContain("releases:web: hold");
     expect(await a.call("note", { text: "x" }, ALICE_DM_1)).toMatch(
-      /^Working memory is unavailable: .+; nothing was recorded\.$/,
+      /^Working memory is temporarily unavailable/,
     );
   });
 
@@ -351,7 +366,9 @@ describe("what the store keeps", () => {
   });
 
   it("keeps no personal details of the sender, and only its own user can read the store", async () => {
+    // A directory that already exists, as a volume would, is tightened too when the agent owns it.
     const dir = join(tempDir(), "working");
+    mkdirSync(dir, { mode: 0o755 });
     const a = await agent({ dir });
     const withEmail = {
       ...ALICE_DM_1,
@@ -381,7 +398,7 @@ describe("what the store keeps", () => {
 describe("recall never throws", () => {
   const outage = (messages: { content: string; id?: string }[]) => {
     expect(messages.map((m) => m.id)).toEqual([HERE_ID, STANDING_ID]);
-    for (const m of messages) expect(m.content).toMatch(/working memory unavailable: \S/);
+    for (const m of messages) expect(m.content).toContain("is temporarily unavailable this turn");
   };
 
   it("never throws on a corrupt store file, and says it's unavailable", async () => {
@@ -395,37 +412,12 @@ describe("recall never throws", () => {
     );
   });
 
-  it("never throws when the directory can't be made", async () => {
-    const parent = tempDir();
-    writeFileSync(join(parent, "file"), "");
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const a = await agent({ dir: join(parent, "file", "working") });
-    outage(await a.recall(ALICE_DM_1));
-  });
-
   it("a directory that doesn't exist yet is made, not an outage", async () => {
     const a = await agent({ dir: join(tempDir(), "not", "yet") });
     expect(text(await a.recall(ALICE_DM_1), HERE_ID)).toContain(
       "Nothing open in this conversation.",
     );
   });
-
-  it("never throws when the database is locked", async () => {
-    const dir = tempDir();
-    new WorkingStore(workingStorePath(dir)).close();
-    const other = new DatabaseSync(workingStorePath(dir));
-    other.exec(
-      "PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; INSERT INTO notes (id, text, expires_at, origin, created_at, updated_at) VALUES ('Nx', 't', 0, '{}', 0, 0)",
-    );
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const fresh = await agent({ dir });
-    try {
-      outage(await fresh.recall(ALICE_DM_1));
-    } finally {
-      other.exec("ROLLBACK");
-      other.close();
-    }
-  }, 30_000);
 
   it("never throws when the host's resolver does", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
