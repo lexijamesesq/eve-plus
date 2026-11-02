@@ -363,6 +363,72 @@ describe("the provider through eve's memory contract", () => {
       store.close();
     });
 
+    // A loop's wake authority only goes down: the lowest of its opener and every editor since it was opened.
+    const rootOfOrder = async (a: Awaited<ReturnType<typeof agent>>) => {
+      const store = new WorkingStore(workingStorePath(a.dir));
+      const root = store.list({ view: "orders", conversationKey: null, limit: 5 }).orders[0]?.origin
+        .root;
+      store.close();
+      return root;
+    };
+
+    it("doesn't snap back to the operator when the operator touches the loop after a colleague shaped it", async () => {
+      const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
+      const loop = opened(
+        await a.call(
+          "open",
+          { what: "ship the fix", waitingOn: "me", next: "check CI" },
+          ALICE_DM_1,
+        ),
+      );
+      await a.call("update", { id: loop, next: "hold all releases" }, BOB_THREAD);
+      // Alice changes only whose move it is; Bob's next step still drives the wake.
+      await a.call("update", { id: loop, waitingOn: "alice" }, ALICE_DM_1);
+      await a.call(
+        "order",
+        { subject: "releases:all", rule: "hold", link: "https://example.test/m/1" },
+        woken(loop),
+      );
+      expect(await rootOfOrder(a)).toMatchObject({ kind: "colleague", principalId: "U-bob" });
+    });
+
+    it("doesn't raise a colleague's loop to the operator when an operator's wake touches it", async () => {
+      const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
+      const mine = opened(
+        await a.call("open", { what: "op loop", waitingOn: "me", next: "n" }, ALICE_DM_1),
+      );
+      const bobs = opened(
+        await a.call("open", { what: "bob loop", waitingOn: "me", next: "n" }, BOB_THREAD),
+      );
+      // The operator's wake makes a trivial change to Bob's loop.
+      await a.call("update", { id: bobs, next: "checked" }, woken(mine));
+      await a.call(
+        "order",
+        { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
+        woken(bobs),
+      );
+      expect(await rootOfOrder(a)).toMatchObject({ kind: "colleague", principalId: "U-bob" });
+    });
+
+    it("lets a revert by kind reach a write a kind was the authority for through a wake", async () => {
+      const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
+      const bobs = opened(
+        await a.call("open", { what: "bob loop", waitingOn: "me", next: "n" }, BOB_THREAD),
+      );
+      await a.call(
+        "order",
+        { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
+        woken(bobs),
+      );
+      const store = new WorkingStore(workingStorePath(a.dir));
+      store.revertBatch(
+        { kind: "colleague" },
+        { principalId: null, kind: "other", sessionId: null },
+      );
+      expect(store.list({ view: "orders", conversationKey: null, limit: 5 }).orders).toEqual([]);
+      store.close();
+    });
+
     it("records no root when the woken loop isn't in the store", async () => {
       const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
       const id = opened(

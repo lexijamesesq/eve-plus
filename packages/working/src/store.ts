@@ -40,21 +40,38 @@ export interface Origin {
    * operator's request it carries forward.
    */
   readonly root?: Origin;
+  /** On a loop's last editor only: the lowest authority among its opener and every editor since (wakeAuthorityOf). */
+  readonly floor?: Origin;
 }
 
 /** The origin authority follows: a chain's root when it has one, else the write's own. */
 export const authorityOf = (origin: Origin): Origin => origin.root ?? origin;
 
+/** A loop's new last editor, carrying the floor its edit leaves: the lower of the floor it found and the editor's own. */
+function editedBy(before: Row, editor: Origin): Origin {
+  const opener = JSON.parse(String(before.origin)) as Origin;
+  const last =
+    before.last_edited_by == null ? null : (JSON.parse(String(before.last_edited_by)) as Origin);
+  const { floor: _, ...plain } = editor;
+  return { ...plain, floor: lower(last?.floor ?? authorityOf(opener), authorityOf(editor)) };
+}
+
+// How far an authority reaches, for the lowest-of rule below: the operator, then a scheduled run, then a colleague,
+// then every other kind of turn.
+const RANK: Partial<Record<OriginKind, number>> = { operator: 3, scheduled: 2, colleague: 1 };
+const rank = (o: Origin): number => RANK[o.kind] ?? 0;
+
+/** The lower of two authorities; the first on a tie, so an equal edit keeps the floor it found. */
+const lower = (a: Origin, b: Origin): Origin => (rank(b) < rank(a) ? b : a);
+
 /**
- * The authority a loop's wake carries into its turn. A loop last changed by someone other than its opener, another
- * principal or another kind of turn, carries the editor's authority, not the opener's: an edit can't borrow the
- * opener's rank for whatever its wake does next.
+ * The authority a loop's wake carries into its turn: the lowest among its opener and everyone who has changed it since
+ * it was opened, kept as the loop's floor. It only goes down. No later edit raises it, the operator's included, and
+ * only opening a new loop starts afresh. So a loop any colleague has shaped never speaks with the operator's authority
+ * through its wakes; the operator sets orders directly.
  */
 export function wakeAuthorityOf(loop: Pick<Loop, "origin" | "lastEditedBy">): Origin {
-  const opener = authorityOf(loop.origin);
-  if (loop.lastEditedBy === null) return opener;
-  const editor = authorityOf(loop.lastEditedBy);
-  return editor.principalId === opener.principalId && editor.kind === opener.kind ? opener : editor;
+  return loop.lastEditedBy?.floor ?? authorityOf(loop.origin);
 }
 
 export type LoopStatus = "open" | "delivering" | "done" | "dropped";
@@ -203,7 +220,10 @@ export interface RevertFilter {
   readonly sessionId?: string;
   readonly turnId?: string;
   readonly callId?: string;
+  /** A principal's writes, its own and those it was the authority for through a wake (`origin.root`). */
   readonly principalId?: string;
+  /** A kind of turn's writes, its own and those it was the authority for through a wake. */
+  readonly kind?: OriginKind;
 }
 
 /** A loop brought in from another store by the host, once: `externalId` is its id there. */
@@ -846,7 +866,7 @@ export class WorkingStore {
           ? this.#wake(input.revisit, input.deliverable !== false, now, before)
           : {}),
         review_by: input.reviewBy ?? before.review_by,
-        last_edited_by: JSON.stringify(origin),
+        last_edited_by: JSON.stringify(editedBy(before, origin)),
         updated_at: now,
       };
       this.#put("loops", before, after, "updated", origin);
@@ -884,7 +904,7 @@ export class WorkingStore {
         ...this.#wake(null, true, now),
         lease_until: null,
         lease_token: null,
-        last_edited_by: JSON.stringify(origin),
+        last_edited_by: JSON.stringify(editedBy(before, origin)),
         updated_at: now,
       };
       this.#put("loops", before, after, "closed", origin);
@@ -1234,7 +1254,7 @@ export class WorkingStore {
    * many entries.
    */
   revertBatch(filter: RevertFilter, origin: Origin): number {
-    const fields = (["sessionId", "turnId", "callId", "principalId"] as const).filter(
+    const fields = (["sessionId", "turnId", "callId", "principalId", "kind"] as const).filter(
       (f) => filter[f] !== undefined,
     );
     if (fields.length === 0) return 0;
@@ -1244,16 +1264,16 @@ export class WorkingStore {
         .prepare(
           `SELECT * FROM events WHERE ${fields
             .map((f) =>
-              // A write whose authority was a principal's, through a wake, is that principal's to revert too.
-              f === "principalId"
-                ? "(json_extract(origin, '$.principalId') = ? OR json_extract(origin, '$.root.principalId') = ?)"
+              // A write whose authority was a principal's or a kind's, through a wake, is theirs to revert too.
+              f === "principalId" || f === "kind"
+                ? `(json_extract(origin, '$.${f}') = ? OR json_extract(origin, '$.root.${f}') = ?)`
                 : `json_extract(origin, '$.${f}') = ?`,
             )
             .join(" AND ")} ORDER BY seq`,
         )
         .all(
           ...fields.flatMap((f) =>
-            f === "principalId"
+            f === "principalId" || f === "kind"
               ? [filter[f] as string, filter[f] as string]
               : [filter[f] as string],
           ),
