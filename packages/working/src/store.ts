@@ -16,7 +16,15 @@ import { clip, flat, KIND, minute } from "./render.js";
 export { type Address, addressKey } from "./addresses.js";
 
 /** Who a write came from, by the kind of turn that made it. The host classifies; the package never asks the model. */
-export type OriginKind = "operator" | "colleague" | "scheduled" | "webhook" | "delegated" | "other";
+export type OriginKind =
+  | "operator"
+  | "colleague"
+  | "scheduled"
+  | "webhook"
+  | "delegated"
+  | "loop-wake"
+  | "event-wake"
+  | "other";
 
 /** The attribution every write records, from eve's session and tool context. */
 export interface Origin {
@@ -26,7 +34,16 @@ export interface Origin {
   readonly turnId?: string;
   readonly turnSequence?: number;
   readonly callId?: string;
+  /**
+   * Where a chain of wakes started: on a write in a turn a loop's wake started, the woken loop's own root, or its
+   * origin when it has none. Authority (whose order comes first) follows the root, so a wake can't demote the
+   * operator's request it carries forward.
+   */
+  readonly root?: Origin;
 }
+
+/** The origin authority follows: a chain's root when it has one, else the write's own. */
+export const authorityOf = (origin: Origin): Origin => origin.root ?? origin;
 
 export type LoopStatus = "open" | "delivering" | "done" | "dropped";
 export type OrderStatus = "active" | "lifted" | "replaced";
@@ -118,6 +135,12 @@ export interface ClaimedLoop {
 export interface Revisit {
   readonly dueAt?: number;
   readonly onEvent?: string;
+  /**
+   * Only an occurrence of `onEvent` after the loop is armed fires it. By default an occurrence in the last ten
+   * minutes fires it at once, for a loop opened just after its event; a loop opened to wait on a retry of the same
+   * event wants this, so the previous run's completion doesn't wake it.
+   */
+  readonly onlyNew?: boolean;
 }
 
 export interface OpenInput {
@@ -194,6 +217,7 @@ export interface ImportedLoop {
 
 export interface WorkingStoreOptions {
   readonly now?: () => number;
+
   /** Days before an entry is marked stale. Defaults: loop 7, order 14, note 7 (a note expires then). */
   readonly reviewAfterDays?: {
     readonly loop?: number;
@@ -451,6 +475,8 @@ export const LOOP_WAKE_OPENING = "A loop you opened is due";
 export function followupNoteOf(
   loop: Pick<Loop, "id" | "what" | "next" | "links" | "createdAt" | "origin"> & {
     readonly lastEditedBy?: Origin | null;
+    readonly firedBy?: string | null;
+    readonly dueAt?: number | null;
   },
 ): string {
   const links = loop.links.length > 0 ? `\nLinks: ${loop.links.map(flat).join(" ")}` : "";
@@ -458,7 +484,12 @@ export function followupNoteOf(
     loop.lastEditedBy && loop.lastEditedBy.kind !== loop.origin.kind
       ? `, last changed ${KIND[loop.lastEditedBy.kind]}`
       : "";
-  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${minute(loop.createdAt)} ${KIND[loop.origin.kind]}${edited}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
+  const why = loop.firedBy
+    ? `; fired by ${flat(loop.firedBy)}`
+    : loop.dueAt !== null && loop.dueAt !== undefined
+      ? `; due at ${minute(loop.dueAt)}`
+      : "";
+  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${minute(loop.createdAt)} ${KIND[loop.origin.kind]}${edited}${why}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
 }
 
 /**
@@ -690,7 +721,7 @@ export class WorkingStore {
     // wake waits for the next occurrence instead of firing again at once.
     const firedAt = before?.fired_at == null ? null : Number(before.fired_at);
     const recent =
-      revisit.onEvent === undefined
+      revisit.onEvent === undefined || revisit.onlyNew === true
         ? undefined
         : (this.#db
             .prepare(
@@ -706,7 +737,9 @@ export class WorkingStore {
       wake_set_at: now,
       wake_seq: Number(before?.wake_seq ?? 0) + 1,
       fired_by: recent?.fired_by ?? null,
-      fired_at: recent ? Number(recent.occurred_at) : firedAt,
+      // A loop that waits for a new occurrence counts its arming as the last firing, so only one after now fires it:
+      // the same rule that keeps a woken loop from firing twice on one occurrence.
+      fired_at: revisit.onlyNew === true ? now : recent ? Number(recent.occurred_at) : firedAt,
       ...fresh,
     };
   }
@@ -980,7 +1013,7 @@ export class WorkingStore {
     };
     const first: Record<Table, string> = {
       loops: `(wake IS NOT NULL AND due_at IS NOT NULL AND due_at <= ${Number(now)}) DESC, (review_by <= ${Number(now)}) DESC, `,
-      orders: `(json_extract(origin, '$.kind') = 'operator') DESC, `,
+      orders: `(coalesce(json_extract(origin, '$.root.kind'), json_extract(origin, '$.kind')) = 'operator') DESC, `,
       notes: "",
     };
     const select = (table: Table, where: Where | undefined) => {
@@ -1069,7 +1102,8 @@ export class WorkingStore {
 
   /**
    * The wake was delivered: the loop is open again with its wake spent. A wake isn't a resolution; the woken turn
-   * closes the loop or sets a new revisit. False when this claimant no longer holds it.
+   * closes the loop or sets a new revisit. False exactly when this claimant's lease was lost, to another tick or to
+   * expiry: the host should log the send as unsettled, not as a wake.
    */
   settleWake(id: string, leaseToken: string, firedBy: string): boolean {
     return this.#tx(() => {
@@ -1133,8 +1167,8 @@ export class WorkingStore {
     const at = Math.min(occurredAt, now);
     return this.#tx(() => {
       // Due: a loop armed by now, so one opened between the event and its recording isn't missed; but a loop armed
-      // after an occurrence older than the recent window is a redelivery's, and waits; and no loop fires twice on the
-      // same occurrence.
+      // after an occurrence older than the recent window is a redelivery's, and waits; and no loop fires on an
+      // occurrence at or before its last firing (for a loop that waits for a new occurrence, its arming).
       const rows = this.#db
         .prepare(
           `UPDATE loops SET due_at = ?, fired_by = ?, fired_at = ?, updated_at = ?

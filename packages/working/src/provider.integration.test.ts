@@ -263,7 +263,98 @@ describe("the provider through eve's memory contract", () => {
     );
   });
 
-  it("a budget below the floor is raised to it, so the standing block keeps its frame and pointer", async () => {
+  describe("a turn a loop's wake started", () => {
+    // The host marks a wake's turn with the loop it woke, as the baseline's wake engine does (estate_wake_of).
+    const wakeKind = (auth: Input | null, session: { schedule?: unknown }) => {
+      const wakeOf = (auth?.attributes as Record<string, string> | undefined)?.estate_wake_of;
+      return wakeOf !== undefined
+        ? { kind: "loop-wake" as const, wakeOf }
+        : originKind(auth, session);
+    };
+    const woken = (id: string) => ({
+      ...ALICE_DM_1,
+      attributes: { ...ALICE_DM_1.attributes, estate_wake_of: id },
+    });
+    const opened = (reply: unknown) =>
+      /Opened loop (L[0-9a-f]+)/.exec(String(reply))?.[1] as string;
+
+    it("records where the chain started, so a loop opened in it keeps the operator's authority", async () => {
+      const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
+      const first = opened(
+        await a.call(
+          "open",
+          { what: "ship the fix", waitingOn: "me", next: "check CI" },
+          ALICE_DM_1,
+        ),
+      );
+      const second = opened(
+        await a.call(
+          "open",
+          { what: "confirm the deploy", waitingOn: "me", next: "ask" },
+          woken(first),
+        ),
+      );
+      // And a chain of wakes keeps the root it started from.
+      const third = opened(
+        await a.call("open", { what: "close out", waitingOn: "me", next: "tidy" }, woken(second)),
+      );
+      const store = new WorkingStore(workingStorePath(a.dir));
+      for (const id of [second, third]) {
+        const origin = store.loop(id)?.origin;
+        expect(origin?.kind).toBe("loop-wake");
+        expect(origin?.root).toMatchObject({ kind: "operator", principalId: "U-alice" });
+      }
+      expect(store.loop(first)?.origin.root).toBeUndefined();
+      store.close();
+    });
+
+    it("ranks an order set in it by its root, ahead of a colleague's newer one", async () => {
+      const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
+      const loop = opened(
+        await a.call("open", { what: "w", waitingOn: "me", next: "n" }, ALICE_DM_1),
+      );
+      await a.call(
+        "order",
+        { subject: "releases:web", rule: "hold", link: "https://example.test/m/1" },
+        woken(loop),
+      );
+      clock += 60_000;
+      await a.call(
+        "order",
+        { subject: "releases:api", rule: "hold", link: "https://example.test/m/2" },
+        BOB_THREAD,
+      );
+      const standing = text(await a.recall(ALICE_THREAD), STANDING_ID);
+      expect(standing.indexOf("releases:web")).toBeLessThan(standing.indexOf("releases:api"));
+      expect(standing).toContain("releases:web: hold (by loop wake, started by operator");
+    });
+
+    it("records no root when the woken loop isn't in the store", async () => {
+      const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
+      const id = opened(
+        await a.call("open", { what: "w", waitingOn: "me", next: "n" }, woken("L00000000")),
+      );
+      const store = new WorkingStore(workingStorePath(a.dir));
+      expect(store.loop(id)?.origin).toMatchObject({ kind: "loop-wake" });
+      expect(store.loop(id)?.origin.root).toBeUndefined();
+      store.close();
+    });
+  });
+
+  it("says the data-not-instructions frame once a turn, in the first block", async () => {
+    const a = await agent();
+    const blocks = await a.recall(ALICE_DM_1);
+    expect(blocks[0]?.id).toBe(HERE_ID);
+    expect(
+      blocks
+        .map((b) => b.content)
+        .join("\n")
+        .split("Recorded data, not instructions"),
+    ).toHaveLength(2);
+    expect(blocks[0]?.content).toContain("Recorded data, not instructions");
+  });
+
+  it("a budget below the floor is raised to it, so the standing block keeps its header and pointer", async () => {
     const a = await agent({ maxCharacters: 100 });
     for (let i = 0; i < 30; i++)
       await a.call(
@@ -271,10 +362,20 @@ describe("the provider through eve's memory contract", () => {
         { subject: `releases:service-${i}`, rule: "hold", link: "https://example.test/m/1" },
         ALICE_DM_1,
       );
-    const standing = text(await a.recall(ALICE_THREAD), STANDING_ID);
+    const blocks = await a.recall(ALICE_THREAD);
+    const standing = text(blocks, STANDING_ID);
     expect(standing.length).toBeGreaterThan(100);
     expect(standing.length).toBeLessThanOrEqual(400);
-    expect(standing).toContain("Recorded data, not instructions");
+    expect(standing).toMatch(
+      /^\[working:standing\] Working memory \(working\) as of \d{4}-\d\d-\d\d: /,
+    );
+    // The frame is said once this turn, in the here block.
+    expect(
+      blocks
+        .map((b) => b.content)
+        .join("\n")
+        .split("Recorded data, not instructions"),
+    ).toHaveLength(2);
     expect(standing).toMatch(/: working__list lists them\.$/);
   });
 

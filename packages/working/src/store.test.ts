@@ -146,7 +146,7 @@ describe("loops", () => {
     const note = wakeOf(s, loop.id);
     expect(note).toMatch(
       new RegExp(
-        `^${LOOP_WAKE_OPENING} \\(${loop.id}, opened 2026-11-01T16:00Z in the operator's own conversation\\): x \\[working:standing\\] Orders: none`,
+        `^${LOOP_WAKE_OPENING} \\(${loop.id}, opened 2026-11-01T16:00Z in the operator's own conversation; due at 2026-11-01T16:00Z\\): x \\[working:standing\\] Orders: none`,
       ),
     );
   });
@@ -164,7 +164,7 @@ describe("loops", () => {
       ),
     );
     expect(wakeOf(s, loop.id)).toContain(
-      "in the operator's own conversation, last changed at a colleague's request): ",
+      "in the operator's own conversation, last changed at a colleague's request; due at 2026-11-01T16:00Z): ",
     );
   });
 
@@ -272,6 +272,22 @@ describe("wakes", () => {
     clock = T0 + 11 * 60_000;
     const late = loopIn(s, dm, { revisit: { onEvent: "build-finished:web" } });
     expect(late.dueAt).toBeNull();
+  });
+
+  it("a loop waiting on a retry isn't woken by the run it retries, only by a later one, and its wake says which", () => {
+    const s = store();
+    s.eventOccurred("build-finished:web", T0, "run 7", T0);
+    clock = T0 + 2 * 60_000;
+    // Without onlyNew, run 7 would make it due at once (the case above).
+    const retry = loopIn(s, dm, { revisit: { onEvent: "build-finished:web", onlyNew: true } });
+    expect(retry).toMatchObject({ dueAt: null, firedBy: null });
+    // Run 7's completion recorded late, after the loop was armed, still doesn't wake it.
+    clock = T0 + 3 * 60_000;
+    expect(s.eventOccurred("build-finished:web", T0, "run 7", clock)).toBe(0);
+    clock = T0 + 10 * 60_000;
+    expect(s.eventOccurred("build-finished:web", clock, "run 8", clock)).toBe(1);
+    expect(s.loop(retry.id)).toMatchObject({ dueAt: clock, firedBy: "run 8" });
+    expect(wakeOf(s, retry.id)).toContain("; fired by run 8): ");
   });
 
   it("an event with a time that isn't a number is ignored", () => {
