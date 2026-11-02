@@ -28,7 +28,6 @@ import {
   STANDING_ID,
 } from "./render.js";
 import {
-  authorityOf,
   DEFAULT_LINK_SCHEMES,
   type ListView,
   linkRule,
@@ -39,6 +38,7 @@ import {
   parseWhen,
   type Revisit,
   type WorkingStore,
+  wakeAuthorityOf,
 } from "./store.js";
 
 export { HERE_ID, STANDING_ID } from "./render.js";
@@ -270,7 +270,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
     const wakeOf = typeof classified === "string" ? undefined : classified.wakeOf;
     // A loop the store doesn't have (closed and pruned, or never this store's) gives no root: the turn's own stands.
     const woken = wakeOf === undefined ? undefined : get().loop(wakeOf);
-    const root = woken === undefined ? undefined : authorityOf(woken.origin);
+    const root = woken === undefined ? undefined : wakeAuthorityOf(woken);
     return {
       principalId: auth?.principalId ?? null,
       kind,

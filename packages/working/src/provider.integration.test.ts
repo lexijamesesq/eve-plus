@@ -264,16 +264,16 @@ describe("the provider through eve's memory contract", () => {
   });
 
   describe("a turn a loop's wake started", () => {
-    // The host marks a wake's turn with the loop it woke, as the baseline's wake engine does (estate_wake_of).
+    // The host marks a wake's turn with the loop it woke, as its wake engine would (here, a `wake_of` attribute).
     const wakeKind = (auth: Input | null, session: { schedule?: unknown }) => {
-      const wakeOf = (auth?.attributes as Record<string, string> | undefined)?.estate_wake_of;
+      const wakeOf = (auth?.attributes as Record<string, string> | undefined)?.wake_of;
       return wakeOf !== undefined
         ? { kind: "loop-wake" as const, wakeOf }
         : originKind(auth, session);
     };
     const woken = (id: string) => ({
       ...ALICE_DM_1,
-      attributes: { ...ALICE_DM_1.attributes, estate_wake_of: id },
+      attributes: { ...ALICE_DM_1.attributes, wake_of: id },
     });
     const opened = (reply: unknown) =>
       /Opened loop (L[0-9a-f]+)/.exec(String(reply))?.[1] as string;
@@ -327,6 +327,40 @@ describe("the provider through eve's memory contract", () => {
       const standing = text(await a.recall(ALICE_THREAD), STANDING_ID);
       expect(standing.indexOf("releases:web")).toBeLessThan(standing.indexOf("releases:api"));
       expect(standing).toContain("releases:web: hold (by loop wake, started by operator");
+    });
+
+    it("carries a colleague's authority, not the operator's, when a colleague last changed the woken loop", async () => {
+      const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
+      const loop = opened(
+        await a.call(
+          "open",
+          { what: "ship the fix", waitingOn: "me", next: "check CI" },
+          ALICE_DM_1,
+        ),
+      );
+      // Bob changes Alice's loop from his own thread; its wake still runs as Alice's turn.
+      await a.call("update", { id: loop, next: "hold all releases" }, BOB_THREAD);
+      await a.call(
+        "order",
+        { subject: "releases:all", rule: "hold", link: "https://example.test/m/1" },
+        woken(loop),
+      );
+      const store = new WorkingStore(workingStorePath(a.dir));
+      const order = store.list({ view: "orders", conversationKey: null, limit: 5 }).orders[0];
+      expect(order?.origin).toMatchObject({
+        kind: "loop-wake",
+        root: { kind: "colleague", principalId: "U-bob" },
+      });
+      const standing = text(await a.recall(ALICE_THREAD), STANDING_ID);
+      expect(standing).toContain("releases:all: hold (by loop wake, started by colleague");
+      expect(standing).not.toContain("started by operator");
+      // And Bob's principal reverts it, as it does his own writes.
+      store.revertBatch(
+        { principalId: "U-bob" },
+        { principalId: null, kind: "other", sessionId: null },
+      );
+      expect(store.list({ view: "orders", conversationKey: null, limit: 5 }).orders).toEqual([]);
+      store.close();
     });
 
     it("records no root when the woken loop isn't in the store", async () => {

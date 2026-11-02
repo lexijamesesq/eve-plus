@@ -45,6 +45,18 @@ export interface Origin {
 /** The origin authority follows: a chain's root when it has one, else the write's own. */
 export const authorityOf = (origin: Origin): Origin => origin.root ?? origin;
 
+/**
+ * The authority a loop's wake carries into its turn. A loop last changed by someone other than its opener, another
+ * principal or another kind of turn, carries the editor's authority, not the opener's: an edit can't borrow the
+ * opener's rank for whatever its wake does next.
+ */
+export function wakeAuthorityOf(loop: Pick<Loop, "origin" | "lastEditedBy">): Origin {
+  const opener = authorityOf(loop.origin);
+  if (loop.lastEditedBy === null) return opener;
+  const editor = authorityOf(loop.lastEditedBy);
+  return editor.principalId === opener.principalId && editor.kind === opener.kind ? opener : editor;
+}
+
 export type LoopStatus = "open" | "delivering" | "done" | "dropped";
 export type OrderStatus = "active" | "lifted" | "replaced";
 /** A loop's wake: due on its time or event, or recorded where the host can't hand off and shown as due instead. */
@@ -485,7 +497,7 @@ export function followupNoteOf(
       ? `, last changed ${KIND[loop.lastEditedBy.kind]}`
       : "";
   const why = loop.firedBy
-    ? `; fired by ${flat(loop.firedBy)}`
+    ? `; fired by ${clip(loop.firedBy, 80)}`
     : loop.dueAt !== null && loop.dueAt !== undefined
       ? `; due at ${minute(loop.dueAt)}`
       : "";
@@ -720,6 +732,14 @@ export class WorkingStore {
     // A recent occurrence counts, except the one that already fired this loop: re-arming on the same event after a
     // wake waits for the next occurrence instead of firing again at once.
     const firedAt = before?.fired_at == null ? null : Number(before.fired_at);
+    // For a loop that waits for a new occurrence, the cut is the latest occurrence recorded when it's armed (the run
+    // being retried), so a new run's own clock running a little behind can't hide it; with none recorded, the arming.
+    const latest =
+      revisit.onEvent === undefined || revisit.onlyNew !== true
+        ? undefined
+        : (this.#db
+            .prepare("SELECT occurred_at FROM event_occurrences WHERE event = ?")
+            .get(revisit.onEvent) as { occurred_at: number } | undefined);
     const recent =
       revisit.onEvent === undefined || revisit.onlyNew === true
         ? undefined
@@ -737,9 +757,12 @@ export class WorkingStore {
       wake_set_at: now,
       wake_seq: Number(before?.wake_seq ?? 0) + 1,
       fired_by: recent?.fired_by ?? null,
-      // A loop that waits for a new occurrence counts its arming as the last firing, so only one after now fires it:
-      // the same rule that keeps a woken loop from firing twice on one occurrence.
-      fired_at: revisit.onlyNew === true ? now : recent ? Number(recent.occurred_at) : firedAt,
+      fired_at:
+        revisit.onlyNew === true
+          ? Math.max(latest === undefined ? now : Number(latest.occurred_at), firedAt ?? -1)
+          : recent
+            ? Number(recent.occurred_at)
+            : firedAt,
       ...fresh,
     };
   }
@@ -1219,9 +1242,22 @@ export class WorkingStore {
       const now = this.#now();
       const matched = this.#db
         .prepare(
-          `SELECT * FROM events WHERE ${fields.map((f) => `json_extract(origin, '$.${f}') = ?`).join(" AND ")} ORDER BY seq`,
+          `SELECT * FROM events WHERE ${fields
+            .map((f) =>
+              // A write whose authority was a principal's, through a wake, is that principal's to revert too.
+              f === "principalId"
+                ? "(json_extract(origin, '$.principalId') = ? OR json_extract(origin, '$.root.principalId') = ?)"
+                : `json_extract(origin, '$.${f}') = ?`,
+            )
+            .join(" AND ")} ORDER BY seq`,
         )
-        .all(...fields.map((f) => filter[f] as string)) as Row[];
+        .all(
+          ...fields.flatMap((f) =>
+            f === "principalId"
+              ? [filter[f] as string, filter[f] as string]
+              : [filter[f] as string],
+          ),
+        ) as Row[];
       const first = new Map<string, Row>();
       for (const e of matched) {
         const key = `${e.entry_kind}\u0000${e.entry_id}`;
