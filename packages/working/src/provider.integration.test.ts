@@ -13,7 +13,7 @@ import {
   workingMemory,
   workingToolSpecs,
 } from "./provider.js";
-import { WorkingStore, workingStorePath } from "./store.js";
+import { type Loop, WorkingStore, wakeAuthorityOf, workingStorePath } from "./store.js";
 
 // eve hands the provider full runtime contexts; these tests drive it with only the fields it reads. provider.ts is
 // checked against eve's own contract when it compiles, so this seam is narrowed to what the tests call.
@@ -426,6 +426,70 @@ describe("the provider through eve's memory contract", () => {
         { principalId: null, kind: "other", sessionId: null },
       );
       expect(store.list({ view: "orders", conversationKey: null, limit: 5 }).orders).toEqual([]);
+      store.close();
+    });
+
+    it("an onlyNew revisit set through the tools isn't woken by the occurrence just before it, and refuses a time", async () => {
+      const a = await agent();
+      const store = new WorkingStore(workingStorePath(a.dir));
+      store.eventOccurred("build-finished:web", clock - 60_000, "run 7", clock);
+      const revisit = { on: "build-finished:web", onlyNew: true };
+      const retry = opened(
+        await a.call("open", { what: "retry", waitingOn: "ci", next: "n", revisit }, ALICE_DM_1),
+      );
+      const plain = opened(
+        await a.call(
+          "open",
+          { what: "plain", waitingOn: "ci", next: "n", revisit: { on: "build-finished:web" } },
+          ALICE_DM_1,
+        ),
+      );
+      expect(store.loop(retry)?.dueAt).toBeNull();
+      expect(store.loop(plain)?.dueAt).not.toBeNull();
+      const timed = await a.call(
+        "open",
+        {
+          what: "timed",
+          waitingOn: "ci",
+          next: "n",
+          revisit: { when: "2026-11-02T09:00", onlyNew: true },
+        },
+        ALICE_DM_1,
+      );
+      expect(JSON.stringify(timed)).toContain("`onlyNew` goes with `on`");
+      store.close();
+    });
+
+    it("reads a loop a colleague edited before floors were kept as the colleague's, before and after the operator's edit", async () => {
+      const a = await agent({ originKind: wakeKind as WorkingMemoryOptions["originKind"] });
+      const loop = opened(
+        await a.call(
+          "open",
+          { what: "ship the fix", waitingOn: "me", next: "check CI" },
+          ALICE_DM_1,
+        ),
+      );
+      await a.call("update", { id: loop, next: "hold all releases" }, BOB_THREAD);
+      // As 0.1.1 stored it: the last editor's plain origin, with no floor.
+      const raw = new DatabaseSync(workingStorePath(a.dir));
+      raw
+        .prepare(
+          "UPDATE loops SET last_edited_by = json_remove(last_edited_by, '$.floor') WHERE id = ?",
+        )
+        .run(loop);
+      raw.close();
+      await a.call(
+        "order",
+        { subject: "releases:all", rule: "hold", link: "https://example.test/m/1" },
+        woken(loop),
+      );
+      expect(await rootOfOrder(a)).toMatchObject({ kind: "colleague", principalId: "U-bob" });
+      await a.call("update", { id: loop, waitingOn: "alice" }, ALICE_DM_1);
+      const store = new WorkingStore(workingStorePath(a.dir));
+      expect(wakeAuthorityOf(store.loop(loop) as Loop)).toMatchObject({
+        kind: "colleague",
+        principalId: "U-bob",
+      });
       store.close();
     });
 

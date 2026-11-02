@@ -35,9 +35,8 @@ export interface Origin {
   readonly turnSequence?: number;
   readonly callId?: string;
   /**
-   * Where a chain of wakes started: on a write in a turn a loop's wake started, the woken loop's own root, or its
-   * origin when it has none. Authority (whose order comes first) follows the root, so a wake can't demote the
-   * operator's request it carries forward.
+   * The authority a write in a wake's turn carries: the woken loop's `wakeAuthorityOf`, the lowest among its opener
+   * and everyone who has changed it since, which only goes down. Authority (whose order comes first) follows it.
    */
   readonly root?: Origin;
   /** On a loop's last editor only: the lowest authority among its opener and every editor since (wakeAuthorityOf). */
@@ -53,7 +52,16 @@ function editedBy(before: Row, editor: Origin): Origin {
   const last =
     before.last_edited_by == null ? null : (JSON.parse(String(before.last_edited_by)) as Origin);
   const { floor: _, ...plain } = editor;
-  return { ...plain, floor: lower(last?.floor ?? authorityOf(opener), authorityOf(editor)) };
+  return { ...plain, floor: lower(floorOf(opener, last), authorityOf(editor)) };
+}
+
+/**
+ * A loop's floor so far. A last editor recorded before floors were kept (0.1.1) has none, so it reads as the lower of
+ * the opener and that editor: the conservative reading, since edits before it are no longer known.
+ */
+function floorOf(opener: Origin, last: Origin | null): Origin {
+  if (last === null) return authorityOf(opener);
+  return last.floor ?? lower(authorityOf(opener), authorityOf(last));
 }
 
 // How far an authority reaches, for the lowest-of rule below: the operator, then a scheduled run, then a colleague,
@@ -71,7 +79,7 @@ const lower = (a: Origin, b: Origin): Origin => (rank(b) < rank(a) ? b : a);
  * through its wakes; the operator sets orders directly.
  */
 export function wakeAuthorityOf(loop: Pick<Loop, "origin" | "lastEditedBy">): Origin {
-  return loop.lastEditedBy?.floor ?? authorityOf(loop.origin);
+  return floorOf(loop.origin, loop.lastEditedBy);
 }
 
 export type LoopStatus = "open" | "delivering" | "done" | "dropped";
@@ -165,7 +173,8 @@ export interface Revisit {
   readonly dueAt?: number;
   readonly onEvent?: string;
   /**
-   * Only an occurrence of `onEvent` after the loop is armed fires it. By default an occurrence in the last ten
+   * Only an occurrence of `onEvent` later than the latest one recorded when the loop is armed (with none recorded,
+   * later than the arming) fires it. By default an occurrence in the last ten
    * minutes fires it at once, for a loop opened just after its event; a loop opened to wait on a retry of the same
    * event wants this, so the previous run's completion doesn't wake it.
    */
@@ -1211,7 +1220,7 @@ export class WorkingStore {
     return this.#tx(() => {
       // Due: a loop armed by now, so one opened between the event and its recording isn't missed; but a loop armed
       // after an occurrence older than the recent window is a redelivery's, and waits; and no loop fires on an
-      // occurrence at or before its last firing (for a loop that waits for a new occurrence, its arming).
+      // occurrence at or before its last firing (for a loop that waits for a new occurrence, the latest occurrence recorded when it was armed, or its arming).
       const rows = this.#db
         .prepare(
           `UPDATE loops SET due_at = ?, fired_by = ?, fired_at = ?, updated_at = ?

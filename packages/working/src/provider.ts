@@ -43,7 +43,6 @@ import {
 
 export { HERE_ID, STANDING_ID } from "./render.js";
 
-/** What the turn is beyond its auth, for classifying where a write came from. */
 /**
  * What the host's `originKind` answers: the turn's kind, or, for a turn a loop's wake started, its kind (`loop-wake`
  * for a time revisit, `event-wake` for an event) with `wakeOf`, the woken loop's id, so a write in it records where
@@ -53,6 +52,7 @@ export type OriginClassification =
   | OriginKind
   | { readonly kind: OriginKind; readonly wakeOf?: string };
 
+/** What the turn is beyond its auth, for classifying where a write came from. */
 export interface OriginSession {
   readonly schedule?: unknown;
   readonly parent?: unknown;
@@ -136,7 +136,7 @@ export function toolSpecs(schemes: readonly string[] = DEFAULT_LINK_SCHEMES) {
         .boolean()
         .optional()
         .describe(
-          "with `on`: wake only on an occurrence after now, not one in the last ten minutes, e.g. waiting on a retry of an event that just happened",
+          "with `on`: wake only on an occurrence later than the latest one recorded now (with none, later than now), not one in the last ten minutes, e.g. waiting on a retry of an event that just happened",
         ),
     })
     .strict()
@@ -325,6 +325,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
     if (r.when !== undefined && r.on !== undefined)
       return { refused: "give `when` or `on` for a revisit, not both" };
     if (r.when !== undefined) {
+      if (r.onlyNew !== undefined) return { refused: "`onlyNew` goes with `on`, an event revisit" };
       const t = at(r.when);
       return t.refused !== undefined ? { refused: t.refused } : { dueAt: t.at };
     }
