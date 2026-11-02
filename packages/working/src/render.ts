@@ -32,6 +32,8 @@ export const KIND: Record<OriginKind, string> = {
   scheduled: "by a scheduled run",
   webhook: "by a webhook turn",
   delegated: "by a delegated task",
+  "loop-wake": "in a turn a loop's wake started",
+  "event-wake": "in a turn an event's wake started",
   other: "in a conversation",
 };
 const SHORT: Record<OriginKind, string> = {
@@ -40,12 +42,20 @@ const SHORT: Record<OriginKind, string> = {
   scheduled: "by scheduled run",
   webhook: "by webhook",
   delegated: "by delegated task",
+  "loop-wake": "by loop wake",
+  "event-wake": "by event wake",
   other: "in a conversation",
 };
 
+// Where a write's chain of wakes started, when that isn't the write's own kind: who the authority is.
+const startedBy = (o: Origin, short: boolean): string =>
+  o.root !== undefined && o.root.kind !== o.kind
+    ? `, started ${(short ? SHORT : KIND)[o.root.kind]}`
+    : "";
+
 /** Where a write came from, with the principal beside the kind. */
 export function setBy(o: Origin, at: number): string {
-  return `${KIND[o.kind]}${o.principalId ? ` (principal ${o.principalId})` : ""} on ${day(at)}`;
+  return `${KIND[o.kind]}${startedBy(o, false)}${o.principalId ? ` (principal ${o.principalId})` : ""} on ${day(at)}`;
 }
 
 export function describeAddress(a: Address): string {
@@ -108,7 +118,8 @@ export function shortLoopLine(loop: Loop, now: number): string {
 }
 
 function orderMark(order: Order, now: number): string {
-  if (order.until !== null && order.until <= now) return ` [until ${day(order.until)}, passed]`;
+  if (order.until !== null && order.until <= now)
+    return ` [until ${day(order.until)}, passed: no longer binding]`;
   if (order.reviewBy <= now) return ` [STALE since ${day(order.reviewBy)}]`;
   return order.until !== null ? ` [until ${day(order.until)}]` : "";
 }
@@ -120,7 +131,7 @@ export function orderLine(order: Order, now: number): string {
 
 /** An order on one short line, for the standing block: who set it by kind, and when. */
 export function shortOrderLine(order: Order, now: number): string {
-  return `• ${flat(order.subject)}: ${clip(order.rule, 60)} (${SHORT[order.origin.kind]} ${day(order.createdAt)})${orderMark(order, now)}`;
+  return `• ${flat(order.subject)}: ${clip(order.rule, 60)} (${SHORT[order.origin.kind]}${startedBy(order.origin, true)} ${day(order.createdAt)})${orderMark(order, now)}`;
 }
 
 export function liftedLine(order: Order): string {
@@ -155,7 +166,7 @@ const NAMES_BUDGET = 240;
  *
  * The room kept for the closing line is what that line actually needs, not a fixed allowance: lay out with room for
  * the pointer alone, measure the closing line that layout produces, and lay out again with room for it until it fits.
- * The header, with its frame, is never given up for the closing line: when the two don't fit together, the closing
+ * The header, and with it the frame when the block carries one, is never given up for the closing line: when the two don't fit together, the closing
  * line drops the names it lists and keeps its counts and pointer.
  * A fixed allowance large enough for every name hid entries that would have fit. The pointer is reserved first and
  * never cut; if the layouts don't settle, the body is cut, never the header or the closing line's counts.
@@ -177,7 +188,7 @@ export function fitBlock(
   const cap = (text: string, room: number) =>
     text.length > room ? `${text.slice(0, Math.max(0, room - 1))}…` : text;
   if (!laid.tail) return cap(laid.lines.join("\n"), max);
-  // The header and its frame come first; then the closing line, without its names if they don't fit beside the
+  // The header (with the frame, in the block that carries it) comes first; then the closing line, without its names if they don't fit beside the
   // header; the body gets what remains. Below the provider's floor even that can't fit, and the whole block is capped.
   const tail = head.length + 1 + laid.tail.length <= max ? laid.tail : laid.plainTail;
   const room = max - head.length - tail.length - 2;
@@ -288,7 +299,7 @@ export function renderHere(v: RecallView): string {
  * every turn more than a minute apart. An unchanged block within a day is byte-identical and stays where it is.
  */
 export function renderStanding(v: RecallView): string {
-  const header = `[${STANDING_ID}] Working memory (${v.slot}) as of ${day(v.now)}: standing orders, notes, and loops open elsewhere${v.readOnly ? READ_ONLY : ""}. ${FRAME}`;
+  const header = `[${STANDING_ID}] Working memory (${v.slot}) as of ${day(v.now)}: standing orders, notes, and loops open elsewhere${v.readOnly ? READ_ONLY : ""}.`;
   const urgent = (l: Loop) => (isDue(l, v.now) ? 0 : isStale(l, v.now) ? 1 : 2);
   const elsewhere = [...v.elsewhere.loops].sort((a, b) => urgent(a) - urgent(b));
   const sections: Section[] = [

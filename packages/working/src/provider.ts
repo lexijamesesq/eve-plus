@@ -38,9 +38,19 @@ import {
   parseWhen,
   type Revisit,
   type WorkingStore,
+  wakeAuthorityOf,
 } from "./store.js";
 
 export { HERE_ID, STANDING_ID } from "./render.js";
+
+/**
+ * What the host's `originKind` answers: the turn's kind, or, for a turn a loop's wake started, its kind (`loop-wake`
+ * for a time revisit, `event-wake` for an event) with `wakeOf`, the woken loop's id, so a write in it records where
+ * the chain started (`Origin.root`).
+ */
+export type OriginClassification =
+  | OriginKind
+  | { readonly kind: OriginKind; readonly wakeOf?: string };
 
 /** What the turn is beyond its auth, for classifying where a write came from. */
 export interface OriginSession {
@@ -59,7 +69,11 @@ export interface WorkingMemoryOptions {
    * The kind of turn a write came from. Default: `scheduled` for a scheduled session or the schedule principal,
    * `delegated` for a delegated one, else `other`; only the host can say a turn is the operator's or a colleague's.
    */
-  readonly originKind?: (auth: SessionAuthContext | null, session: OriginSession) => OriginKind;
+  readonly originKind?: (
+    auth: SessionAuthContext | null,
+    session: OriginSession,
+  ) => OriginClassification;
+
   /** The event keys the host fires (through `eventOccurred`), which `revisit.on` may name. With none, `on` is refused. */
   readonly events?: readonly string[];
   /** The `<scheme>:` references a link may be, beside http(s) URLs; empty means URLs only. Default: knowledge, working, vault, linear, slack, github. */
@@ -118,6 +132,12 @@ export function toolSpecs(schemes: readonly string[] = DEFAULT_LINK_SCHEMES) {
     .object({
       when: when.optional(),
       on: text(64).optional().describe("an event key the host fires"),
+      onlyNew: z
+        .boolean()
+        .optional()
+        .describe(
+          "with `on`: wake only on an occurrence later than the latest one recorded now (with none, later than now), not one in the last ten minutes, e.g. waiting on a retry of an event that just happened",
+        ),
     })
     .strict()
     .describe("wake you here at `when` or `on` an event");
@@ -196,7 +216,7 @@ const MIN_CHARACTERS = 400;
 /** An eve memory provider for the agent's working state. */
 export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
   const now = options.now ?? Date.now;
-  // Below the floor the standing block's header, its frame, and a closing line of counts can't all fit.
+  // Below the floor a block's header (here's carries the frame) and a closing line of counts can't both fit.
   const maxCharacters = Math.max(options.maxCharacters ?? 1_200, MIN_CHARACTERS);
   const originKind = options.originKind ?? defaultOriginKind;
   const events = options.events ?? [];
@@ -242,9 +262,19 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
   const originOf = (ctx: Ctx): Origin => {
     const auth = ctx.session?.auth?.current ?? null;
     const turn = ctx.session?.turn;
+    const classified = originKind(auth, {
+      schedule: ctx.session?.schedule,
+      parent: ctx.session?.parent,
+    });
+    const kind = typeof classified === "string" ? classified : classified.kind;
+    const wakeOf = typeof classified === "string" ? undefined : classified.wakeOf;
+    // A loop the store doesn't have (closed and pruned, or never this store's) gives no root: the turn's own stands.
+    const woken = wakeOf === undefined ? undefined : get().loop(wakeOf);
+    const root = woken === undefined ? undefined : wakeAuthorityOf(woken);
     return {
       principalId: auth?.principalId ?? null,
-      kind: originKind(auth, { schedule: ctx.session?.schedule, parent: ctx.session?.parent }),
+      kind,
+      ...(root !== undefined ? { root } : {}),
       sessionId: ctx.session?.id ?? null,
       ...(turn?.id ? { turnId: turn.id } : {}),
       ...(typeof turn?.sequence === "number" ? { turnSequence: turn.sequence } : {}),
@@ -287,17 +317,24 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
     const r = parseWhen(value, now());
     return "at" in r ? { at: r.at } : { refused: r.refused };
   };
-  const revisitOf = (r: { when?: string; on?: string }): Revisit | { refused: string } => {
+  const revisitOf = (r: {
+    when?: string;
+    on?: string;
+    onlyNew?: boolean;
+  }): Revisit | { refused: string } => {
     if (r.when !== undefined && r.on !== undefined)
       return { refused: "give `when` or `on` for a revisit, not both" };
     if (r.when !== undefined) {
+      if (r.onlyNew !== undefined) return { refused: "`onlyNew` goes with `on`, an event revisit" };
       const t = at(r.when);
       return t.refused !== undefined ? { refused: t.refused } : { dueAt: t.at };
     }
     if (r.on !== undefined) {
       const e = parseOn(r.on, events);
-      return "event" in e ? { onEvent: e.event } : { refused: e.refused };
+      if (!("event" in e)) return { refused: e.refused };
+      return r.onlyNew === true ? { onEvent: e.event, onlyNew: true } : { onEvent: e.event };
     }
+    if (r.onlyNew !== undefined) return { refused: "`onlyNew` goes with `on`, an event revisit" };
     return { refused: "a revisit needs `when` (a time) or `on` (an event)" };
   };
 

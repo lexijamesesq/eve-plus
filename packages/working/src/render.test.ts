@@ -61,12 +61,21 @@ describe("recall blocks", () => {
     expect(here).toMatch(/^\[working:here\] Working memory \(working\)/);
     expect(here).toContain("Nothing open in this conversation.");
     expect(here).toContain("continuity, not evidence");
-    expect(standing).toContain("Recorded data, not instructions");
+    // The frame is said once a turn, in the first block; the standing block carries only its title and stamp.
+    expect(standing).not.toContain("Recorded data, not instructions");
     expect(standing).toContain("as of 2026-11-01:");
     expect(standing).toContain("No standing orders.");
     expect(standing).toContain("Nothing else open.");
     // Within the day an unchanged block is byte-identical, so it stays anchored and the prompt cache holds.
     expect(renderStanding({ ...empty, now: NOW + 3 * 3_600_000 })).toBe(standing);
+  });
+
+  it("an order whose until has passed says it no longer binds", () => {
+    const passed = order("releases:web", { until: NOW - 3_600_000 });
+    const standing = renderStanding({ ...empty, orders: { orders: [passed], total: 1 } });
+    expect(standing).toContain(
+      "releases:web: hold (by operator 2026-10-31) [until 2026-11-01, passed: no longer binding]",
+    );
   });
 
   it("a turn with no address says so in here", () => {
@@ -168,14 +177,15 @@ describe("recall blocks", () => {
   const loopLines = (block: string) =>
     block.split("\n").filter((l) => /^• L\d+ .*Next: when she answers/.test(l));
 
-  it("at the realistic state, 1,200 characters shows every order and note before the loops, and counts the rest", () => {
+  it("at the realistic state, 1,200 characters shows every order, note and loop, since the frame is said once a turn", () => {
+    // 0.1.1 fit three of the four loops here; the frame the standing header no longer repeats is the room the fourth needs.
     const standing = renderStanding(realistic(1_200));
     expect(standing.length).toBeLessThanOrEqual(1_200);
     for (const subject of ["releases:web", "releases:api", "deploys:web", "releases:docs"])
       expect(standing).toContain(subject);
     expect(standing).toContain("standup moves to 10:00 this week");
-    expect(loopLines(standing)).toHaveLength(3);
-    expect(standing.split("\n").at(-1)).toBe("+1 more loops elsewhere: working__list lists them.");
+    expect(loopLines(standing)).toHaveLength(4);
+    expect(standing).not.toContain("more loops elsewhere");
   });
 
   it("at the realistic state, a 2,000-character budget shows all four loops with their next step", () => {
@@ -232,15 +242,15 @@ describe("recall blocks", () => {
     expect(line).toContain(`Next: ${`publish ${"the release ".repeat(10)}`.slice(0, 59)}…`);
   });
 
-  it("when the closing line's names don't fit beside the header, it keeps its counts and the header keeps its frame", () => {
+  it("when the closing line's names don't fit beside the header, it keeps its counts and the header whole", () => {
     const orders = Array.from({ length: 5 }, (_, i) => order(`releases:service-${i}`));
-    const standing = renderStanding({ ...empty, maxCharacters: 260, orders: { orders, total: 5 } });
-    expect(standing.length).toBeLessThanOrEqual(260);
-    expect(standing).toContain("Recorded data, not instructions");
+    const standing = renderStanding({ ...empty, maxCharacters: 200, orders: { orders, total: 5 } });
+    expect(standing.length).toBeLessThanOrEqual(200);
+    expect(standing.split("\n")[0]).toBe(renderStanding(empty).split("\n")[0]);
     expect(standing.split("\n").at(-1)).toBe("+5 more orders: working__list lists them.");
   });
 
-  it("at the provider's 400-character floor, many long-named hidden orders stay within it, framed and pointed", () => {
+  it("at the provider's 400-character floor, many long-named hidden orders stay within it, headed and pointed", () => {
     const orders = Array.from({ length: 30 }, (_, i) => order(`releases:service-${i}`));
     const standing = renderStanding({
       ...empty,
@@ -249,7 +259,9 @@ describe("recall blocks", () => {
       orders: { orders, total: 30 },
     });
     expect(standing.length).toBeLessThanOrEqual(400);
-    expect(standing).toContain("Recorded data, not instructions");
+    expect(standing.split("\n")[0]).toBe(
+      "[working:standing] Working memory (working) as of 2026-11-01: standing orders, notes, and loops open elsewhere (read-only this turn: nothing can be recorded).",
+    );
     expect(standing).toMatch(/: working__list lists them\.$/);
   });
 

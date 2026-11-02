@@ -16,7 +16,15 @@ import { clip, flat, KIND, minute } from "./render.js";
 export { type Address, addressKey } from "./addresses.js";
 
 /** Who a write came from, by the kind of turn that made it. The host classifies; the package never asks the model. */
-export type OriginKind = "operator" | "colleague" | "scheduled" | "webhook" | "delegated" | "other";
+export type OriginKind =
+  | "operator"
+  | "colleague"
+  | "scheduled"
+  | "webhook"
+  | "delegated"
+  | "loop-wake"
+  | "event-wake"
+  | "other";
 
 /** The attribution every write records, from eve's session and tool context. */
 export interface Origin {
@@ -26,6 +34,52 @@ export interface Origin {
   readonly turnId?: string;
   readonly turnSequence?: number;
   readonly callId?: string;
+  /**
+   * The authority a write in a wake's turn carries: the woken loop's `wakeAuthorityOf`, the lowest among its opener
+   * and everyone who has changed it since, which only goes down. Authority (whose order comes first) follows it.
+   */
+  readonly root?: Origin;
+  /** On a loop's last editor only: the lowest authority among its opener and every editor since (wakeAuthorityOf). */
+  readonly floor?: Origin;
+}
+
+/** The origin authority follows: a chain's root when it has one, else the write's own. */
+export const authorityOf = (origin: Origin): Origin => origin.root ?? origin;
+
+/** A loop's new last editor, carrying the floor its edit leaves: the lower of the floor it found and the editor's own. */
+function editedBy(before: Row, editor: Origin): Origin {
+  const opener = JSON.parse(String(before.origin)) as Origin;
+  const last =
+    before.last_edited_by == null ? null : (JSON.parse(String(before.last_edited_by)) as Origin);
+  const { floor: _, ...plain } = editor;
+  return { ...plain, floor: lower(floorOf(opener, last), authorityOf(editor)) };
+}
+
+/**
+ * A loop's floor so far. A last editor recorded before floors were kept (0.1.1) has none, so it reads as the lower of
+ * the opener and that editor: the conservative reading, since edits before it are no longer known.
+ */
+function floorOf(opener: Origin, last: Origin | null): Origin {
+  if (last === null) return authorityOf(opener);
+  return last.floor ?? lower(authorityOf(opener), authorityOf(last));
+}
+
+// How far an authority reaches, for the lowest-of rule below: the operator, then a scheduled run, then a colleague,
+// then every other kind of turn.
+const RANK: Partial<Record<OriginKind, number>> = { operator: 3, scheduled: 2, colleague: 1 };
+const rank = (o: Origin): number => RANK[o.kind] ?? 0;
+
+/** The lower of two authorities; the first on a tie, so an equal edit keeps the floor it found. */
+const lower = (a: Origin, b: Origin): Origin => (rank(b) < rank(a) ? b : a);
+
+/**
+ * The authority a loop's wake carries into its turn: the lowest among its opener and everyone who has changed it since
+ * it was opened, kept as the loop's floor. It only goes down. No later edit raises it, the operator's included, and
+ * only opening a new loop starts afresh. So a loop any colleague has shaped never speaks with the operator's authority
+ * through its wakes; the operator sets orders directly.
+ */
+export function wakeAuthorityOf(loop: Pick<Loop, "origin" | "lastEditedBy">): Origin {
+  return floorOf(loop.origin, loop.lastEditedBy);
 }
 
 export type LoopStatus = "open" | "delivering" | "done" | "dropped";
@@ -118,6 +172,13 @@ export interface ClaimedLoop {
 export interface Revisit {
   readonly dueAt?: number;
   readonly onEvent?: string;
+  /**
+   * Only an occurrence of `onEvent` later than the latest one recorded when the loop is armed (with none recorded,
+   * later than the arming) fires it. By default an occurrence in the last ten
+   * minutes fires it at once, for a loop opened just after its event; a loop opened to wait on a retry of the same
+   * event wants this, so the previous run's completion doesn't wake it.
+   */
+  readonly onlyNew?: boolean;
 }
 
 export interface OpenInput {
@@ -168,7 +229,10 @@ export interface RevertFilter {
   readonly sessionId?: string;
   readonly turnId?: string;
   readonly callId?: string;
+  /** A principal's writes, its own and those it was the authority for through a wake (`origin.root`). */
   readonly principalId?: string;
+  /** A kind of turn's writes, its own and those it was the authority for through a wake. */
+  readonly kind?: OriginKind;
 }
 
 /** A loop brought in from another store by the host, once: `externalId` is its id there. */
@@ -194,6 +258,7 @@ export interface ImportedLoop {
 
 export interface WorkingStoreOptions {
   readonly now?: () => number;
+
   /** Days before an entry is marked stale. Defaults: loop 7, order 14, note 7 (a note expires then). */
   readonly reviewAfterDays?: {
     readonly loop?: number;
@@ -451,6 +516,8 @@ export const LOOP_WAKE_OPENING = "A loop you opened is due";
 export function followupNoteOf(
   loop: Pick<Loop, "id" | "what" | "next" | "links" | "createdAt" | "origin"> & {
     readonly lastEditedBy?: Origin | null;
+    readonly firedBy?: string | null;
+    readonly dueAt?: number | null;
   },
 ): string {
   const links = loop.links.length > 0 ? `\nLinks: ${loop.links.map(flat).join(" ")}` : "";
@@ -458,7 +525,12 @@ export function followupNoteOf(
     loop.lastEditedBy && loop.lastEditedBy.kind !== loop.origin.kind
       ? `, last changed ${KIND[loop.lastEditedBy.kind]}`
       : "";
-  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${minute(loop.createdAt)} ${KIND[loop.origin.kind]}${edited}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
+  const why = loop.firedBy
+    ? `; fired by ${clip(loop.firedBy, 80)}`
+    : loop.dueAt !== null && loop.dueAt !== undefined
+      ? `; due at ${minute(loop.dueAt)}`
+      : "";
+  return `${LOOP_WAKE_OPENING} (${loop.id}, opened ${minute(loop.createdAt)} ${KIND[loop.origin.kind]}${edited}${why}): ${flat(loop.what)}\nNext: ${flat(loop.next)}${links}\nWhen it's done, close loop ${loop.id}; to come back to it again, update its revisit.`;
 }
 
 /**
@@ -689,8 +761,16 @@ export class WorkingStore {
     // A recent occurrence counts, except the one that already fired this loop: re-arming on the same event after a
     // wake waits for the next occurrence instead of firing again at once.
     const firedAt = before?.fired_at == null ? null : Number(before.fired_at);
+    // For a loop that waits for a new occurrence, the cut is the latest occurrence recorded when it's armed (the run
+    // being retried), so a new run's own clock running a little behind can't hide it; with none recorded, the arming.
+    const latest =
+      revisit.onEvent === undefined || revisit.onlyNew !== true
+        ? undefined
+        : (this.#db
+            .prepare("SELECT occurred_at FROM event_occurrences WHERE event = ?")
+            .get(revisit.onEvent) as { occurred_at: number } | undefined);
     const recent =
-      revisit.onEvent === undefined
+      revisit.onEvent === undefined || revisit.onlyNew === true
         ? undefined
         : (this.#db
             .prepare(
@@ -706,7 +786,12 @@ export class WorkingStore {
       wake_set_at: now,
       wake_seq: Number(before?.wake_seq ?? 0) + 1,
       fired_by: recent?.fired_by ?? null,
-      fired_at: recent ? Number(recent.occurred_at) : firedAt,
+      fired_at:
+        revisit.onlyNew === true
+          ? Math.max(latest === undefined ? now : Number(latest.occurred_at), firedAt ?? -1)
+          : recent
+            ? Number(recent.occurred_at)
+            : firedAt,
       ...fresh,
     };
   }
@@ -790,7 +875,7 @@ export class WorkingStore {
           ? this.#wake(input.revisit, input.deliverable !== false, now, before)
           : {}),
         review_by: input.reviewBy ?? before.review_by,
-        last_edited_by: JSON.stringify(origin),
+        last_edited_by: JSON.stringify(editedBy(before, origin)),
         updated_at: now,
       };
       this.#put("loops", before, after, "updated", origin);
@@ -828,7 +913,7 @@ export class WorkingStore {
         ...this.#wake(null, true, now),
         lease_until: null,
         lease_token: null,
-        last_edited_by: JSON.stringify(origin),
+        last_edited_by: JSON.stringify(editedBy(before, origin)),
         updated_at: now,
       };
       this.#put("loops", before, after, "closed", origin);
@@ -980,7 +1065,7 @@ export class WorkingStore {
     };
     const first: Record<Table, string> = {
       loops: `(wake IS NOT NULL AND due_at IS NOT NULL AND due_at <= ${Number(now)}) DESC, (review_by <= ${Number(now)}) DESC, `,
-      orders: `(json_extract(origin, '$.kind') = 'operator') DESC, `,
+      orders: `(coalesce(json_extract(origin, '$.root.kind'), json_extract(origin, '$.kind')) = 'operator') DESC, `,
       notes: "",
     };
     const select = (table: Table, where: Where | undefined) => {
@@ -1069,7 +1154,8 @@ export class WorkingStore {
 
   /**
    * The wake was delivered: the loop is open again with its wake spent. A wake isn't a resolution; the woken turn
-   * closes the loop or sets a new revisit. False when this claimant no longer holds it.
+   * closes the loop or sets a new revisit. False exactly when this claimant's lease was lost, to another tick or to
+   * expiry: the host should log the send as unsettled, not as a wake.
    */
   settleWake(id: string, leaseToken: string, firedBy: string): boolean {
     return this.#tx(() => {
@@ -1133,8 +1219,8 @@ export class WorkingStore {
     const at = Math.min(occurredAt, now);
     return this.#tx(() => {
       // Due: a loop armed by now, so one opened between the event and its recording isn't missed; but a loop armed
-      // after an occurrence older than the recent window is a redelivery's, and waits; and no loop fires twice on the
-      // same occurrence.
+      // after an occurrence older than the recent window is a redelivery's, and waits; and no loop fires on an
+      // occurrence at or before its last firing (for a loop that waits for a new occurrence, the latest occurrence recorded when it was armed, or its arming).
       const rows = this.#db
         .prepare(
           `UPDATE loops SET due_at = ?, fired_by = ?, fired_at = ?, updated_at = ?
@@ -1177,7 +1263,7 @@ export class WorkingStore {
    * many entries.
    */
   revertBatch(filter: RevertFilter, origin: Origin): number {
-    const fields = (["sessionId", "turnId", "callId", "principalId"] as const).filter(
+    const fields = (["sessionId", "turnId", "callId", "principalId", "kind"] as const).filter(
       (f) => filter[f] !== undefined,
     );
     if (fields.length === 0) return 0;
@@ -1185,9 +1271,22 @@ export class WorkingStore {
       const now = this.#now();
       const matched = this.#db
         .prepare(
-          `SELECT * FROM events WHERE ${fields.map((f) => `json_extract(origin, '$.${f}') = ?`).join(" AND ")} ORDER BY seq`,
+          `SELECT * FROM events WHERE ${fields
+            .map((f) =>
+              // A write whose authority was a principal's or a kind's, through a wake, is theirs to revert too.
+              f === "principalId" || f === "kind"
+                ? `(json_extract(origin, '$.${f}') = ? OR json_extract(origin, '$.root.${f}') = ?)`
+                : `json_extract(origin, '$.${f}') = ?`,
+            )
+            .join(" AND ")} ORDER BY seq`,
         )
-        .all(...fields.map((f) => filter[f] as string)) as Row[];
+        .all(
+          ...fields.flatMap((f) =>
+            f === "principalId" || f === "kind"
+              ? [filter[f] as string, filter[f] as string]
+              : [filter[f] as string],
+          ),
+        ) as Row[];
       const first = new Map<string, Row>();
       for (const e of matched) {
         const key = `${e.entry_kind}\u0000${e.entry_id}`;

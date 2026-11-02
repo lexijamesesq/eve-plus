@@ -1,6 +1,7 @@
 export { type Address, addressKey } from "./addresses.js";
 export {
   HERE_ID,
+  type OriginClassification,
   type OriginSession,
   STANDING_ID,
   type WorkingMemoryOptions,

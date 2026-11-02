@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.2
+
+- **Distinct wake kinds, and the root of a wake chain.** `OriginKind` adds `loop-wake` and `event-wake`. The host's `originKind` may answer `{ kind, wakeOf }` (the new `OriginClassification`), and a write in that turn records `origin.root`: the authority the woken loop carries. It's downgrade-only: the lowest-ranking authority among the opener and everyone who has changed the loop since it was opened (operator, then scheduled, then colleague, then any other kind). No edit raises it, the operator's included, and only opening a new loop starts afresh. A loop any colleague has shaped never speaks with operator authority through its wakes; the operator sets orders directly. Authority follows the root: an order set in a wake of the operator's loop ranks with the operator's, and recall says "started by operator". `revertBatch` by `principalId`, or by the new `kind` filter, also reverts writes whose root is that principal or kind. A loop last edited under 0.1.1 has no floor recorded, so it reads as the lower of its opener and that last editor; earlier edits aren't known, and a later edit starts from that reading. An `onlyNew` alongside `when` is refused, like `onlyNew` alone. A `wakeOf` the store doesn't know records no root.
+- **A wake says why it fired.** A claim's `followupNote` ends its first line with `due at <time>` or `fired by <firedBy>`, the latter clipped to 80 characters on one line, so the host sends it as is.
+- **A passed `until` says the order no longer binds:** `[until <day>, passed: no longer binding]`.
+- **`revisit.onlyNew`.** A loop waiting on a retry of an event that just happened isn't woken by the previous occurrence, recorded on time or late, only by a later one. The cut is the latest occurrence recorded when the loop is armed (the run being retried), or the arming time if none is recorded. So a new run whose own clock is a little behind still wakes it. Without it, an occurrence in the last ten minutes still makes a new loop due at once. It's a new optional field on the `open` and `update` tools' `revisit`. The store schema is unchanged.
+- **The frame is said once a turn**, in `working:here`. The standing block carries only its title and stamp, which also frees its room: the realistic state's four loops now fit in 1,200 characters.
+- **`settleWake`'s false is documented** as exactly a lost lease, for the host to log honestly.
+
+Deferred:
+
+- an owner id recorded and checked at open, which needs store migration 2 and lands with retention;
+- the imported-origin wording option;
+- retention and forget ordering;
+- truncation of imported notes;
+- the source text of `revisit.on`'s event keys.
+
 ## 0.1.1
 
 - **The standing block is stamped to the day** ("as of 2026-11-01"), not the minute. A changed block is re-anchored at the current turn and everything after it is re-sent uncached, so the minute stamp cost the prompt cache on every turn more than a minute apart.
