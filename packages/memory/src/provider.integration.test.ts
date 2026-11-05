@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineMemory } from "eve/memory";
 import { byPrincipal } from "eve/memory/scope";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MemoryGraph } from "./memory-graph.js";
 import { shaclMemory } from "./provider.js";
@@ -863,5 +863,76 @@ describe("integrity: rules are visible, type-dodges are loud, drift is findable"
       attributes: { phone: "555-0199", company: "Initech" },
     });
     expect(await h.tools.check_memory.execute({})).toContain("all conform");
+  });
+});
+
+describe("references between memories", () => {
+  it("an attribute may be a reference to another memory, kept and shown as written", async () => {
+    const { provider, memory, tools } = await open(tempDir(), "refs-1");
+    const r = await tools.remember.execute({
+      label: "Deploy ollie decided",
+      type: "Decision",
+      id: "deploy_ollie_decided",
+      attributes: { loop: "working:abc12", about: "knowledge:ollie", why: "Friday window" },
+    });
+    expect(r).not.toContain("Couldn't");
+    // Turn-start recall shows the first attributes as written: the reference is followable by its id.
+    const injected = await injectedText(
+      provider,
+      memory,
+      "what did we decide about the ollie deploy?",
+    );
+    expect(injected).toContain("loop=working:abc12");
+    expect(injected).toContain("about=knowledge:ollie");
+    // The recall tool shows every attribute as written.
+    const full = await tools.recall.execute({ query: "deploy_ollie_decided" });
+    expect(full).toContain("loop: working:abc12");
+    expect(full).toContain("about: knowledge:ollie");
+  });
+
+  it("onOpen runs once per scope's graph, with the scope eve resolved, and a throwing hook doesn't take the open with it", async () => {
+    const dir = tempDir();
+    const opened: { key: string; value: unknown }[] = [];
+    const provider = shaclMemory({
+      dir,
+      onOpen: (_graph, scope) => {
+        opened.push({ key: scope.key, value: scope.value });
+        if (scope.key === "refs-boom") throw new Error("host bug");
+      },
+    }) as unknown as Harness;
+    const a = memoryFor("refs-a");
+    const b = memoryFor("refs-b");
+    await turnStart(provider, a, "hello");
+    await turnStart(provider, a, "again");
+    const toolsA = await provider.tools({ memory: a });
+    await toolsA.recall.execute({ query: "x" }, toolContext("c1"));
+    await turnStart(provider, b, "hello");
+    expect(opened.map((o) => o.key)).toEqual(["refs-a", "refs-b"]);
+    expect(opened[0]?.value).toEqual(a.scope.value);
+    const boom = memoryFor("refs-boom");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const toolsBoom = await provider.tools({ memory: boom });
+    const saved = await toolsBoom.remember.execute({ label: "Still saved" }, toolContext("c2"));
+    expect(saved).not.toContain("Couldn't");
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("onOpen failed"))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("the host can read a record by id through the opened graph", async () => {
+    const dir = tempDir();
+    const graphs = new Map<string, MemoryGraph>();
+    const provider = shaclMemory({
+      dir,
+      onOpen: (graph, scope) => graphs.set(JSON.stringify(scope.value), graph),
+    }) as unknown as Harness;
+    const memory = memoryFor("refs-read");
+    const tools = await provider.tools({ memory });
+    await tools.remember.execute(
+      { label: "Ollie", type: "Agent", id: "ollie", attributes: { role: "reviewer" } },
+      toolContext("c3"),
+    );
+    const graph = graphs.get(JSON.stringify(memory.scope.value));
+    expect(graph?.describe("ollie")?.label).toBe("Ollie");
+    expect(graph?.describe("nobody")).toBeNull();
   });
 });

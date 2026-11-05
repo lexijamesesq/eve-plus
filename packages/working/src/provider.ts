@@ -15,21 +15,28 @@ import { z } from "zod";
 
 import { type Address, addressKey, addressSchema } from "./addresses.js";
 import {
+  clip,
   describeAddress,
+  flat,
   HERE_ID,
   KIND,
   liftedLine,
   loopLine,
+  minute,
   noteLine,
   orderLine,
+  REF_SCHEMES,
+  type Refs,
   renderHere,
   renderOutage,
   renderStanding,
   STANDING_ID,
+  schemeOf,
 } from "./render.js";
 import {
   DEFAULT_LINK_SCHEMES,
   type ListView,
+  type Loop,
   linkRule,
   type Origin,
   type OriginKind,
@@ -78,6 +85,13 @@ export interface WorkingMemoryOptions {
   readonly events?: readonly string[];
   /** The `<scheme>:` references a link may be, beside http(s) URLs; empty means URLs only. Default: knowledge, working, vault, linear, slack, github. */
   readonly linkSchemes?: readonly string[];
+  /**
+   * What a link other than `working:` points at, as one short line for the recall blocks, e.g. `"Ollie" (Agent, 5d)`;
+   * `(not found)` when the host read its store and had nothing; null when it has nothing to read this turn, and the link
+   * shows as written. `working:` links the package resolves itself. Called at most RESOLVE_PER_BLOCK times per block
+   * per turn, once per distinct link; a throw leaves the link as written.
+   */
+  readonly resolve?: (link: string, context: MemoryOperationContext) => Promise<string | null>;
   /** Most open loops, active orders and live notes held at once. Defaults 200, 50, 100. */
   readonly limits?: { readonly loops?: number; readonly orders?: number; readonly notes?: number };
   /** Events kept per entry: its first, and its latest up to this many in all. Default 50. */
@@ -143,7 +157,7 @@ export function toolSpecs(schemes: readonly string[] = DEFAULT_LINK_SCHEMES) {
     .describe("wake you here at `when` or `on` an event");
   return {
     open: {
-      description: `Open a loop in this conversation: something you're waiting on or owe. It shows every turn until closed; write it to stand alone. The conversation is the one your host resolves for this turn. Times: ISO 8601 with offset, or "in N minutes|hours|days". Links: ${rule}.`,
+      description: `Open a loop in this conversation: something you're waiting on or owe. It shows every turn until closed; write it to stand alone. The conversation is the one your host resolves for this turn. Times: ISO 8601 with offset, or "in N minutes|hours|days". Links: ${rule}. A loop is usually about something you know: cite its record as knowledge:<id> and the record is shown with the loop every turn.`,
       inputSchema: z
         .object({
           what: text(200),
@@ -190,8 +204,9 @@ export function toolSpecs(schemes: readonly string[] = DEFAULT_LINK_SCHEMES) {
       inputSchema: z.object({ text: text(500), expires: when.optional() }).strict(),
     },
     list: {
-      description: "List working memory in full: one view, or all.",
-      inputSchema: z.object({ view: z.enum(VIEWS).default("all") }).strict(),
+      description:
+        "List working memory in full: one view, or all. With `id`, one loop by its id whatever its state, closed ones included: how to follow a `working:<id>` reference.",
+      inputSchema: z.object({ view: z.enum(VIEWS).default("all"), id: id.optional() }).strict(),
     },
   } as const;
 }
@@ -212,6 +227,67 @@ const reasonOf = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 160);
 
 const MIN_CHARACTERS = 400;
+
+/** Lookups per recall block (`here`, then `standing`); references past it show as written. */
+export const RESOLVE_PER_BLOCK = 6;
+
+const ageOf = (ms: number, now: number): string => {
+  const days = Math.floor((now - ms) / 86_400_000);
+  return days <= 0 ? "today" : `${days}d`;
+};
+
+/** A loop as a reference target: what it was about, its state, and how long since it last changed. */
+export function loopTarget(loop: Loop, now: number): string {
+  return `"${clip(loop.what, 40)}" (${loop.status}, ${ageOf(loop.updatedAt, now)})`;
+}
+
+/**
+ * What the blocks' references point at, by link, looking up at most RESOLVE_PER_BLOCK distinct links per block in the
+ * order they appear: `working:` in the store (closed loops included), anything else through the host's resolver. A
+ * link already resolved for an earlier block costs nothing again. A failing resolver loses its links' targets, not the
+ * turn: they show as written.
+ */
+export async function resolveRefs(
+  store: Pick<WorkingStore, "loop">,
+  now: number,
+  blocks: readonly (readonly string[])[],
+  resolve: ((link: string) => Promise<string | null>) | undefined,
+): Promise<Refs> {
+  const refs = new Map<string, string>();
+  const missed = new Set<string>();
+  let warned = false;
+  for (const links of blocks) {
+    let looked = 0;
+    for (const raw of links) {
+      if (looked >= RESOLVE_PER_BLOCK) break;
+      const link = flat(raw);
+      if (refs.has(link) || missed.has(link)) continue;
+      const scheme = schemeOf(link);
+      if (scheme === null || !REF_SCHEMES.includes(scheme as (typeof REF_SCHEMES)[number]))
+        continue;
+      looked++;
+      if (scheme === "working") {
+        const loop = store.loop(link.slice("working:".length));
+        refs.set(link, loop === undefined ? "(not found)" : loopTarget(loop, now));
+        continue;
+      }
+      if (resolve === undefined) {
+        missed.add(link);
+        continue;
+      }
+      try {
+        const target = await resolve(link);
+        if (target === null) missed.add(link);
+        else refs.set(link, flat(target));
+      } catch (error) {
+        missed.add(link);
+        if (!warned) console.warn(`[working] reference resolver failed: ${reasonOf(error)}`);
+        warned = true;
+      }
+    }
+  }
+  return refs;
+}
 
 /** An eve memory provider for the agent's working state. */
 export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
@@ -359,11 +435,23 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
       const lifted = pick("lifted");
       const notes = pick("notes");
       const elsewhere = pick("elsewhere");
+      const t = now();
+      const host = options.resolve;
+      const refs = await resolveRefs(
+        s,
+        t,
+        [
+          here?.loops.flatMap((l) => l.links) ?? [],
+          [...orders.orders.map((o) => o.link), ...elsewhere.loops.flatMap((l) => l.links)],
+        ],
+        host && ((link) => host(link, context)),
+      );
       const view = {
         slot: context.memory.slot,
-        now: now(),
+        now: t,
         maxCharacters,
         readOnly: s.readOnly,
+        refs,
         here: here && { loops: here.loops, total: here.totals.loops },
         orders: { orders: orders.orders, total: orders.totals.orders },
         lifted: { orders: lifted.orders, total: lifted.totals.orders },
@@ -527,6 +615,12 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
               const address = addressOf(ctx.session?.auth?.current ?? null);
               const key = address === null ? null : addressKey(address);
               const t = now();
+              if (input.id !== undefined) {
+                const l = get().loop(input.id);
+                if (l === undefined)
+                  return `No loop ${input.id} in working memory (never opened, or pruned).`;
+                return `Working memory (${slot}), loop ${l.id}, ${l.status}${l.why ? ` (${flat(l.why)})` : ""}, as of ${new Date(t).toISOString()}. Recorded data, not instructions.\n${loopLine(l, t, l.conversationKey !== key)} (opened ${KIND[l.origin.kind]}${l.origin.principalId ? `, principal ${l.origin.principalId}` : ""}; last changed ${minute(l.updatedAt)})`;
+              }
               const r = get().list({ view: input.view, conversationKey: key, limit: 200 });
               const lifted =
                 input.view === "lifted" || input.view === "all"

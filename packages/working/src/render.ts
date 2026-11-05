@@ -95,26 +95,76 @@ function marks(loop: Loop, now: number): string {
 const MAX_LINE = 400;
 const MAX_LINKS = 160;
 
+/**
+ * What a reference resolved to this turn, by the link as written: the one-line target a `working:` or `knowledge:`
+ * link points at, e.g. `"Deploy ollie" (done, 3d)`, or `(not found)` once its store was read and had nothing.
+ */
+export type Refs = ReadonlyMap<string, string>;
+
+/** The schemes a reference may resolve under, in the order they're shown: the thing a task is about comes first. */
+export const REF_SCHEMES = ["knowledge", "working"] as const;
+export const schemeOf = (link: string): string | null => {
+  const m = /^([a-z][a-z0-9+.-]*):/i.exec(link);
+  return m?.[1]?.toLowerCase() ?? null;
+};
+const refRank = (link: string): number => {
+  const i = REF_SCHEMES.indexOf(schemeOf(link) as (typeof REF_SCHEMES)[number]);
+  return i === -1 ? REF_SCHEMES.length : i;
+};
+/** The links that resolved, `knowledge:` first, at most `max`. */
+export function resolvedOf(
+  links: readonly string[],
+  refs: Refs | undefined,
+  max: number,
+): string[] {
+  if (refs === undefined) return [];
+  return [...new Set(links.map(flat))]
+    .filter((l) => refs.has(l))
+    .sort((a, b) => refRank(a) - refRank(b))
+    .slice(0, max);
+}
+
+const MAX_RESOLVED_PER_LINE = 2;
+const MAX_SHORT_REF = 80;
+
+/** A reference with its target, for a short line: ` ↳ knowledge:ollie "Ollie" (Agent, 5d)`, or nothing. */
+function shortRef(links: readonly string[], refs: Refs | undefined): string {
+  const [l] = resolvedOf(links, refs, 1);
+  return l === undefined ? "" : ` ↳ ${clip(`${l} ${refs?.get(l) ?? ""}`, MAX_SHORT_REF)}`;
+}
+
+/**
+ * The links segment: each link, the resolved ones with their target, within the links cap. Over it, the targets go
+ * first, from the last back, then the segment collapses to a count as before: resolution never costs the loop's text.
+ */
+function linksOf(loop: Loop, refs: Refs | undefined): string {
+  if (loop.links.length === 0) return "";
+  const links = loop.links.map(flat);
+  const resolved = new Set(resolvedOf(links, refs, MAX_RESOLVED_PER_LINE));
+  const render = (withTargets: ReadonlySet<string>) =>
+    links.map((l) => (withTargets.has(l) ? `${l} → ${refs?.get(l) ?? ""}` : l)).join(" ");
+  const keep = [...resolved];
+  let shown = render(new Set(keep));
+  while (shown.length > MAX_LINKS && keep.length > 0) {
+    keep.pop();
+    shown = render(new Set(keep));
+  }
+  return shown.length <= MAX_LINKS ? ` Links: ${shown}` : ` (${loop.links.length} links)`;
+}
+
 /** A loop in full, for `here` and the list tool. */
-export function loopLine(loop: Loop, now: number, where = false): string {
+export function loopLine(loop: Loop, now: number, where = false, refs?: Refs): string {
   const at = where ? ` (${describeAddress(loop.address)})` : "";
-  const shown = loop.links.map(flat).join(" ");
-  const links =
-    loop.links.length === 0
-      ? ""
-      : shown.length <= MAX_LINKS
-        ? ` Links: ${shown}`
-        : ` (${loop.links.length} links)`;
   const line = `• ${loop.id}${at} waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 200)}. Next: ${flat(loop.next)}`;
-  const tail = `${links}${marks(loop, now)}`;
+  const tail = `${linksOf(loop, refs)}${marks(loop, now)}`;
   return line.length + tail.length > MAX_LINE
     ? `${clip(line, MAX_LINE - tail.length)}${tail}`
     : `${line}${tail}`;
 }
 
 /** A loop elsewhere, short: what it is, where, and its next step; the list tool has the rest. */
-export function shortLoopLine(loop: Loop, now: number): string {
-  return `• ${loop.id} (${describeAddress(loop.address)}) waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 80)}. Next: ${clip(loop.next, 60)}${marks(loop, now)}`;
+export function shortLoopLine(loop: Loop, now: number, refs?: Refs): string {
+  return `• ${loop.id} (${describeAddress(loop.address)}) waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 80)}. Next: ${clip(loop.next, 60)}${marks(loop, now)}${shortRef(loop.links, refs)}`;
 }
 
 function orderMark(order: Order, now: number): string {
@@ -130,8 +180,8 @@ export function orderLine(order: Order, now: number): string {
 }
 
 /** An order on one short line, for the standing block: who set it by kind, and when. */
-export function shortOrderLine(order: Order, now: number): string {
-  return `• ${flat(order.subject)}: ${clip(order.rule, 60)} (${SHORT[order.origin.kind]}${startedBy(order.origin, true)} ${day(order.createdAt)})${orderMark(order, now)}`;
+export function shortOrderLine(order: Order, now: number, refs?: Refs): string {
+  return `• ${flat(order.subject)}: ${clip(order.rule, 60)} (${SHORT[order.origin.kind]}${startedBy(order.origin, true)} ${day(order.createdAt)})${orderMark(order, now)}${shortRef([order.link], refs)}`;
 }
 
 export function liftedLine(order: Order): string {
@@ -268,6 +318,8 @@ export interface RecallView {
   readonly lifted: { readonly orders: readonly Order[]; readonly total: number };
   readonly notes: { readonly notes: readonly Note[]; readonly total: number };
   readonly elsewhere: { readonly loops: readonly Loop[]; readonly total: number };
+  /** What this turn's references resolved to; absent when nothing was looked up. */
+  readonly refs?: Refs;
 }
 
 const READ_ONLY = " (read-only this turn: nothing can be recorded)";
@@ -281,7 +333,7 @@ export function renderHere(v: RecallView): string {
     [
       {
         heading: null,
-        lines: v.here.loops.map((l) => loopLine(l, v.now)),
+        lines: v.here.loops.map((l) => loopLine(l, v.now, false, v.refs)),
         total: v.here.total,
         empty: "Nothing open in this conversation.",
         noun: "loops here",
@@ -305,7 +357,7 @@ export function renderStanding(v: RecallView): string {
   const sections: Section[] = [
     {
       heading: "Orders:",
-      lines: v.orders.orders.map((o) => shortOrderLine(o, v.now)),
+      lines: v.orders.orders.map((o) => shortOrderLine(o, v.now, v.refs)),
       total: v.orders.total,
       empty: "No standing orders.",
       noun: "orders",
@@ -328,7 +380,7 @@ export function renderStanding(v: RecallView): string {
     });
   sections.push({
     heading: `Open elsewhere (${v.elsewhere.total}):`,
-    lines: elsewhere.map((l) => shortLoopLine(l, v.now)),
+    lines: elsewhere.map((l) => shortLoopLine(l, v.now, v.refs)),
     total: v.elsewhere.total,
     empty: "Nothing else open.",
     noun: "loops elsewhere",
