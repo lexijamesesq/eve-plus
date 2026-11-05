@@ -123,9 +123,12 @@ because `working__open` creates. The descriptions route a known handle to `get` 
   the caller's.
 - `reclaimHandle(handle)`: frees an earlier or forgotten handle for the next record named for it, as a page move over
   a redirect does. A live record's current handle can't be reclaimed.
-- `merge(duplicate, into)`: records that two records are one thing. The duplicate's handles, id, and connections to it
-  lead to `into`; no edge or reference is rewritten. Carrying details over is the caller's. Self-merges and cycles are
-  refused.
+- `merge(duplicate, into)`: records that two records are one thing, and retracts the duplicate in the same write.
+  A merged page becomes a redirect: the duplicate's rows are tombstoned with the merge's origin, so it stops being
+  recalled. Its handles, id, and connections to it lead to `into`, and no edge or reference is rewritten. Left live,
+  a duplicate would still be recalled while every reference to it, a forget included, landed on `into`. Carry
+  details worth keeping over first. `revertBatch` on the merge's origin brings the duplicate back. Self-merges and
+  cycles are refused.
 
 ## Storage and invariants
 

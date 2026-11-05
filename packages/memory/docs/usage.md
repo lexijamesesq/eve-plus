@@ -150,7 +150,7 @@ await graph.revertBatch({ who: "scheduled", sessionId: "<the run's session>" });
 graph.close();
 ```
 
-The same operator surface settles names. A handle a forgotten record held, or a record's earlier name, stays reserved until `graph.reclaimHandle("knowledge:alice")` frees it for the next record named for it. `graph.merge("knowledge:alice-2", "knowledge:alice")` records that two records are one thing: references and connections to the first then lead to the second, and nothing is rewritten. A revert that would give a record back a handle another record now holds isn't applied; `revertBatch` returns the `conflicts` so they can be settled first.
+The same operator surface settles names. A handle a forgotten record held, or a record's earlier name, stays reserved until `graph.reclaimHandle("knowledge:alice")` frees it for the next record named for it. `graph.merge("knowledge:alice-2", "knowledge:alice")` records that two records are one thing and retracts the first: references and connections to it then lead to the second, and nothing is rewritten. Carry over any details worth keeping first. A revert that would give a record back a handle another record now holds isn't applied; `revertBatch` returns the `conflicts` so they can be settled first.
 
 One rule is enforced: a record type created or extended in the owner's conversation, and a record typed there, change type or definition only in the owner's conversation. Another writer gets a reason it can act on:
 

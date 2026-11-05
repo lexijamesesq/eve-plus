@@ -361,11 +361,50 @@ describe("merges are followed, not rewritten", () => {
     ]);
     // The stored edge is untouched.
     expect(g.describe(ada.id)?.relations).toEqual([{ relation: "knows", to: dup.id }]);
+    // The duplicate is no longer a record of its own: not recalled, and a forget through its handle means the one thing.
+    expect(g.recall("Alice Bot").map((f) => f.id)).not.toContain(dup.id);
+    expect(g.describe(dup.id)?.id).toBe(real.id);
     expect(g.history(dup.id).some((e) => e.key === "merged into" && e.value === real.id)).toBe(
       true,
     );
     expect(g.merge("alice", "alice-bot").ok).toBe(false); // a cycle
     expect(g.merge("alice", "alice").ok).toBe(false);
+  });
+});
+
+describe("a merge can be undone, and long names get advice that works", () => {
+  it("reverting a merge brings the duplicate back as its own record", async () => {
+    const g = await MemoryGraph.create();
+    const dup = await saved(g, "Alice Bot", { attributes: { note: "x" } });
+    await saved(g, "Alice");
+    expect(g.merge("alice-bot", "alice", JSON.stringify({ callId: "m" })).ok).toBe(true);
+    expect((await g.revertBatch({ callId: "m" })).conflicts).toEqual([]);
+    expect(g.resolve("alice-bot")).toMatchObject({ status: "found", id: dup.id, via: "handle" });
+    expect(g.describe("alice-bot")?.attributes.note).toBe("x");
+  });
+
+  it("past the cap, a qualifier at the end can't tell two names apart, so the advice says put it first", async () => {
+    const g = await MemoryGraph.create();
+    const long = `Planning notes ${"word ".repeat(30)}`.trim();
+    await saved(g, long);
+    const r = await g.remember({ label: long, type: "Thing", attributes: { other: "1" } });
+    expect(r.ok || r.problems[0]?.message).toMatch(/put what tells them apart first/);
+    expect(handleOf(`${long} (Acme)`)).toBe(handleOf(long));
+    expect(handleOf(`Acme: ${long}`)).not.toBe(handleOf(long));
+  });
+
+  it("two renames onto one name at once: one lands, the other fails naming it", async () => {
+    const g = await MemoryGraph.create();
+    await saved(g, "Ann");
+    await saved(g, "Bea");
+    const [a, b] = await Promise.all([
+      g.remember({ id: "ann", label: "Cleo" }),
+      g.remember({ id: "bea", label: "Cleo" }),
+    ]);
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    const lost = a.ok ? b : a;
+    expect(lost.ok || lost.holder?.holds).toBe("current");
+    expect(g.resolve("cleo").status).toBe("found");
   });
 });
 
@@ -430,9 +469,11 @@ describe("ids as 0.5 resolved them, and a migration's own verbs", () => {
     expect(g.mintHandle("alice_ab12", run).ok && g.mintHandle("acme_cd34", run).ok).toBe(true);
     expect(g.merge("acme_cd34", "alice_ab12", run).ok).toBe(true);
     const r = await g.revertBatch({ run: "m1" });
-    expect(r).toMatchObject({ removed: 3, conflicts: [] });
+    // Two handles, the merge, and the duplicate's two tombstones.
+    expect(r).toMatchObject({ removed: 5, conflicts: [] });
     expect(handleRows(g)).toBe(0);
-    expect(g.resolve("acme_cd34")).toMatchObject({ id: "acme_cd34" });
+    expect(g.resolve("acme_cd34")).toMatchObject({ status: "found", id: "acme_cd34" });
+    expect(g.describe("acme_cd34")?.label).toBe("Acme");
   });
 });
 

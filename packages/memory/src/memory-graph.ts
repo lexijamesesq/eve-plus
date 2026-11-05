@@ -532,13 +532,13 @@ export const CURRENT_LITERALS_SQL = `SELECT s, o FROM triples t WHERE ot = 'lit'
 /** How many facts are current: single-valued details plus live edges. */
 export const CURRENT_FACTS_SQL = `SELECT (SELECT count(*) FROM triples t WHERE ${SINGLE_VALUED} AND ot != 'tomb' AND ${LATEST_SINGLE})
                                       + (SELECT count(*) FROM triples t WHERE ${EDGE} AND ot = 'iri' AND ${LATEST_EDGE}) AS n`;
+/** How many handles are held: one live row per handle, whether current, earlier, or a forgotten record's. */
+export const LIVE_HANDLES_SQL =
+  "SELECT count(*) AS n FROM handles WHERE kind = 'handle' AND superseded_by IS NULL";
 /**
  * The store's write high-water mark: the largest `seq` ever assigned. It only grows, even when `revertBatch` deletes
  * the latest rows, so a mark lower than a previous reading means the store was lost or replaced.
  */
-/** How many handles are held: one live row per handle, whether current, earlier, or a forgotten record's. */
-export const LIVE_HANDLES_SQL =
-  "SELECT count(*) AS n FROM handles WHERE kind = 'handle' AND superseded_by IS NULL";
 export const SEQ_HWM_SQL = "SELECT CAST(value AS INTEGER) AS n FROM meta WHERE key = 'seq_hwm'";
 const keyOf = (p: string) => (p === TYPE ? "type" : p === LABEL ? "label" : tail(p));
 // Forgetting appends a tombstone rather than deleting: 'tomb' retracts a single-valued key, 'tomb-edge' one edge.
@@ -979,7 +979,11 @@ export class MemoryGraph {
   #takenMessage(name: string, h: string, holder: Holder): string {
     const who = `"${holder.label ?? holder.id}"${holder.type ? ` (${holder.type})` : ""}`;
     const at = `${REFERENCE_PREFIX}${holder.handle ?? holder.id}`;
-    const qualify = `If it's a different thing, give it a name that tells them apart, such as "${name} (Acme)", and save again.`;
+    // Past the length cap a qualifier at the end is cut off, so it would fail the same way every time.
+    const qualify =
+      handleOf(`${name} (Acme)`) === h
+        ? `If it's a different thing, give it a shorter name, or put what tells them apart first, such as "Acme: ${name.slice(0, 40)}…", and save again.`
+        : `If it's a different thing, give it a name that tells them apart, such as "${name} (Acme)", and save again.`;
     switch (holder.holds) {
       case "current":
       case "id":
@@ -1023,6 +1027,7 @@ export class MemoryGraph {
     const holder = this.#holder(h, s, { unmigrated: false });
     if (holder) return { ok: false, reason: this.#takenMessage(label, h, holder), holder };
     this.#insertHandle(h, s, new Date().toISOString(), origin);
+    dlog("mintHandle:", r.id, "→", h, `who=${whoOf(origin)}`);
     return { ok: true, handle: h };
   }
 
@@ -1053,12 +1058,14 @@ export class MemoryGraph {
         )
         .run(lastInsertRowid, h);
     })();
+    dlog("reclaimHandle:", h, "from", tail(holder), `who=${whoOf(origin)}`);
     return { ok: true, handle: h };
   }
 
   /**
-   * Record that `duplicate` is the same thing as `into`. References to the duplicate's handles and id, and connections
-   * to it, then lead to `into`; nothing is rewritten. Carrying the duplicate's details over is the caller's.
+   * Record that `duplicate` is the same thing as `into`, and retract the duplicate in the same write (its rows are
+   * tombstoned with this origin, so `revertBatch` brings it back). References to its handles and id, and connections
+   * to it, then lead to `into`; nothing is rewritten. Carry any details worth keeping over to `into` first.
    */
   merge(
     duplicate: string,
@@ -1073,11 +1080,24 @@ export class MemoryGraph {
       return { ok: false, reason: `No current record is addressed as "${into}".` };
     if (from.id === to.id)
       return { ok: false, reason: `"${duplicate}" and "${into}" are already the same record.` };
-    this.db
-      .prepare(
-        "INSERT INTO handles(kind, s, target, written_at, origin) VALUES ('merge', ?, ?, ?, ?)",
-      )
-      .run(`${E}${from.id}`, `${E}${to.id}`, new Date().toISOString(), origin);
+    const s = `${E}${from.id}`;
+    const at = new Date().toISOString();
+    // A merged page becomes a redirect: the duplicate stops being a record of its own, in the same write, so nothing
+    // can reach it as one. Left live, it would still be recalled while every reference to it, a forget included,
+    // landed on `into`.
+    this.db.transaction(() => {
+      for (const r of [...this.#current.all(s), ...this.#relations.all(s)]) {
+        const edge = isRelation(r.p, r.ot);
+        this.#ins(s, r.p, edge ? r.o : "", edge ? "tomb-edge" : "tomb", null, at, origin);
+      }
+      this.db
+        .prepare(
+          "INSERT INTO handles(kind, s, target, written_at, origin) VALUES ('merge', ?, ?, ?, ?)",
+        )
+        .run(s, `${E}${to.id}`, at, origin);
+      this.#reindex(s);
+    })();
+    dlog("merge:", from.id, "→", to.id, `who=${whoOf(origin)}`);
     return { ok: true };
   }
 
@@ -1295,12 +1315,10 @@ export class MemoryGraph {
       dlog("remember REJECTED (naming):", naming.map((p) => p.message).join(" | "));
       return { ok: false, stage: "naming", problems: naming };
     }
-    const fail = (stage: string, message: string, holder?: Holder): RememberResult => ({
-      ok: false,
-      stage,
-      problems: [{ message }],
-      ...(holder ? { holder } : {}),
-    });
+    const fail = (stage: string, message: string, holder?: Holder): RememberResult => {
+      dlog(`remember REJECTED (${stage}):`, message);
+      return { ok: false, stage, problems: [{ message }], ...(holder ? { holder } : {}) };
+    };
     const didYouMean = (r: { suggestions: string[] }) =>
       r.suggestions.length ? ` Did you mean ${r.suggestions.join(", ")}?` : "";
     // Every input that names a record goes through the one resolver, and the internal id is what's stored.
@@ -1514,6 +1532,8 @@ export class MemoryGraph {
       (fact.relations ?? []).every((r, i) =>
         v.relations.some((b) => b.p === `${P}${slug(r.relation)}` && b.o === targets[i]),
       );
+    if (!replay) dlog("remember REJECTED (handle):", h, "held by", holder.id, `(${holder.holds})`);
+    else dlog("remember REPLAYED:", h, "→", holder.id);
     if (!replay)
       return {
         ok: false,

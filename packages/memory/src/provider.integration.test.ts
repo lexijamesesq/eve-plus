@@ -902,7 +902,7 @@ describe("references between memories", () => {
   it("the remember tool tells the agent a value may reference another memory", async () => {
     const { tools } = await open(tempDir(), "refs-desc");
     const shape = tools.remember.inputSchema?.shape as Record<string, { description?: string }>;
-    expect(shape.attributes?.description).toContain("knowledge:<id>");
+    expect(shape.attributes?.description).toContain("knowledge:<handle>");
     expect(shape.attributes?.description).toContain("working:<id>");
   });
 

@@ -830,6 +830,13 @@ const mutations: Mutation[] = [
     replace: 'if (false) return { status: "forgotten",',
     expect: "a forgotten handle never resolves to a newer record",
   },
+  {
+    name: "a merge leaves the duplicate as a record of its own",
+    file: "src/memory-graph.ts",
+    find: 'this.#ins(s, r.p, edge ? r.o : "", edge ? "tomb-edge" : "tomb", null, at, origin);',
+    replace: "void edge;",
+    expect: "a merged record's handles, id and connections lead to the record it was merged into",
+  },
 ];
 
 // Anchors survive the formatter: whitespace, line breaks around brackets, trailing commas and quote style are not part

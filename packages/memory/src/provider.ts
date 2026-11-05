@@ -43,8 +43,8 @@ export interface ShaclMemoryOptions {
   readonly maxWritesPerSession?: number;
   /**
    * Run once each time a scope's graph is opened in this process, with the scope eve resolved for it. A host that
-   * joins this memory to another (a reference like `knowledge:<id>` on a task) keeps the graph by the scope's value and
-   * reads it with `describe(id)`. The graph stays open for the process; don't close it. A throw or a rejection is
+   * joins this memory to another (a reference like `knowledge:<handle>` on a task) keeps the graph by the scope's value
+   * and reads it with `describe(ref)`, which takes the reference as written. The graph stays open for the process; don't close it. A throw or a rejection is
    * logged and never fails the open; the open doesn't wait for an async hook.
    */
   readonly onOpen?: (graph: MemoryGraph, scope: MemoryScope) => void | Promise<void>;
@@ -474,7 +474,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
               .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
               .optional()
               .describe(
-                "plain properties, e.g. { floor: 2 }. A value may be a reference to another memory by id, with the prefixes knowledge:<id> and working:<id>, kept as written.",
+                "plain properties, e.g. { floor: 2 }. A value may be a reference to another memory, kept as written: knowledge:<handle> for a record here, working:<id> for a task.",
               ),
             relations: z
               .array(z.object({ relation: z.string(), to: z.string() }))

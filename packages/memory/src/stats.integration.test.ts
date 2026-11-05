@@ -75,6 +75,26 @@ describe("an older store opened now gets a high-water mark seeded from its rows,
   });
 });
 
+describe("a 0.5 store (user_version 4) opened now gets the handles table and no handles", () => {
+  it("moves to user_version 5 with its records shown by id", async () => {
+    const dir = tempDir();
+    const g = await MemoryGraph.create({ dir });
+    await g.remember({ label: "Kettle", type: "Thing" });
+    g.close();
+    // Back to the shape 0.5.2 leaves: no handles table, user_version 4.
+    const db = new Database(join(dir, "graph.db"));
+    db.exec("DROP TABLE handles; PRAGMA user_version = 4;");
+    db.close();
+    expect(scopeStats(dir, ".")).toMatchObject({ userVersion: 4, handles: null });
+    const again = await MemoryGraph.create({ dir });
+    const [kettle] = again.recall("kettle");
+    again.close();
+    expect(scopeStats(dir, ".")).toMatchObject({ userVersion: 5, handles: 0 });
+    expect(kettle?.handle).toBeUndefined();
+    expect(kettle?.id).toMatch(/^kettle_/);
+  });
+});
+
 describe("eve-memory-stats reports each store's facts", () => {
   it("finds every subdirectory holding a graph.db, whatever its name", async () => {
     const { dir, g } = await memoryDir();
