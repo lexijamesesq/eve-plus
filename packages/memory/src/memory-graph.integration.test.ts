@@ -54,35 +54,35 @@ describe('restart survival: the SQLite file with WAL is the durable store ("cont
       class: "Room",
       requires: [{ slot: "floor", datatype: "integer", minCount: 1 }],
     });
-    await mg.remember({ id: "kitchen", type: "Room", label: "Kitchen", attributes: { floor: 1 } });
+    await mg.remember({ type: "Room", label: "Kitchen", attributes: { floor: 1 } });
     mg.close();
     return MemoryGraph.create({ dir });
   }
 
   it("graph survives restart (data)", async () => {
-    expect((await restarted()).recall("kitchen").map((f) => f.id)).toContain("kitchen");
+    expect((await restarted()).recall("kitchen").map((f) => f.handle)).toContain("kitchen");
   });
 
   it("ontology survives restart (still enforces lint)", async () => {
-    expect((await (await restarted()).remember({ id: "x", type: "Room", label: "X" })).ok).toBe(
-      false,
-    );
+    expect((await (await restarted()).remember({ type: "Room", label: "X" })).ok).toBe(false);
   });
 });
 
 describe("set semantics and legacy stores", () => {
   it("re-saving an identical fact adds no triples or search rows (incl. IRI type/relation rows)", async () => {
     const g = await MemoryGraph.create({ dir: tempDir() });
+    await g.remember({ label: "Initech", type: "Org" });
     const sam = {
-      id: "sam",
       label: "Sam",
       type: "ClientContact",
       attributes: { company: "Initech" },
       relations: [{ relation: "works_at", to: "initech" }],
     };
-    await g.remember(sam);
+    expect((await g.remember(sam)).ok).toBe(true);
     const once = counts(g);
-    await g.remember(sam);
+    // As an update by handle and as a replayed create: neither writes a row.
+    expect((await g.remember({ ...sam, id: "knowledge:sam" })).ok).toBe(true);
+    expect((await g.remember(sam)).ok).toBe(true);
     expect(counts(g)).toEqual(once);
   });
 

@@ -55,6 +55,8 @@ export interface Change {
 }
 export interface Fact {
   id?: string;
+  /** The record's handle, if it has one. A record saved before 0.6.0 has none until it is migrated. */
+  handle?: string;
   label?: string;
   type?: string;
   attributes?: Record<string, string>;
@@ -68,13 +70,14 @@ export interface Fact {
 export interface RelateResult {
   found: boolean;
   entity?: string;
+  handle?: string;
   label?: string;
   type?: string;
   attributes?: Record<string, string>;
   recorded?: Record<string, Recorded>;
   recordedName?: Recorded;
   recordedType?: Recorded;
-  connections: { relation: string; target: string }[];
+  connections: { relation: string; target: string; id: string; handle?: string }[];
 }
 export interface ShapeEntry {
   class: string;
@@ -86,10 +89,38 @@ export interface ShapeEntry {
 export interface CheckResult {
   rules: number;
   checked: number;
-  issues: { id: string; label?: string; type?: string; messages: string[] }[];
+  issues: { id: string; handle?: string; label?: string; type?: string; messages: string[] }[];
   truncated: boolean;
 }
-export type RememberResult = Ok<{ id: string; summary: string; superseded: Change[] }> | Fail;
+/** The record that already holds a handle, and how: as its current handle, an earlier one, a forgotten record's, a
+ * record's internal id, or the name of a record saved before handles that hasn't been given one yet. */
+export interface Holder {
+  id: string;
+  handle?: string;
+  label?: string;
+  type?: string;
+  holds: "current" | "earlier" | "forgotten" | "id" | "unmigrated";
+}
+export type RememberResult =
+  | Ok<{ id: string; handle?: string; summary: string; superseded: Change[]; replayed?: boolean }>
+  | (Fail & { holder?: Holder });
+/**
+ * What a reference names. `found` follows "merged into"; `forgotten` is a record that was forgotten (its handle stays
+ * reserved, so a reference never lands on a newer thing); `missing` carries the nearest handles.
+ */
+export type Resolution =
+  | {
+      status: "found";
+      id: string;
+      handle?: string;
+      via: "handle" | "earlier" | "id";
+      mergedFrom?: string[];
+    }
+  | { status: "forgotten"; id: string; handle?: string; on: string | null }
+  | { status: "missing"; suggestions: string[] };
+export type HandleResult =
+  | { ok: true; handle: string }
+  | { ok: false; reason: string; holder?: Holder };
 export type ForgetResult =
   | {
       ok: true;
@@ -103,6 +134,7 @@ export type ForgetResult =
 export type ExtendResult = Ok<{ class: string; merged?: boolean; rule?: string }> | Fail;
 export interface Description {
   id: string;
+  handle?: string;
   label?: string;
   type?: string;
   attributes: Record<string, string>;
@@ -189,6 +221,53 @@ export const slug = (s: unknown) =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "") || "x";
+
+/** How a reference to a record is written: `knowledge:<handle>`, or `knowledge:<id>` for a record without a handle. */
+export const REFERENCE_PREFIX = "knowledge:";
+/**
+ * The longest handle, in UTF-16 code units (JavaScript string length): `knowledge:` plus a handle stays within 128,
+ * well under the 512-unit cap a link has in `@eve-plus/working`.
+ */
+export const HANDLE_MAX = 118;
+/**
+ * A record's handle from its name. Django's `slugify(value, allow_unicode=True)` (django/utils/text.py at 816ea69c),
+ * with two changes: combining marks are kept (Python's `\w` drops spacing marks, which breaks Devanagari and other
+ * scripts), and `_` is a separator like space and `-`, so a handle has one separator. NFKC, lowercase, drop what
+ * isn't a letter, mark, digit or separator, collapse separators to one `-`, trim. Letters stay in their own script:
+ * "李明" is `李明`, "José García" is `josé-garcía`. Over HANDLE_MAX it is cut at the last `-` in range, or at a code
+ * point when there is none. A name with no letters or digits gives "", which callers refuse.
+ */
+export function handleOf(label: unknown): string {
+  const h = String(label)
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, "")
+    .replace(/[\s_-]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  if (h.length <= HANDLE_MAX) return h;
+  if (h[HANDLE_MAX] === "-") return h.slice(0, HANDLE_MAX);
+  let cut = h.slice(0, HANDLE_MAX);
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  const dash = cut.lastIndexOf("-");
+  return (dash > 0 ? cut.slice(0, dash) : cut).replace(/-+$/, "");
+}
+const bare = (ref: string) => {
+  const r = String(ref).trim();
+  return r.toLowerCase().startsWith(REFERENCE_PREFIX) ? r.slice(REFERENCE_PREFIX.length) : r;
+};
+// Edit distance, for "did you mean" on a miss (git's help.c ranks its suggestions the same way).
+function distance(a: string, b: string): number {
+  const x = [...a],
+    y = [...b];
+  let prev = Array.from({ length: y.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= x.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= y.length; j++)
+      row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
+    prev = row;
+  }
+  return prev[y.length];
+}
 const pascal = (s: unknown) =>
   String(s)
     .trim()
@@ -199,12 +278,6 @@ const pascal = (s: unknown) =>
     .join("") || "X";
 const esc = (s: unknown) => String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 const tail = (iri: string) => iri.split("/").pop() ?? iri;
-const nameTokens = (s: string) =>
-  String(s)
-    .normalize("NFKD")
-    .replace(/\p{Diacritic}/gu, "")
-    .toLowerCase()
-    .match(/[a-z0-9]+/g) ?? [];
 // FTS5 MATCH from free text: tokenize, drop 1–2 char noise (with a fallback so an all-short query still runs),
 // quote each token, OR-join. A single quoted phrase would require the whole string to appear adjacent+in-order —
 // so a multi-word query could never match a stored literal. OR over tokens is the "any word matches" recall we want.
@@ -463,6 +536,9 @@ export const CURRENT_FACTS_SQL = `SELECT (SELECT count(*) FROM triples t WHERE $
  * The store's write high-water mark: the largest `seq` ever assigned. It only grows, even when `revertBatch` deletes
  * the latest rows, so a mark lower than a previous reading means the store was lost or replaced.
  */
+/** How many handles are held: one live row per handle, whether current, earlier, or a forgotten record's. */
+export const LIVE_HANDLES_SQL =
+  "SELECT count(*) AS n FROM handles WHERE kind = 'handle' AND superseded_by IS NULL";
 export const SEQ_HWM_SQL = "SELECT CAST(value AS INTEGER) AS n FROM meta WHERE key = 'seq_hwm'";
 const keyOf = (p: string) => (p === TYPE ? "type" : p === LABEL ? "label" : tail(p));
 // Forgetting appends a tombstone rather than deleting: 'tomb' retracts a single-valued key, 'tomb-edge' one edge.
@@ -528,6 +604,13 @@ export class MemoryGraph {
                 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
                 CREATE TABLE IF NOT EXISTS schema_log(seq INTEGER PRIMARY KEY, class TEXT, def TEXT, raw TEXT,
                                                       written_at TEXT, origin TEXT);
+                CREATE TABLE IF NOT EXISTS handles(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
+                                                   handle TEXT, s TEXT NOT NULL, target TEXT, written_at TEXT,
+                                                   origin TEXT, superseded_by INTEGER);
+                CREATE UNIQUE INDEX IF NOT EXISTS u_handle ON handles(handle)
+                  WHERE kind = 'handle' AND superseded_by IS NULL;
+                CREATE INDEX IF NOT EXISTS i_handles_s ON handles(s);
+                CREATE INDEX IF NOT EXISTS i_handles_origin ON handles(origin);
                 DROP TABLE IF EXISTS held_approvals;
                 DROP TABLE IF EXISTS pending_approvals;`);
     const version = mg.db.pragma("user_version", { simple: true }) as number;
@@ -572,6 +655,9 @@ export class MemoryGraph {
         mg.db.pragma("user_version = 4");
       })();
     }
+    // v4 → v5: the handles table (created above). Nothing is backfilled: a record saved before handles gets one only
+    // from mintHandle, so a name two old records share is never settled on open, with nobody to decide it.
+    if (version < 5) mg.db.pragma("user_version = 5");
     mg.db.exec(`CREATE INDEX IF NOT EXISTS i_sps ON triples(s, p, seq);
                 CREATE INDEX IF NOT EXISTS i_seq ON triples(seq);
                 CREATE INDEX IF NOT EXISTS i_origin ON triples(origin);`);
@@ -701,6 +787,298 @@ export class MemoryGraph {
   #reindex(s: string) {
     this.#delF.run(s);
     for (const r of this.#current.all(s)) if (r.ot === "lit") this.#insF.run(s, r.o);
+  }
+
+  // ---- handles: a stable id plus a unique, name-derived handle with history (Rails friendly_id's slugs table,
+  // Wikipedia's titles with redirects, Kubernetes names over a UID). A handle row is live until reclaimHandle frees it;
+  // the unique index allows one live row per handle, so a record's current, earlier and forgotten handles are all
+  // taken. Which live row is current isn't stored: it's the one its current label makes.
+
+  // A record's live handles, oldest first.
+  #liveHandles(s: string): string[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT handle FROM handles WHERE kind = 'handle' AND s = ? AND superseded_by IS NULL ORDER BY seq",
+        )
+        .all(s) as { handle: string }[]
+    ).map((r) => r.handle);
+  }
+  #holderOf(handle: string): string | undefined {
+    return (
+      this.db
+        .prepare(
+          "SELECT s FROM handles WHERE kind = 'handle' AND handle = ? AND superseded_by IS NULL",
+        )
+        .get(handle) as { s: string } | undefined
+    )?.s;
+  }
+  // The handle a record answers to: the live one its label makes, else its newest live one (its label was forgotten).
+  #handleFor(s: string, label: string | undefined = this.#view(s).label): string | undefined {
+    const live = this.#liveHandles(s);
+    const named = label === undefined ? undefined : handleOf(label);
+    return named !== undefined && live.includes(named) ? named : live.at(-1);
+  }
+  #mergedInto(s: string): string | undefined {
+    return (
+      this.db
+        .prepare(
+          "SELECT target FROM handles WHERE kind = 'merge' AND s = ? ORDER BY seq DESC LIMIT 1",
+        )
+        .get(s) as { target: string } | undefined
+    )?.target;
+  }
+  // Every row a record ever had, tombstones included: a forgotten record is still known by its id.
+  #known(s: string): boolean {
+    return this.db.prepare("SELECT 1 FROM triples WHERE s = ? LIMIT 1").get(s) !== undefined;
+  }
+  // The name a record last had, even once forgotten, for saying what a reserved handle belonged to.
+  #lastLabel(s: string): string | undefined {
+    return (
+      this.db
+        .prepare(
+          `SELECT o FROM triples WHERE s = ? AND p = '${LABEL}' AND ot = 'lit' ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(s) as { o: string } | undefined
+    )?.o;
+  }
+  #forgottenOn(s: string): string | null {
+    return onOf(
+      (
+        this.db
+          .prepare(
+            "SELECT written_at FROM triples WHERE s = ? AND ot IN ('tomb','tomb-edge') ORDER BY seq DESC LIMIT 1",
+          )
+          .get(s) as { written_at: string | null } | undefined
+      )?.written_at ?? null,
+    );
+  }
+
+  /**
+   * What `ref` names, in one order everywhere: current handle, then an earlier handle, then an internal id, then the
+   * handle `ref` would make as a name. An id in another case resolves as it did before handles. Takes `knowledge:<x>` or a bare `<x>`. Follows "merged into". The id step
+   * matches ids exactly: `slug()` would turn "李明" into `x` and land on whatever record has id `x`. A handle is
+   * unique within its scope's graph, and resolves only there.
+   */
+  resolve(ref: string): Resolution {
+    const x = bare(ref);
+    if (!x) return { status: "missing", suggestions: [] };
+    let s: string | undefined;
+    let via: "handle" | "earlier" | "id" = "id";
+    const byHandle = (h: string) => {
+      const holder = this.#holderOf(h);
+      if (holder === undefined) return false;
+      s = holder;
+      via = this.#handleFor(holder) === h ? "handle" : "earlier";
+      return true;
+    };
+    if (!byHandle(x)) {
+      // An id as 0.5 read it too: ids were made by slug(), so a reference written in another case (`Alice_X7K2`)
+      // still lands, but only for input slug() keeps intact, since it turns any other script into `x`.
+      const legacy = /^[A-Za-z0-9_]+$/.test(x) ? slug(x) : undefined;
+      if (this.#known(`${E}${x}`)) s = `${E}${x}`;
+      else if (legacy !== undefined && this.#known(`${E}${legacy}`)) s = `${E}${legacy}`;
+      else if (handleOf(x) !== x) byHandle(handleOf(x));
+    }
+    if (s === undefined) return { status: "missing", suggestions: this.#suggest(x) };
+    const start = s;
+    s = this.#followMerges(s);
+    const mergedFrom = s === start ? [] : [tail(start)];
+    const handle = this.#handleFor(s);
+    if (!this.#view(s).exists)
+      return { status: "forgotten", id: tail(s), handle, on: this.#forgottenOn(s) };
+    return {
+      status: "found",
+      id: tail(s),
+      handle,
+      via,
+      ...(mergedFrom.length ? { mergedFrom } : {}),
+    };
+  }
+
+  // Where a stored id leads now: through "merged into", bounded and cycle-safe.
+  #followMerges(s: string): string {
+    const seen = new Set([s]);
+    for (
+      let into = this.#mergedInto(s);
+      into !== undefined && !seen.has(into);
+      into = this.#mergedInto(s)
+    ) {
+      seen.add(into);
+      s = into;
+      if (seen.size > 16) break;
+    }
+    return s;
+  }
+
+  // Nearest references to a miss: records sharing a word or a prefix with it, ranked by edit distance. Bounded.
+  #suggest(x: string): string[] {
+    const words = x.split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1);
+    const subjects = new Set<string>();
+    if (words.length)
+      for (const r of this.db
+        .prepare("SELECT DISTINCT s FROM lit_fts WHERE o MATCH ? LIMIT 50")
+        .all(words.map((w) => `"${w}"`).join(" OR ")) as { s: string }[])
+        subjects.add(r.s);
+    for (const r of this.db
+      .prepare(
+        "SELECT DISTINCT s FROM handles WHERE kind = 'handle' AND superseded_by IS NULL AND handle LIKE ? ESCAPE '\\' LIMIT 200",
+      )
+      .all(`${([...x][0] ?? "").replace(/[\\%_]/g, "\\$&")}%`) as { s: string }[])
+      subjects.add(r.s);
+    return [...subjects]
+      .filter((s) => this.#view(s).exists)
+      .map((s) => this.#handleFor(s) ?? tail(s))
+      .map((ref) => [ref, distance(ref, x)] as const)
+      .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+      .slice(0, 3)
+      .map(([ref]) => `${REFERENCE_PREFIX}${ref}`);
+  }
+
+  // Who already holds `h`, if anyone other than `self`: a live handle row (current, earlier or forgotten), a record
+  // whose internal id is `h`, or a record saved before handles whose name makes `h` (detection only; nothing is
+  // assigned, so a namesake is never settled without the operator).
+  #holder(h: string, self?: string, { unmigrated = true } = {}): Holder | undefined {
+    const describe = (s: string, holds: Holder["holds"]): Holder => {
+      const v = this.#view(s);
+      return {
+        id: tail(s),
+        handle: this.#handleFor(s, v.label),
+        label: v.label ?? this.#lastLabel(s),
+        type: v.type,
+        holds,
+      };
+    };
+    const live = this.#holderOf(h);
+    if (live !== undefined)
+      return live === self
+        ? undefined
+        : describe(
+            live,
+            !this.#view(live).exists
+              ? "forgotten"
+              : this.#handleFor(live) === h
+                ? "current"
+                : "earlier",
+          );
+    const byId = `${E}${h}`;
+    if (byId !== self && this.#known(byId))
+      return describe(byId, this.#view(byId).exists ? "id" : "forgotten");
+    if (!unmigrated) return undefined;
+    const rows = this.db
+      .prepare(
+        `SELECT s, o FROM triples t WHERE p = '${LABEL}' AND ot = 'lit' AND ${LATEST_SINGLE}
+           AND s NOT IN (SELECT s FROM handles WHERE kind = 'handle' AND superseded_by IS NULL)`,
+      )
+      .iterate() as Iterable<{ s: string; o: string }>;
+    for (const r of rows)
+      if (r.s !== self && handleOf(r.o) === h) return describe(r.s, "unmigrated");
+    return undefined;
+  }
+
+  #takenMessage(name: string, h: string, holder: Holder): string {
+    const who = `"${holder.label ?? holder.id}"${holder.type ? ` (${holder.type})` : ""}`;
+    const at = `${REFERENCE_PREFIX}${holder.handle ?? holder.id}`;
+    const qualify = `If it's a different thing, give it a name that tells them apart, such as "${name} (Acme)", and save again.`;
+    switch (holder.holds) {
+      case "current":
+      case "id":
+        return `${who} already has the handle ${REFERENCE_PREFIX}${h}. If it's the same thing, update it: save with id "${at}". ${qualify}`;
+      case "earlier":
+        return `${REFERENCE_PREFIX}${h} is an earlier name of ${who}, now ${at}, and references to it still lead there. If it's the same thing, update it with id "${at}". ${qualify}`;
+      case "forgotten":
+        return `${REFERENCE_PREFIX}${h} belonged to ${who}, which was forgotten; references to it still say so, so the name stays reserved. ${qualify} Or ask the memory's operator to reclaim the handle.`;
+      case "unmigrated":
+        return `${who} is already saved under this name, as ${at}. If it's the same thing, update it with id "${at}". ${qualify}`;
+    }
+  }
+
+  #insertHandle(h: string, s: string, at: string, origin: string) {
+    this.db
+      .prepare(
+        "INSERT INTO handles(kind, handle, s, written_at, origin) VALUES ('handle', ?, ?, ?, ?)",
+      )
+      .run(h, s, at, origin);
+  }
+
+  /**
+   * Give a record saved before handles the handle its current name makes (a forgotten one, its last name's). The
+   * migration's verb: nothing else assigns a handle to an existing record. A record that already holds that handle is
+   * left as it is, so a re-run is a no-op. Fails, naming the holder, when another record holds it.
+   */
+  mintHandle(id: string, origin: string = DIRECT): HandleResult {
+    const r = this.resolve(id);
+    if (r.status === "missing") return { ok: false, reason: `No record is addressed as "${id}".` };
+    const s = `${E}${r.id}`;
+    // A record forgotten before handles gets the handle its last name made, so that name stays reserved as forgotten.
+    const label =
+      this.#view(s).label ?? (r.status === "forgotten" ? this.#lastLabel(s) : undefined);
+    if (label === undefined)
+      return { ok: false, reason: `${r.id} has no name to make a handle from.` };
+    const h = handleOf(label);
+    if (!h)
+      return { ok: false, reason: `"${label}" has no letters or digits to make a handle from.` };
+    if (this.#liveHandles(s).includes(h)) return { ok: true, handle: h };
+    // The migration settles namesakes among old records itself, so only a handle already held stops it.
+    const holder = this.#holder(h, s, { unmigrated: false });
+    if (holder) return { ok: false, reason: this.#takenMessage(label, h, holder), holder };
+    this.#insertHandle(h, s, new Date().toISOString(), origin);
+    return { ok: true, handle: h };
+  }
+
+  /**
+   * Free an earlier or forgotten handle, so the next record whose name makes it takes it, as a page move over a
+   * redirect does. References to it then lead to that record. A record's current handle can't be reclaimed: rename
+   * the record first.
+   */
+  reclaimHandle(handle: string, origin: string = DIRECT): HandleResult {
+    const h = bare(handle);
+    const holder = this.#holderOf(h);
+    if (holder === undefined)
+      return { ok: false, reason: `No record holds ${REFERENCE_PREFIX}${h}.` };
+    if (this.#view(holder).exists && this.#handleFor(holder) === h)
+      return {
+        ok: false,
+        reason: `${REFERENCE_PREFIX}${h} is the current handle of "${this.#view(holder).label ?? tail(holder)}". Rename that record before reclaiming it.`,
+      };
+    this.db.transaction(() => {
+      const { lastInsertRowid } = this.db
+        .prepare(
+          "INSERT INTO handles(kind, handle, s, written_at, origin) VALUES ('reclaim', ?, ?, ?, ?)",
+        )
+        .run(h, holder, new Date().toISOString(), origin);
+      this.db
+        .prepare(
+          "UPDATE handles SET superseded_by = ? WHERE kind = 'handle' AND handle = ? AND superseded_by IS NULL",
+        )
+        .run(lastInsertRowid, h);
+    })();
+    return { ok: true, handle: h };
+  }
+
+  /**
+   * Record that `duplicate` is the same thing as `into`. References to the duplicate's handles and id, and connections
+   * to it, then lead to `into`; nothing is rewritten. Carrying the duplicate's details over is the caller's.
+   */
+  merge(
+    duplicate: string,
+    into: string,
+    origin: string = DIRECT,
+  ): { ok: true } | { ok: false; reason: string } {
+    const from = this.resolve(duplicate);
+    const to = this.resolve(into);
+    if (from.status === "missing")
+      return { ok: false, reason: `No record is addressed as "${duplicate}".` };
+    if (to.status !== "found")
+      return { ok: false, reason: `No current record is addressed as "${into}".` };
+    if (from.id === to.id)
+      return { ok: false, reason: `"${duplicate}" and "${into}" are already the same record.` };
+    this.db
+      .prepare(
+        "INSERT INTO handles(kind, s, target, written_at, origin) VALUES ('merge', ?, ?, ?, ?)",
+      )
+      .run(`${E}${from.id}`, `${E}${to.id}`, new Date().toISOString(), origin);
+    return { ok: true };
   }
 
   async #reparseShapes() {
@@ -894,9 +1272,11 @@ export class MemoryGraph {
     };
   }
 
-  // ---- remember: set the given keys on an entity (new or existing), lint the resulting entity, append ----
-  // Saving an existing id sets exactly the keys it supplies — the tool's input is one value per key, so a
-  // re-save means "this is now the value". Nothing is overwritten: the prior value stays in the log, attributed.
+  // ---- remember: create a record (no id) or update one (id or handle), lint the result, append ----
+  // Create and update are different verbs (Neo4j CREATE vs MERGE): a create whose handle is taken fails and names the
+  // holder, so a thing is never saved twice by accident, and an update names the record it means. Updating sets
+  // exactly the keys it supplies — the tool's input is one value per key, so a re-save means "this is now the value".
+  // Nothing is overwritten: the prior value stays in the log, attributed.
   async remember(fact: RememberInput, origin: string = DIRECT): Promise<RememberResult> {
     const naming = nameProblems([
       ...(fact.type ? [["type", fact.type, pascal(fact.type)] as [string, string, string]] : []),
@@ -915,17 +1295,74 @@ export class MemoryGraph {
       dlog("remember REJECTED (naming):", naming.map((p) => p.message).join(" | "));
       return { ok: false, stage: "naming", problems: naming };
     }
-    const held = fact.id ? undefined : this.#holding(fact);
-    const id = fact.id
-      ? slug(fact.id)
-      : held
-        ? tail(held)
-        : this.#freshId(fact.label ?? fact.type ?? "thing");
-    const s = `${E}${id}`;
+    const fail = (stage: string, message: string, holder?: Holder): RememberResult => ({
+      ok: false,
+      stage,
+      problems: [{ message }],
+      ...(holder ? { holder } : {}),
+    });
+    const didYouMean = (r: { suggestions: string[] }) =>
+      r.suggestions.length ? ` Did you mean ${r.suggestions.join(", ")}?` : "";
+    // Every input that names a record goes through the one resolver, and the internal id is what's stored.
+    const targets: string[] = [];
+    for (const r of fact.relations ?? []) {
+      const t = this.resolve(r.to);
+      if (t.status === "missing")
+        return fail(
+          "target",
+          `Can't connect ${r.relation} to "${r.to}": nothing is remembered by that handle.${didYouMean(t)} Connect to a remembered thing by its handle, or save it first.`,
+        );
+      if (t.status === "forgotten")
+        return fail(
+          "target",
+          `Can't connect ${r.relation} to "${r.to}": ${REFERENCE_PREFIX}${t.handle ?? t.id} was forgotten${t.on ? ` on ${t.on}` : ""}.`,
+        );
+      targets.push(`${E}${t.id}`);
+    }
+    const creating = fact.id === undefined;
+    let s: string;
+    let mint: string | undefined;
+    if (creating) {
+      if (!fact.label)
+        return fail("handle", "A new record needs a label: its handle is made from it.");
+      mint = handleOf(fact.label);
+      if (!mint)
+        return fail(
+          "handle",
+          `"${String(fact.label).slice(0, 60)}" has no letters or digits to make a handle from. Give it a name that has some.`,
+        );
+      const taken = this.#taken(fact, mint, targets);
+      if (taken) return taken;
+      s = `${E}${this.#freshId(fact.label)}`;
+    } else {
+      const r = this.resolve(String(fact.id));
+      if (r.status === "missing")
+        return fail(
+          "target",
+          `Nothing is remembered as "${fact.id}".${didYouMean(r)} To save a new thing, leave id out.`,
+        );
+      // A forgotten record resolves to itself: saving it again brings it back under its own id and handle.
+      s = `${E}${r.id}`;
+      if (fact.label !== undefined) {
+        const h = handleOf(fact.label);
+        if (!h)
+          return fail(
+            "handle",
+            `"${String(fact.label).slice(0, 60)}" has no letters or digits to make a handle from. Give it a name that has some.`,
+          );
+        const live = this.#liveHandles(s);
+        if (!live.includes(h)) {
+          const holder = this.#holder(h, s);
+          if (holder)
+            return fail("handle", this.#takenMessage(String(fact.label), h, holder), holder);
+          // A record saved before handles keeps none until the migration gives it one: renaming it must not settle a
+          // name the operator hasn't seen.
+          if (live.length > 0) mint = h;
+        }
+      }
+    }
+    const id = tail(s);
     const before = this.#view(s);
-    // The same control-plane rule for records: one typed in the owner's own conversation is re-typed only there, so
-    // another writer can't move it out from under the owner's record types. Read from the log, so forgetting the type
-    // or the whole record first doesn't free it.
     const ownerType = this.#ownerType(s);
     const target = fact.type ? pascal(fact.type) : before.exists ? undefined : "Thing";
     if (
@@ -941,7 +1378,7 @@ export class MemoryGraph {
         stage: "owner-type",
         problems: [
           {
-            message: `${before.label ?? id} was typed \`${ownerType}\` in the memory owner's own conversation, so only the memory owner's own conversation can change its type. ${fact.type ? "Save the other details without a type, or ask the memory owner." : `The record was forgotten, and saving it again would type it \`Thing\`: save it with type \`${ownerType}\`, or ask the memory owner.`}`,
+            message: `${before.label ?? id} was typed \`${ownerType}\` in the memory owner's own conversation, so only the memory owner's own conversation can change its type. ${fact.type ? "Save the other details without a type, or ask the memory owner. If it's a different thing, save it as a new record with a name that tells them apart." : `The record was forgotten, and saving it again would type it \`Thing\`: save it with type \`${ownerType}\`, or ask the memory owner.`}`,
           },
         ],
       };
@@ -953,10 +1390,10 @@ export class MemoryGraph {
       want.push({ s, p: LABEL, o: String(fact.label), ot: "lit", dt: `${XSD}string` });
     for (const [k, v] of Object.entries(fact.attributes ?? {}))
       want.push({ s, p: `${P}${slug(k)}`, o: String(v), ot: "lit", dt: xsdOf(v) });
-    const relations: Triple[] = (fact.relations ?? []).map((r) => ({
+    const relations: Triple[] = (fact.relations ?? []).map((r, i) => ({
       s,
       p: `${P}${slug(r.relation)}`,
-      o: `${E}${slug(r.to)}`,
+      o: targets[i] as string,
       ot: "iri",
       dt: null,
     }));
@@ -1009,11 +1446,31 @@ export class MemoryGraph {
     );
     if (changes.length + newRels.length > 0) {
       const at = new Date().toISOString();
-      this.db.transaction(() => {
-        for (const r of [...changes, ...newRels])
-          this.#ins(r.s, r.p, r.o, r.ot, r.dt ?? null, at, origin);
-        this.#reindex(s);
-      })();
+      try {
+        this.db.transaction(() => {
+          for (const r of [...changes, ...newRels])
+            this.#ins(r.s, r.p, r.o, r.ot, r.dt ?? null, at, origin);
+          if (mint !== undefined) this.#insertHandle(mint, s, at, origin);
+          this.#reindex(s);
+        })();
+      } catch (error) {
+        // The unique index is the guarantee, not the check above: validation awaits, so a concurrent save of the same
+        // name can pass that check too (Neo4j: only a constraint holds under concurrent writes). The losing write
+        // rolled back whole; answer it as a replay, or as the taken handle it is.
+        if (mint === undefined || (error as { code?: string }).code !== "SQLITE_CONSTRAINT_UNIQUE")
+          throw error;
+        const again = creating
+          ? this.#taken(fact, mint, targets)
+          : (() => {
+              const holder = this.#holder(mint, s);
+              return (
+                holder &&
+                fail("handle", this.#takenMessage(String(fact.label), mint, holder), holder)
+              );
+            })();
+        if (again) return again;
+        throw error;
+      }
     }
     const view = this.#view(s);
     dlog(
@@ -1024,9 +1481,10 @@ export class MemoryGraph {
       `who=${whoOf(origin)}`,
       superseded.length ? `superseded ${JSON.stringify(superseded)}` : "",
     );
-    // Surface the id: the model needs it to connect other things to this one (relations resolve by id, so a
-    // relation to a bare label would dangle to a non-existent node).
-    let summary = `${before.exists ? "Updated" : "Remembered"} ${view.label ?? id} (${view.type ?? "untyped"}) [id: ${id}]. Use this id to connect other things to it.`;
+    // Surface the handle on the turn it's made: it's how the agent refers to this record from now on.
+    const handle = this.#handleFor(s, view.label);
+    const ref = `${REFERENCE_PREFIX}${handle ?? id}`;
+    let summary = `${before.exists ? "Updated" : "Remembered"} ${view.label ?? id} (${view.type ?? "untyped"}) as ${ref}. Use ${ref} to refer to it: to connect other things to it, in links, and to update it.`;
     if (superseded.length)
       summary += ` Replaced: ${superseded.map((c) => `${c.key} "${c.from}" → "${c.to}"`).join("; ")} (earlier values are kept in history).`;
     // Loud, never blocking: a rule binds by type, so a save under another type silently dodges it. Say so.
@@ -1036,7 +1494,42 @@ export class MemoryGraph {
       if (skipped.length > 3) shown.push(`+${skipped.length - 3} more`);
       summary += ` Saved as ${view.type ?? "untyped"}, so it was NOT checked against your other rules: ${shown.join("; ")}. If it is one of those kinds, save it with that type.`;
     }
-    return { ok: true, id, summary, superseded };
+    return { ok: true, id, handle, summary, superseded };
+  }
+
+  // A create on a handle someone holds: a replay of the holder's own content succeeds with it (eve re-runs a step
+  // interrupted mid-write, so a save can arrive twice); anything else fails and names the holder.
+  #taken(fact: RememberInput, h: string, targets: readonly string[]): RememberResult | undefined {
+    const holder = this.#holder(h);
+    if (holder === undefined) return undefined;
+    const s = `${E}${holder.id}`;
+    const v = this.#view(s);
+    const replay =
+      holder.holds !== "forgotten" &&
+      v.label === String(fact.label) &&
+      (!fact.type || v.type === pascal(fact.type)) &&
+      Object.entries(fact.attributes ?? {}).every(
+        ([k, val]) => v.attributes[slug(k)] === String(val),
+      ) &&
+      (fact.relations ?? []).every((r, i) =>
+        v.relations.some((b) => b.p === `${P}${slug(r.relation)}` && b.o === targets[i]),
+      );
+    if (!replay)
+      return {
+        ok: false,
+        stage: "handle",
+        problems: [{ message: this.#takenMessage(String(fact.label), h, holder) }],
+        holder,
+      };
+    const ref = `${REFERENCE_PREFIX}${holder.handle ?? holder.id}`;
+    return {
+      ok: true,
+      id: holder.id,
+      handle: holder.handle,
+      replayed: true,
+      summary: `Already remembered: ${v.label} (${v.type ?? "untyped"}) as ${ref} holds all of this. Use ${ref} to refer to it.`,
+      superseded: [],
+    };
   }
 
   // ---- forget: retract a whole entity, or some of its details. Appends attributed tombstones — the current
@@ -1045,9 +1538,19 @@ export class MemoryGraph {
     { id, details }: { id: string; details?: string[] },
     origin: string = DIRECT,
   ): Promise<ForgetResult> {
-    const s = `${E}${slug(id)}`;
+    const r = this.resolve(id);
+    if (r.status === "missing")
+      return {
+        ok: false,
+        reason: `Nothing is remembered as "${id}".${r.suggestions.length ? ` Did you mean ${r.suggestions.join(", ")}?` : ""}`,
+      };
+    if (r.status === "forgotten")
+      return {
+        ok: false,
+        reason: `${REFERENCE_PREFIX}${r.handle ?? r.id} was already forgotten${r.on ? ` on ${r.on}` : ""}.`,
+      };
+    const s = `${E}${r.id}`;
     const before = this.#view(s);
-    if (!before.exists) return { ok: false, reason: `Nothing remembered with id "${id}".` };
     // An empty list is a mistake, not a request to forget everything: whole-entity forget is only when details is omitted.
     if (Array.isArray(details) && details.length === 0)
       return {
@@ -1065,7 +1568,7 @@ export class MemoryGraph {
         reason: `"${before.label ?? id}" has none of those details: ${(details ?? []).join(", ")}.`,
       };
     const rows = named.map(withoutOrigin);
-    this.#detectOwnerOverwrite(origin, slug(id), rows, named);
+    this.#detectOwnerOverwrite(origin, r.id, rows, named);
     const at = new Date().toISOString();
     this.db.transaction(() => {
       for (const r of rows)
@@ -1081,12 +1584,7 @@ export class MemoryGraph {
       this.#reindex(s);
     })();
     const forgotten = [...new Set(rows.map((r) => keyOf(r.p)))];
-    dlog(
-      "forget:",
-      slug(id),
-      wanted ? forgotten.join(", ") : "(whole entity)",
-      `who=${whoOf(origin)}`,
-    );
+    dlog("forget:", r.id, wanted ? forgotten.join(", ") : "(whole entity)", `who=${whoOf(origin)}`);
     // Loud, never blocking: forgetting a detail a rule requires leaves the entity out of conformance — say so now
     // rather than leaving it as drift for check_memory to find later.
     let breaks: string[] = [];
@@ -1170,42 +1668,6 @@ export class MemoryGraph {
     }
   }
 
-  // Records whose current name is `label`. Candidates share a full word with it in the current view; bounded, since
-  // this runs on every id-less write.
-  #namesakes(label: string): string[] {
-    const words = nameTokens(label).filter((t) => t.length > 1);
-    if (words.length === 0) return [];
-    const candidates = this.db
-      .prepare("SELECT DISTINCT s FROM lit_fts WHERE o MATCH ? LIMIT 50")
-      .all(words.map((t) => `"${t}"`).join(" OR ")) as { s: string }[];
-    return candidates
-      .map((r) => r.s)
-      .filter((sub) => {
-        const existing = this.#view(sub).label;
-        return existing === label;
-      });
-  }
-
-  // The record that already holds everything this id-less save says, if one does. eve re-runs a step that was
-  // interrupted mid-write, so a save can arrive twice; converging on the record that holds it keeps one copy. Only an
-  // exact match qualifies, so a replay can never undo a later change, and different content gets its own record.
-  #holding(fact: Partial<RememberInput>): string | undefined {
-    if (!fact.label) return undefined;
-    const label = String(fact.label);
-    return this.#namesakes(label).find((sub) => {
-      const v = this.#view(sub);
-      return (
-        (!fact.type || v.type === pascal(fact.type)) &&
-        Object.entries(fact.attributes ?? {}).every(
-          ([k, val]) => v.attributes[slug(k)] === String(val),
-        ) &&
-        (fact.relations ?? []).every((r) =>
-          v.relations.some((b) => b.p === `${P}${slug(r.relation)}` && b.o === `${E}${slug(r.to)}`),
-        )
-      );
-    });
-  }
-
   // ---- recall: "what do I know about X" — FTS5 over current literal values (indexed, bounded) ----
   recall(query: string, limit = 8): Fact[] {
     const match = ftsQuery(query);
@@ -1230,6 +1692,7 @@ export class MemoryGraph {
       const v = this.#view(s);
       return {
         id: tail(s),
+        handle: this.#handleFor(s, v.label),
         label: v.label,
         type: v.type,
         attributes: v.attributes,
@@ -1272,6 +1735,7 @@ export class MemoryGraph {
     }
     const issues = [...grouped].slice(0, maxIssues).map(([s, messages]) => ({
       id: tail(s),
+      handle: this.#handleFor(s, views.get(s)?.label),
       label: views.get(s)?.label,
       type: views.get(s)?.type,
       messages,
@@ -1295,27 +1759,41 @@ export class MemoryGraph {
 
   // ---- relate: "what's connected to Y" — the focus entity's current state plus its relation edges ----
   relate(about: string, limit = 12): RelateResult {
-    const match = ftsQuery(about);
-    if (match === null) {
-      dlog("relate:", JSON.stringify(about), "→ (no searchable tokens)");
-      return { found: false, connections: [] };
+    // A handle or id names the record outright; otherwise the words are searched.
+    const named = this.resolve(about);
+    let focus: string | undefined = named.status === "found" ? `${E}${named.id}` : undefined;
+    if (focus === undefined) {
+      const match = ftsQuery(about);
+      if (match === null) {
+        dlog("relate:", JSON.stringify(about), "→ (no searchable tokens)");
+        return { found: false, connections: [] };
+      }
+      focus = (
+        this.db.prepare("SELECT s FROM lit_fts WHERE o MATCH ? ORDER BY rank LIMIT 1").get(match) as
+          | { s: string }
+          | undefined
+      )?.s;
     }
-    const hit = this.db
-      .prepare("SELECT s FROM lit_fts WHERE o MATCH ? ORDER BY rank LIMIT 1")
-      .get(match) as { s: string } | undefined;
-    if (hit === undefined) {
+    if (focus === undefined) {
       dlog("relate:", JSON.stringify(about), "→ not found");
       return { found: false, connections: [] };
     }
-    const v = this.#view(hit.s);
-    const connections = v.relations
-      .slice(0, limit)
-      .map((r) => ({ relation: tail(r.p), target: this.#view(r.o).label ?? tail(r.o) }));
+    const v = this.#view(focus);
+    // An edge to a merged record leads where the merge does; the edge itself is never rewritten.
+    const connections = v.relations.slice(0, limit).map((r) => {
+      const target = this.#followMerges(r.o);
+      return {
+        relation: tail(r.p),
+        target: this.#view(target).label ?? this.#lastLabel(target) ?? tail(target),
+        id: tail(target),
+        handle: this.#handleFor(target),
+      };
+    });
     dlog(
       "relate:",
       JSON.stringify(about),
       "→",
-      tail(hit.s),
+      tail(focus),
       "has",
       connections.length,
       "connection(s)",
@@ -1323,7 +1801,8 @@ export class MemoryGraph {
     // Entity-scoped: return the focus entity's full attributes alongside its connections — the on-demand detail path.
     return {
       found: true,
-      entity: tail(hit.s),
+      entity: tail(focus),
+      handle: this.#handleFor(focus, v.label),
       label: v.label,
       type: v.type,
       attributes: v.attributes,
@@ -1336,10 +1815,13 @@ export class MemoryGraph {
 
   /** The current state of one entity (what reads serve), or null if nothing current is remembered under the id. */
   describe(id: string): Description | null {
-    const v = this.#view(`${E}${slug(id)}`);
+    const r = this.resolve(id);
+    if (r.status !== "found") return null;
+    const v = this.#view(`${E}${r.id}`);
     return v.exists
       ? {
-          id: slug(id),
+          id: r.id,
+          handle: r.handle,
           label: v.label,
           type: v.type,
           attributes: v.attributes,
@@ -1353,71 +1835,151 @@ export class MemoryGraph {
 
   // ---- operator surface: every write is attributed, so any value's history is inspectable and a batch revertible ----
   history(id: string): HistoryEntry[] {
-    return (
+    const r = this.resolve(id);
+    if (r.status === "missing") return [];
+    const s = `${E}${r.status === "found" && r.mergedFrom ? r.mergedFrom[0] : r.id}`;
+    const parse = (o: string | null) => JSON.parse(o ?? "null");
+    const facts = (
       this.db
         .prepare("SELECT p, o, written_at, origin FROM triples WHERE s=? ORDER BY seq")
-        .all(`${E}${slug(id)}`) as {
+        .all(s) as {
         p: string;
         o: string;
         written_at: string | null;
         origin: string | null;
       }[]
-    ).map((r) => ({
-      key: keyOf(r.p),
-      value: r.p === TYPE ? tail(r.o) : r.o,
-      writtenAt: r.written_at,
-      origin: JSON.parse(r.origin ?? "null"),
+    ).map((t) => ({
+      key: keyOf(t.p),
+      value: t.p === TYPE ? tail(t.o) : t.o,
+      writtenAt: t.written_at,
+      origin: parse(t.origin),
     }));
+    const names = (
+      this.db
+        .prepare(
+          "SELECT kind, handle, target, written_at, origin FROM handles WHERE s = ? ORDER BY seq",
+        )
+        .all(s) as {
+        kind: string;
+        handle: string | null;
+        target: string | null;
+        written_at: string | null;
+        origin: string | null;
+      }[]
+    ).map((h) => ({
+      // Keys with a space: a detail's key never has one, so a detail named `handle` can't be mistaken for these.
+      key:
+        h.kind === "merge"
+          ? "merged into"
+          : h.kind === "reclaim"
+            ? "handle reclaimed"
+            : "record handle",
+      value: h.kind === "merge" ? tail(h.target ?? "") : (h.handle ?? ""),
+      writtenAt: h.written_at,
+      origin: parse(h.origin),
+    }));
+    // Two logs, one timeline: a stable sort by write time keeps each log's own order.
+    return [...facts, ...names].sort((x, y) =>
+      (x.writtenAt ?? "").localeCompare(y.writtenAt ?? ""),
+    );
   }
-  /** Drop every row one origin wrote (match on any of its fields, e.g. { callId } or { sessionId }); reads fall back. */
+  /**
+   * Drop every row one origin wrote (match on any of its fields, e.g. { callId } or { sessionId }); reads fall back.
+   * Handles, reclaims and merges are rows like any other. A revert that would leave a record answering to a handle
+   * another record has taken since (undoing a rename or a reclaim after the name moved on) is not applied: nothing is
+   * removed, and `conflicts` names each one so it can be settled first.
+   */
   async revertBatch(match: Record<string, string | number>): Promise<{
     removed: number;
     schema: number;
     entities: string[];
     untyped: string[];
+    conflicts: { id: string; handle: string; heldBy: string }[];
   }> {
     const keys = Object.keys(match);
     if (keys.length === 0) throw new Error("revertBatch needs at least one origin field to match");
     const where = keys
       .map((k) => `json_extract(origin, '$.${k.replace(/[^a-zA-Z]/g, "")}') = ?`)
       .join(" AND ");
-    const result = this.db.transaction(() => {
-      const schema = this.db
-        .prepare(`DELETE FROM schema_log WHERE ${where}`)
-        .run(...keys.map((k) => match[k])).changes;
-      const affected = (
-        this.db
-          .prepare(`SELECT DISTINCT s FROM triples WHERE ${where}`)
-          .all(...keys.map((k) => match[k])) as { s: string }[]
-      ).map((r) => r.s);
-      const removed = this.db
-        .prepare(`DELETE FROM triples WHERE ${where}`)
-        .run(...keys.map((k) => match[k])).changes;
-      for (const s of affected) this.#reindex(s);
-      // A batch that wrote only an entity's type leaves its other details behind with no type: still readable, but
-      // outside every rule. Report them so the operator can re-type or revert further.
-      const untyped = affected
-        .filter((s) => {
-          const v = this.#view(s);
-          return v.exists && !v.type;
-        })
-        .map(tail);
-      dlog(
-        "revertBatch:",
-        JSON.stringify(match),
-        "→",
-        removed,
-        "row(s) across",
-        affected.length,
-        "entit(ies)",
-        untyped.length ? `untyped: ${untyped.join(", ")}` : "",
-      );
-      return { removed, schema, entities: affected.map(tail), untyped };
-    })();
+    const args = keys.map((k) => match[k]);
+    const conflicts: { id: string; handle: string; heldBy: string }[] = [];
+    const refused = new Error("revert conflicts");
+    let result:
+      | { removed: number; schema: number; entities: string[]; untyped: string[] }
+      | undefined;
+    try {
+      result = this.db.transaction(() => {
+        const schema = this.db
+          .prepare(`DELETE FROM schema_log WHERE ${where}`)
+          .run(...args).changes;
+        const affected = new Set(
+          (
+            this.db.prepare(`SELECT DISTINCT s FROM triples WHERE ${where}`).all(...args) as {
+              s: string;
+            }[]
+          ).map((r) => r.s),
+        );
+        const names = this.db
+          .prepare(`SELECT seq, kind, handle, s FROM handles WHERE ${where}`)
+          .all(...args) as { seq: number; kind: string; handle: string | null; s: string }[];
+        for (const n of names) affected.add(n.s);
+        const removed =
+          this.db.prepare(`DELETE FROM triples WHERE ${where}`).run(...args).changes +
+          this.db.prepare(`DELETE FROM handles WHERE ${where}`).run(...args).changes;
+        // Undoing a reclaim makes the handle its earlier holder's again, unless another record has taken it since (one
+        // this batch made is already gone).
+        for (const n of names.filter((x) => x.kind === "reclaim")) {
+          const taker = n.handle === null ? undefined : this.#holderOf(n.handle);
+          if (taker !== undefined && n.handle !== null) {
+            conflicts.push({ id: tail(n.s), handle: n.handle, heldBy: tail(taker) });
+            continue;
+          }
+          this.db
+            .prepare("UPDATE handles SET superseded_by = NULL WHERE superseded_by = ?")
+            .run(n.seq);
+        }
+        for (const s of affected) {
+          this.#reindex(s);
+          // A record whose name comes back must not come back to a handle someone else holds now.
+          const label = this.#view(s).label;
+          const h = label === undefined ? "" : handleOf(label);
+          const holder = h ? this.#holderOf(h) : undefined;
+          const hadHandle = this.db
+            .prepare("SELECT 1 FROM handles WHERE kind = 'handle' AND s = ?")
+            .get(s);
+          if (holder !== undefined && holder !== s && hadHandle !== undefined)
+            conflicts.push({ id: tail(s), handle: h, heldBy: tail(holder) });
+        }
+        if (conflicts.length) throw refused;
+        // A batch that wrote only an entity's type leaves its other details behind with no type: still readable, but
+        // outside every rule. Report them so the operator can re-type or revert further.
+        const untyped = [...affected]
+          .filter((s) => {
+            const v = this.#view(s);
+            return v.exists && !v.type;
+          })
+          .map(tail);
+        dlog(
+          "revertBatch:",
+          JSON.stringify(match),
+          "→",
+          removed,
+          "row(s) across",
+          affected.size,
+          "entit(ies)",
+          untyped.length ? `untyped: ${untyped.join(", ")}` : "",
+        );
+        return { removed, schema, entities: [...affected].map(tail), untyped };
+      })();
+    } catch (error) {
+      if (error !== refused) throw error;
+      dlog("revertBatch REFUSED:", JSON.stringify(match), JSON.stringify(conflicts));
+      return { removed: 0, schema: 0, entities: [], untyped: [], conflicts };
+    }
     if (result.schema > 0) {
       this.#loadSchema();
       await this.#reparseShapes();
     }
-    return result;
+    return { ...result, conflicts };
   }
 }

@@ -18,7 +18,14 @@ interface Tool {
   approval?: unknown;
   inputSchema?: { shape: Record<string, unknown> };
 }
-type ToolName = "recall" | "remember" | "relate" | "forget" | "extend_schema" | "check_memory";
+type ToolName =
+  | "recall"
+  | "remember"
+  | "relate"
+  | "get"
+  | "forget"
+  | "extend_schema"
+  | "check_memory";
 interface Harness {
   tools(context: { memory: Input }): Promise<Record<ToolName, Tool>>;
   recall: {
@@ -180,7 +187,6 @@ describe("supersession: an attributed append log where the current value wins on
     await h.tools.extend_schema.execute(clientRule);
     await h.tools.remember.execute(
       {
-        id: "priya",
         label: "Priya Nair",
         type: "Person",
         attributes: { role: "client", phone_status: "pending", company_status: "unknown" },
@@ -189,7 +195,7 @@ describe("supersession: an attributed append log where the current value wins on
     );
     upgraded = await h.tools.remember.execute(
       {
-        id: "priya",
+        id: "priya-nair",
         label: "Priya Nair",
         type: "ClientContact",
         attributes: {
@@ -228,11 +234,11 @@ describe("supersession: an attributed append log where the current value wins on
   });
 
   it("a superseded value is no longer findable by search", () => {
-    expect(g.recall("pending").map((f) => f.id)).not.toContain("priya");
+    expect(g.recall("pending").map((f) => f.handle)).not.toContain("priya-nair");
   });
 
   it("every write is attributed (session, turn, tool call) and history keeps superseded values", () => {
-    const history = g.history("priya");
+    const history = g.history("priya-nair");
     expect(history).toContainEqual(
       expect.objectContaining({
         key: "phone_status",
@@ -250,14 +256,14 @@ describe("supersession: an attributed append log where the current value wins on
 
   it("reverting one attributed batch falls back to the prior values (and re-indexes them)", async () => {
     expect((await g.revertBatch({ callId: "c-upgrade" })).removed).toBeGreaterThan(0);
-    expect(g.recall("pending").find((f) => f.id === "priya")).toMatchObject({
+    expect(g.recall("pending").find((f) => f.handle === "priya-nair")).toMatchObject({
       type: "Person",
       attributes: { phone_status: "pending" },
     });
   });
 
   it("re-asserting an older value appends and becomes current (not swallowed as a duplicate)", async () => {
-    await g.remember({ id: "dial", label: "Dial", type: "Thing", attributes: { level: "low" } });
+    await g.remember({ label: "Dial", type: "Thing", attributes: { level: "low" } });
     await g.remember({ id: "dial", attributes: { level: "high" } });
     await g.remember({ id: "dial", attributes: { level: "low" } });
     expect(g.recall("dial")[0]?.attributes?.level).toBe("low");
@@ -265,8 +271,9 @@ describe("supersession: an attributed append log where the current value wins on
   });
 
   it("relations accumulate (edges), attributes resolve latest-wins", async () => {
+    await g.remember({ label: "A", type: "Thing" });
+    await g.remember({ label: "B", type: "Thing" });
     await g.remember({
-      id: "hub",
       label: "Hub",
       type: "Thing",
       relations: [{ relation: "links", to: "a" }],
@@ -281,7 +288,6 @@ describe("merged-state lint", () => {
     const { tools } = await open(tempDir(), "h1");
     // Saved before the rule existed.
     await tools.remember.execute({
-      id: "sam",
       label: "Sam Old",
       type: "ClientContact",
       attributes: { company: "Initech" },
@@ -289,7 +295,7 @@ describe("merged-state lint", () => {
     await tools.extend_schema.execute(clientRule);
     // As the agent sends it: only the missing detail.
     const healed = await tools.remember.execute({
-      id: "sam",
+      id: "sam-old",
       type: "ClientContact",
       attributes: { phone: "555-0110" },
     });
@@ -429,7 +435,6 @@ describe("attribution: every write lands, recorded with who made it, from eve's 
     dir = tempDir();
     h = await open(dir, "g1");
     await h.tools.remember.execute({
-      id: "home",
       label: "Home",
       type: "Place",
       attributes: { city: "Tempe" },
@@ -516,10 +521,7 @@ describe("attribution: every write lands, recorded with who made it, from eve's 
     const seed = await MemoryGraph.create({ dir: join(dir, "shared") });
     const v010 = JSON.stringify({ scope: "shared", provenance: "user", callId: "old" });
     await seed.extendSchema({ class: "Desk", requires: [{ slot: "floor" }] }, v010);
-    await seed.remember(
-      { id: "desk", label: "Desk", type: "Desk", attributes: { floor: "2" } },
-      v010,
-    );
+    await seed.remember({ label: "Desk", type: "Desk", attributes: { floor: "2" } }, v010);
     seed.close();
     const provider = shaclMemory({ dir }) as unknown as Harness;
     const memory = {
@@ -527,7 +529,7 @@ describe("attribution: every write lands, recorded with who made it, from eve's 
       slot: "knowledge",
     };
     const tools = await provider.tools({ memory });
-    await tools.remember.execute({ id: "home", label: "Home" }, toolContext("g-shared"));
+    await tools.remember.execute({ label: "Home" }, toolContext("g-shared"));
     expect(
       await tools.extend_schema.execute(
         { class: "Desk", requires: [{ slot: "seats" }] },
@@ -554,7 +556,6 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
     dir = tempDir();
     h = await open(dir, "r1");
     await h.tools.remember.execute({
-      id: "codeword",
       label: "Code word",
       type: "Secret",
       attributes: { value: "blue heron" },
@@ -563,7 +564,7 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
 
   it("green falcon: a value the user relays in their own turn lands and recalls as recorded in their conversation", async () => {
     const said = await h.tools.remember.execute(
-      { id: "codeword", attributes: { value: "green falcon" } },
+      { id: "code-word", attributes: { value: "green falcon" } },
       contextFor("relay"),
     );
     expect(said).toContain('Replaced: value "blue heron" → "green falcon"');
@@ -581,7 +582,7 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
 
   it("a scheduled write lands, recalls as scheduled, and is revertable by its origin fields", async () => {
     await h.tools.remember.execute(
-      { id: "codeword", attributes: { rotated: "yes" } },
+      { id: "code-word", attributes: { rotated: "yes" } },
       contextFor("sched-1", SCHEDULED),
     );
     await h.tools.remember.execute(
@@ -600,9 +601,10 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
       "rotated=yes (scheduled run)",
     );
     const g = await MemoryGraph.create({ dir: join(dir, "r1") });
-    expect((await g.revertBatch({ who: "scheduled", sessionId: "sess-1" })).removed).toBe(4);
-    expect(g.describe("codeword")?.attributes.rotated).toBeUndefined();
-    expect(g.describe("codeword")?.attributes.value).toBe("green falcon");
+    // The rotated value, and the vault door's type, label, code and handle.
+    expect((await g.revertBatch({ who: "scheduled", sessionId: "sess-1" })).removed).toBe(5);
+    expect(g.describe("code-word")?.attributes.rotated).toBeUndefined();
+    expect(g.describe("code-word")?.attributes.value).toBe("green falcon");
     g.close();
   });
 
@@ -616,7 +618,7 @@ describe("recall says who recorded a value, from the recorded origin alone", () 
     ],
   ])("a %s value recalls with its origin", async (who, opts, full, short) => {
     await h.tools.remember.execute(
-      { id: "codeword", attributes: { [`by_${who}`]: "x" } },
+      { id: "code-word", attributes: { [`by_${who}`]: "x" } },
       contextFor(`r-${who}`, opts as Input),
     );
     expect(await h.tools.recall.execute({ query: "code word" })).toContain(
@@ -632,7 +634,6 @@ describe("the owner's types and record types change only in the owner's conversa
     h = await open(tempDir(), "c1");
     await h.tools.extend_schema.execute(clientRule);
     await h.tools.remember.execute({
-      id: "jordan",
       label: "Jordan",
       type: "ClientContact",
       attributes: { phone: "1", company: "Acme" },
@@ -672,9 +673,9 @@ describe("the owner's types and record types change only in the owner's conversa
 describe("maxWritesPerSession: a runaway session fails loud", () => {
   it("writes past the cap throw, per session, and reads still work", async () => {
     const h = await open(tempDir(), "w1", { maxWritesPerSession: 2 });
-    await h.tools.remember.execute({ id: "a", label: "A" });
+    await h.tools.remember.execute({ label: "A" });
     await h.tools.forget.execute({ id: "a", details: ["label"] });
-    await expect(h.tools.remember.execute({ id: "b", label: "B" })).rejects.toThrow(
+    await expect(h.tools.remember.execute({ label: "B" })).rejects.toThrow(
       "This session has reached its memory write limit (2)",
     );
     await expect(
@@ -685,12 +686,12 @@ describe("maxWritesPerSession: a runaway session fails loud", () => {
       ...contextFor("w-other"),
       session: { ...contextFor("w-other").session, id: "sess-2" },
     };
-    expect(await h.tools.remember.execute({ id: "b", label: "B" }, other)).toMatch(/^Remembered B/);
+    expect(await h.tools.remember.execute({ label: "B" }, other)).toMatch(/^Remembered B/);
   });
 
   it("is off by default", async () => {
     const h = await open(tempDir(), "w2");
-    for (let i = 0; i < 30; i++) await h.tools.remember.execute({ id: `n${i}`, label: `N${i}` });
+    for (let i = 0; i < 30; i++) await h.tools.remember.execute({ label: `N${i}` });
   });
 });
 
@@ -703,13 +704,11 @@ describe("forget: the agent can retract what is wrong or no longer true (tombsto
     h = await open(dir, "f1");
     await h.tools.extend_schema.execute(clientRule);
     await h.tools.remember.execute({
-      id: "dana",
       label: "Dana Ruiz",
       type: "ClientContact",
       attributes: { phone: "555-0101", company: "Globex", pager: "99-1" },
     });
     await h.tools.remember.execute({
-      id: "ghost",
       label: "Ghost Client",
       type: "Person",
       attributes: { company: "Initech", status: "stale" },
@@ -718,7 +717,7 @@ describe("forget: the agent can retract what is wrong or no longer true (tombsto
 
   it("forgetting some details removes only those", async () => {
     const dropped = await h.tools.forget.execute(
-      { id: "dana", details: ["pager"] },
+      { id: "dana-ruiz", details: ["pager"] },
       toolContext("c-forget-pager"),
     );
     const dana = await h.tools.recall.execute({ query: "Dana" });
@@ -728,9 +727,9 @@ describe("forget: the agent can retract what is wrong or no longer true (tombsto
   });
 
   it("forgetting a whole thing removes it from recall and connections", async () => {
-    expect(await h.tools.forget.execute({ id: "ghost" }, toolContext("c-forget-ghost"))).toContain(
-      "Forgot Ghost Client entirely",
-    );
+    expect(
+      await h.tools.forget.execute({ id: "knowledge:ghost-client" }, toolContext("c-forget-ghost")),
+    ).toContain("Forgot Ghost Client entirely");
     expect(await h.tools.recall.execute({ query: "Ghost" })).toContain("No stored facts match");
     expect(await h.tools.relate.execute({ about: "Ghost Client" })).toContain(
       "Nothing stored matches",
@@ -739,27 +738,39 @@ describe("forget: the agent can retract what is wrong or no longer true (tombsto
 
   it("a forgotten thing has no current state, but what was forgotten stays in history", async () => {
     const g = await direct();
-    expect(g.describe("ghost")).toBeNull();
-    expect(g.history("ghost").map((e) => e.value)).toContain("stale");
+    expect(g.describe("ghost-client")).toBeNull();
+    expect(g.resolve("knowledge:ghost-client")).toMatchObject({
+      status: "forgotten",
+      handle: "ghost-client",
+    });
+    expect(g.history("ghost-client").map((e) => e.value)).toContain("stale");
     g.close();
   });
 
   it("re-remembering a forgotten thing starts fresh (forgotten details do not come back)", async () => {
     const g = await direct();
-    await g.remember({ id: "ghost", label: "Ghost Client", type: "Person" });
-    expect(g.describe("ghost")?.attributes).not.toHaveProperty("status");
+    // Its handle stays reserved: a new save under the name is told, and saving it by its handle brings it back.
+    const fresh = await g.remember({ label: "Ghost Client", type: "Person" });
+    expect(fresh.ok || fresh.holder?.holds).toBe("forgotten");
+    const back = await g.remember({
+      id: "knowledge:ghost-client",
+      label: "Ghost Client",
+      type: "Person",
+    });
+    expect(back.ok && back.handle).toBe("ghost-client");
+    expect(g.describe("ghost-client")?.attributes).not.toHaveProperty("status");
     g.close();
   });
 
   it("reverting a forget brings the details back", async () => {
     const g = await direct();
     await g.revertBatch({ callId: "c-forget-pager" });
-    expect(g.describe("dana")?.attributes.pager).toBe("99-1");
+    expect(g.describe("dana-ruiz")?.attributes.pager).toBe("99-1");
     g.close();
   });
 
   it("forgetting a required detail says the thing now falls short of its record type, for the user", async () => {
-    const dropped = await h.tools.forget.execute({ id: "dana", details: ["phone"] });
+    const dropped = await h.tools.forget.execute({ id: "dana-ruiz", details: ["phone"] });
     expect(dropped).toContain("Removed phone from Dana Ruiz");
     expect(dropped).toContain("now falls short of its record type");
     expect(dropped).toContain("Tell the user");
@@ -768,7 +779,7 @@ describe("forget: the agent can retract what is wrong or no longer true (tombsto
 
   it("forgetting something unknown says so", async () => {
     expect(await h.tools.forget.execute({ id: "nobody" })).toContain(
-      'Nothing remembered with id "nobody"',
+      'Nothing is remembered as "nobody"',
     );
   });
 });
@@ -791,7 +802,7 @@ describe("honest surfaces: framing and the scope of claims", () => {
   });
 
   it("check_memory scopes its claim to things under a rule's type", async () => {
-    await h.tools.remember.execute({ id: "side", label: "Side Door", type: "Person" });
+    await h.tools.remember.execute({ label: "Side Door", type: "Person" });
     const scoped = await h.tools.check_memory.execute({});
     expect(scoped).toContain("saved under a rule's type");
     expect(scoped).toContain("not covered by these rules");
@@ -814,7 +825,6 @@ describe("integrity: rules are visible, type-dodges are loud, drift is findable"
   it("extend_schema teaches its targeting scope (binds by type; other types are NOT checked)", async () => {
     // Saved before the rule existed.
     await h.tools.remember.execute({
-      id: "old_client",
       label: "Sam Old",
       type: "ClientContact",
       attributes: { company: "Initech" },
@@ -850,14 +860,14 @@ describe("integrity: rules are visible, type-dodges are loud, drift is findable"
 
   it("check_memory finds an entity that predates and breaks a rule", async () => {
     const drift = await h.tools.check_memory.execute({});
-    expect(drift).toContain("old_client");
+    expect(drift).toContain("knowledge:sam-old");
     expect(drift).toContain("require `phone`");
     expect(drift).not.toMatch(/jordan/i);
   });
 
   it("check_memory clears once the entity is re-saved with all required details", async () => {
     await h.tools.remember.execute({
-      id: "old_client",
+      id: "knowledge:sam-old",
       label: "Sam Old",
       type: "ClientContact",
       attributes: { phone: "555-0199", company: "Initech" },
@@ -872,7 +882,6 @@ describe("references between memories", () => {
     const r = await tools.remember.execute({
       label: "Acme renewal decided",
       type: "Decision",
-      id: "acme_renewal_decided",
       attributes: { loop: "working:abc12", about: "knowledge:acme", why: "Q4 budget" },
     });
     expect(r).not.toContain("Couldn't");
@@ -967,11 +976,116 @@ describe("references between memories", () => {
     const memory = memoryFor("refs-read");
     const tools = await provider.tools({ memory });
     await tools.remember.execute(
-      { label: "Acme", type: "Vendor", id: "acme", attributes: { role: "reviewer" } },
+      { label: "Acme", type: "Vendor", attributes: { role: "reviewer" } },
       toolContext("c3"),
     );
     const graph = graphs.get(JSON.stringify(memory.scope.value));
     expect(graph?.describe("acme")?.label).toBe("Acme");
+    // The host is handed the link as written: `knowledge:<handle>` resolves without the host stripping anything.
+    expect(graph?.describe("knowledge:acme")).toMatchObject({ label: "Acme", handle: "acme" });
     expect(graph?.describe("nobody")).toBeNull();
+  });
+});
+
+describe("handles: every surface shows the one an agent writes", () => {
+  let h: Awaited<ReturnType<typeof open>>;
+  beforeAll(async () => {
+    h = await open(tempDir(), "handles-1");
+    await h.tools.remember.execute({ label: "Acme Corp", type: "Org" });
+  });
+
+  it("remember's reply gives the handle on the turn the record is made", async () => {
+    const said = await h.tools.remember.execute({
+      label: "Alice",
+      type: "Person",
+      relations: [{ relation: "works_at", to: "knowledge:acme-corp" }],
+    });
+    expect(said).toMatch(
+      /^Remembered Alice \(Person\) as knowledge:alice\. Use knowledge:alice to refer to it/,
+    );
+  });
+
+  it("turn-start lines, recall, relate and its connections all carry handles", async () => {
+    expect(await injectedText(h.provider, h.memory, "how is Alice doing")).toContain(
+      "- Alice (Person) knowledge:alice",
+    );
+    expect(await h.tools.recall.execute({ query: "Alice" })).toContain(
+      "- Alice (Person) knowledge:alice",
+    );
+    const related = await h.tools.relate.execute({ about: "Alice" });
+    expect(related).toContain("Alice (Person) knowledge:alice");
+    expect(related).toContain("- works_at → Acme Corp knowledge:acme-corp");
+  });
+
+  it("get opens a record by its handle, and says when it's forgotten or not there", async () => {
+    const opened = await h.tools.get.execute({ handle: "knowledge:alice" });
+    expect(opened).toContain("Alice (Person) knowledge:alice");
+    expect(opened).toContain("works_at → Acme Corp knowledge:acme-corp");
+    expect(await h.tools.get.execute({ handle: "knowledge:alce" })).toMatch(
+      /Nothing is remembered as "knowledge:alce"\. Did you mean knowledge:alice/,
+    );
+    await h.tools.remember.execute({ label: "Old Vendor", type: "Org" });
+    await h.tools.forget.execute({ id: "knowledge:old-vendor" });
+    expect(await h.tools.get.execute({ handle: "knowledge:old-vendor" })).toMatch(
+      /^knowledge:old-vendor was forgotten on \d{4}-\d{2}-\d{2}\./,
+    );
+  });
+
+  it("a create on a taken name tells the agent what holds it and how to tell them apart", async () => {
+    const said = await h.tools.remember.execute({
+      label: "alice",
+      type: "Person",
+      attributes: { role: "x" },
+    });
+    expect(said).toContain("Not saved: that name is taken.");
+    expect(said).toContain('"Alice" (Person) already has the handle knowledge:alice');
+    expect(said).toContain('save with id "knowledge:alice"');
+    expect(said).toContain("(Acme)");
+  });
+
+  it("the descriptions route a known handle to get and words to recall", async () => {
+    const raw = await h.provider.tools({ memory: h.memory });
+    const about = (name: ToolName) =>
+      (raw as Record<string, { description?: string }>)[name]?.description ?? "";
+    expect(about("get")).toMatch(
+      /^Open one record by its handle \(knowledge:alice\) when you know which thing you mean/,
+    );
+    expect(about("recall")).toContain("when you don't have its handle");
+    expect(about("recall")).toContain("open it by its handle with get instead");
+    expect(about("relate")).toContain("with the handle, use get");
+    expect(about("remember")).toContain("it's how you address the record from then on");
+  });
+
+  it("six records with handles fit the turn-start budget", async () => {
+    const g = await open(tempDir(), "handles-budget");
+    const names = [
+      "Quarterly budget review",
+      "Budget owner Dana Ruiz",
+      "Travel budget 2026",
+      "Budget tool vendor",
+      "Marketing budget",
+      "Budget approval policy",
+    ];
+    for (const label of names)
+      await g.tools.remember.execute({
+        label,
+        type: "Thing",
+        attributes: { a: "1".repeat(60), b: "2", c: "3" },
+      });
+    const injected = await injectedText(g.provider, g.memory, "budget");
+    expect(injected.length).toBeLessThanOrEqual(2_000);
+    expect(injected.match(/ knowledge:[^\s:]+/g)).toHaveLength(6);
+  });
+
+  it("past the budget, whole lines drop and say so; a handle is never cut", async () => {
+    const g = await open(tempDir(), "handles-overflow");
+    for (let i = 0; i < 6; i++)
+      await g.tools.remember.execute({ label: `Budget ${i} ${"word ".repeat(40)}`, type: "Thing" });
+    const injected = await injectedText(g.provider, g.memory, "budget");
+    expect(injected.length).toBeLessThanOrEqual(2_000);
+    expect(injected.endsWith("…")).toBe(false);
+    expect(injected).toMatch(/\+\d more: use `knowledge__recall` to see them\.$/);
+    for (const ref of injected.match(/knowledge:budget-[^\s:]*/g) ?? [])
+      expect(ref.length).toBeGreaterThan(110);
   });
 });

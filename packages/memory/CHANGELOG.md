@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0
+
+Every record now has a **handle** made from its name, which the agent writes, sees and resolves: "Alice" is `knowledge:alice`, "José García" is `knowledge:josé-garcía`. A record's id never changes; the handle is how it's addressed. Breaking: `remember` creates only without `id`, and `id` names a record to update.
+
+- **Handles.** Made from the record's name: Unicode letters kept, lowercase, one `-` between words, at most 118 characters, so `knowledge:<handle>` fits a link. A name with no letters or digits is refused. `handleOf(name)` is exported. Handles live in their own table, written with the record and attributed like every other write, so `history` shows them and `revertBatch` undoes them. They are not details: they stay out of the attributes, the search index, rule checks and the fact count. `eve-memory-stats` reports them on their own, as `handles=<n>`.
+- **Shown everywhere.** The turn-start block, `recall`, `relate` and each of its connections, `check_memory`, and `remember`'s reply give each record's `knowledge:<handle>`. The tool descriptions tell the agent that handles are how records are addressed.
+- **`get`, a new tool.** It opens one record by its handle, with its details and connections. A slightly wrong handle gets the nearest handles as suggestions. `recall` stays the search by words; its description now sends a known handle to `get`.
+- **A create on a taken name fails and names the holder.** A save without `id` whose handle is taken returns the holder's label, type and handle, so the agent updates that record on purpose or qualifies its name ("Sam (Acme)" is `knowledge:sam-acme`). The result carries the same as `holder`. The same save arriving twice succeeds with the record that holds it. Two same-name saves at once give one record: the handle has a unique index, so the second fails cleanly or, if identical, returns the first. This replaces the label match that let a second save with different content mint a second record.
+- **Renames keep references working.** Renaming a record gives it the handle of its new name, and its earlier handles still lead to it. A rename onto a handle another record holds fails the same way.
+- **Forgetting reserves the name.** A forgotten record's handle resolves to "forgotten", never to a newer record. A save on it is told so. Saving the record by its handle brings it back. `MemoryGraph.reclaimHandle(handle)` frees a forgotten or earlier handle for the next record named for it.
+- **One resolver.** `MemoryGraph.resolve(ref)` takes `knowledge:<x>` or `<x>`, and tries the current handle, then an earlier handle, then the internal id (as written, or in another case, as before), then the handle `<x>` makes as a name. It follows merges, and answers `found`, `forgotten`, or `missing` with suggestions. `remember`'s `id`, its connections' `to`, `forget`, `describe` and `history` all go through it, and the internal id is what's stored. A handle is unique within its scope's graph and resolves only there.
+- **Breaking: `id` names a record to update.** A `remember` whose `id` resolves to nothing fails with suggestions instead of creating a record under that id. A misspelled handle would otherwise make a second record. New records always get a minted id, and a new record needs a `label`. A connection to something that resolves to nothing, or to a forgotten record, fails the same way instead of storing an edge to nothing. A new handle equal to another record's id is refused.
+- **Merges.** `MemoryGraph.merge(duplicate, into)` records that two records are one thing. The duplicate's handles, its id and connections to it lead to `into`, and nothing is rewritten.
+- **`revertBatch` reports conflicts.** A revert that would leave a record answering to a handle another record now holds isn't applied. It returns `conflicts: [{ id, handle, heldBy }]`, and nothing is removed.
+- **The turn-start block drops whole lines.** Past `maxCharacters`, records that don't fit are left out with a note to use `recall`, instead of the block being cut mid-line. Before, a cut could leave half a handle.
+
+### Upgrading from 0.5
+
+The store migrates on open: it gains the handles table, at `user_version` 5. **No handle is given to an existing record on open**, nor when one is renamed. Two old records can share a name, and settling that is the operator's call. Until a record has a handle, every surface shows its id in the handle's place (`knowledge:jordan_lee_x7k2`), and that resolves.
+
+Give existing records their handles with `MemoryGraph.mintHandle(id)`. It makes the handle from the record's current name (a forgotten record's from its last), does nothing if the record already has it, and fails, naming the holder, when another record has it. Do this before agents write to the upgraded store. Meanwhile, a new save whose name would make an old record's handle fails and names that record, so a new record can't take an old one's name.
+
+`remember({ id })` no longer creates. Code that created records under chosen ids saves them without `id` and addresses them by the returned `handle`.
+
 ## 0.5.2
 
 - **`onOpen(graph, scope)`.** Runs once each time a scope's graph is opened in the process, with the scope eve resolved for it, so a host can join this memory to another: keep the graph by the scope's value and answer a `knowledge:<id>` reference with `graph.describe(id)`. The hook may be async. A hook that throws or rejects is logged and never fails the open, which does not wait for it. Nothing changes without it.

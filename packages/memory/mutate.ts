@@ -40,6 +40,7 @@ const files = [
   "vitest.unit.config.ts",
   "vitest.integration.config.ts",
   "src/memory-graph.test.ts",
+  "src/handles.test.ts",
   "src/memory-graph.integration.test.ts",
   "src/provider.integration.test.ts",
   "src/stats.integration.test.ts",
@@ -129,8 +130,8 @@ const mutations: Mutation[] = [
   {
     name: "revert leaves the search index on the reverted values",
     file: "src/memory-graph.ts",
-    find: "      for (const s of affected) this.#reindex(s)\n",
-    replace: "",
+    find: "this.#reindex(s); // A record whose name comes back",
+    replace: "// A record whose name comes back",
     expect: "reverting one attributed batch falls back",
   },
   {
@@ -239,14 +240,14 @@ const mutations: Mutation[] = [
   {
     name: "F5: history does not resolve ids like describe",
     file: "src/memory-graph.ts",
-    find: 'ORDER BY seq") .all(`${E}${slug(id)}`)',
-    replace: 'ORDER BY seq").all(`${E}${id}`)',
+    find: 'const s = `${E}${r.status === "found" && r.mergedFrom ? r.mergedFrom[0] : r.id}`;',
+    replace: "const s = `${E}${id}`;",
     expect: "history resolves ids like describe and forget do",
   },
   {
     name: "F5: revert leaves untyped records unreported",
     file: "src/memory-graph.ts",
-    find: "const untyped = affected .filter(",
+    find: "const untyped = [...affected] .filter(",
     replace: "const untyped = [].filter(",
     expect: "reverting the batch that typed a record reports it as untyped",
   },
@@ -411,9 +412,9 @@ const mutations: Mutation[] = [
   {
     name: "a store failure is swallowed into a normal-looking result",
     file: "src/provider.ts",
-    find: "mg = MemoryGraph.create({ dir: `${options.dir}/${slugKey(key)}` });",
+    find: "mg = MemoryGraph.create({ dir: `${options.dir}/${slugKey(key)}` }).then(",
     replace:
-      "mg = MemoryGraph.create({ dir: `${options.dir}/${slugKey(key)}` }).catch(() => ({ recall: () => [] }));",
+      "mg = MemoryGraph.create({ dir: `${options.dir}/${slugKey(key)}` }).catch(() => ({ recall: () => [] })).then(",
     expect: "a store failure throws",
   },
   {
@@ -596,7 +597,7 @@ const mutations: Mutation[] = [
   {
     name: "a forget isn't checked for owner overwrites",
     file: "src/memory-graph.ts",
-    find: "this.#detectOwnerOverwrite(origin, slug(id), rows, named);",
+    find: "this.#detectOwnerOverwrite(origin, r.id, rows, named);",
     replace: "",
     expect: "a scheduled forget of an owner value lands, and is counted",
   },
@@ -785,6 +786,49 @@ const mutations: Mutation[] = [
     find: "if ((f.mode & 0o600) !== 0o600)",
     replace: "if (false)",
     expect: "a file its owner can't read and write",
+  },
+  {
+    name: "handles aren't unique: two same-name creates both mint",
+    file: "src/memory-graph.ts",
+    find: "CREATE UNIQUE INDEX IF NOT EXISTS u_handle ON handles(handle)",
+    replace: "CREATE INDEX IF NOT EXISTS u_handle ON handles(handle)",
+    expect: "two same-name creates at once: different content gives one record and one failure",
+  },
+  {
+    name: "the resolver's id step slugs its input",
+    file: "src/memory-graph.ts",
+    find: "if (this.#known(`${E}${x}`)) s = `${E}${x}`;",
+    replace: "if (this.#known(`${E}${slug(x)}`)) s = `${E}${slug(x)}`;",
+    expect: "the id step matches ids exactly, never through slug()",
+  },
+  {
+    name: "a revert that restores a taken handle applies anyway",
+    file: "src/memory-graph.ts",
+    find: "if (conflicts.length) throw refused;",
+    replace: "",
+    expect:
+      "a revert that would restore a handle another record holds now reports it, and applies nothing",
+  },
+  {
+    name: "a create may take the name of a record saved before handles",
+    file: "src/memory-graph.ts",
+    find: "if (!unmigrated) return undefined;",
+    replace: "return undefined;",
+    expect: "a create on the name an unmigrated record would get fails, naming it by id",
+  },
+  {
+    name: "renaming a record saved before handles mints one",
+    file: "src/memory-graph.ts",
+    find: "if (live.length > 0) mint = h;",
+    replace: "mint = h;",
+    expect: "resolve by id, and a rename assigns nothing",
+  },
+  {
+    name: "a reference to a forgotten record reads as current",
+    file: "src/memory-graph.ts",
+    find: 'if (!this.#view(s).exists) return { status: "forgotten",',
+    replace: 'if (false) return { status: "forgotten",',
+    expect: "a forgotten handle never resolves to a newer record",
   },
 ];
 
