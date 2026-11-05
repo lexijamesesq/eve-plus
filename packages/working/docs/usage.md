@@ -116,7 +116,7 @@ A refusal is an answer, not a failure: it says what's wrong and what to do, and 
 ## Known limits
 
 - Recall shows what's recorded, not what's true: verify a loop against live state before acting on it.
-- Links aren't resolved: a `linear:` or `working:` reference is stored and shown as written.
+- Only `working:` and `knowledge:` references show what they point at; a `linear:`, `vault:`, `slack:` or `github:` reference is stored and shown as written.
 - Observations and recurrence aren't in this version.
 
 See the [README](../README.md) for the options, storage and security model.

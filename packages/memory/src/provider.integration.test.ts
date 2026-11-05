@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineMemory } from "eve/memory";
 import { byPrincipal } from "eve/memory/scope";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MemoryGraph } from "./memory-graph.js";
 import { shaclMemory } from "./provider.js";
@@ -863,5 +863,115 @@ describe("integrity: rules are visible, type-dodges are loud, drift is findable"
       attributes: { phone: "555-0199", company: "Initech" },
     });
     expect(await h.tools.check_memory.execute({})).toContain("all conform");
+  });
+});
+
+describe("references between memories", () => {
+  it("an attribute may be a reference to another memory, kept and shown as written", async () => {
+    const { provider, memory, tools } = await open(tempDir(), "refs-1");
+    const r = await tools.remember.execute({
+      label: "Acme renewal decided",
+      type: "Decision",
+      id: "acme_renewal_decided",
+      attributes: { loop: "working:abc12", about: "knowledge:acme", why: "Q4 budget" },
+    });
+    expect(r).not.toContain("Couldn't");
+    // Turn-start recall shows the first attributes as written: the reference is followable by its id.
+    const injected = await injectedText(
+      provider,
+      memory,
+      "what did we decide about the acme renewal?",
+    );
+    expect(injected).toContain("loop=working:abc12");
+    expect(injected).toContain("about=knowledge:acme");
+    // The recall tool shows every attribute as written.
+    const full = await tools.recall.execute({ query: "acme_renewal_decided" });
+    expect(full).toContain("loop: working:abc12");
+    expect(full).toContain("about: knowledge:acme");
+  });
+
+  it("the remember tool tells the agent a value may reference another memory", async () => {
+    const { tools } = await open(tempDir(), "refs-desc");
+    const shape = tools.remember.inputSchema?.shape as Record<string, { description?: string }>;
+    expect(shape.attributes?.description).toContain("knowledge:<id>");
+    expect(shape.attributes?.description).toContain("working:<id>");
+  });
+
+  it("onOpen runs once per scope's graph, with the scope eve resolved, and a throwing hook doesn't take the open with it", async () => {
+    const dir = tempDir();
+    const opened: { key: string; value: unknown }[] = [];
+    const provider = shaclMemory({
+      dir,
+      onOpen: (_graph, scope) => {
+        opened.push({ key: scope.key, value: scope.value });
+        if (scope.key === "refs-boom") throw new Error("host bug");
+      },
+    }) as unknown as Harness;
+    const a = memoryFor("refs-a");
+    const b = memoryFor("refs-b");
+    await turnStart(provider, a, "hello");
+    await turnStart(provider, a, "again");
+    const toolsA = await provider.tools({ memory: a });
+    await toolsA.recall.execute({ query: "x" }, toolContext("c1"));
+    await turnStart(provider, b, "hello");
+    expect(opened.map((o) => o.key)).toEqual(["refs-a", "refs-b"]);
+    expect(opened[0]?.value).toEqual(a.scope.value);
+    const boom = memoryFor("refs-boom");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const toolsBoom = await provider.tools({ memory: boom });
+    const saved = await toolsBoom.remember.execute({ label: "Still saved" }, toolContext("c2"));
+    expect(saved).not.toContain("Couldn't");
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("onOpen failed"))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("an async onOpen hook that rejects is logged and doesn't fail the open or escape as unhandled", async () => {
+    const dir = tempDir();
+    const provider = shaclMemory({
+      dir,
+      onOpen: async () => {
+        await Promise.resolve();
+        throw new Error("async host bug");
+      },
+    }) as unknown as Harness;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const tools = await provider.tools({ memory: memoryFor("refs-async-boom") });
+      const saved = await tools.remember.execute({ label: "Still saved" }, toolContext("c4"));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(saved).not.toContain("Couldn't");
+      expect(
+        warn.mock.calls.some(
+          (c) => String(c[0]).includes("onOpen failed") && String(c[0]).includes("async host bug"),
+        ),
+      ).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      warn.mockRestore();
+    }
+  });
+
+  it("the host can read a record by id through the opened graph", async () => {
+    const dir = tempDir();
+    const graphs = new Map<string, MemoryGraph>();
+    const provider = shaclMemory({
+      dir,
+      onOpen: (graph, scope) => {
+        graphs.set(JSON.stringify(scope.value), graph);
+      },
+    }) as unknown as Harness;
+    const memory = memoryFor("refs-read");
+    const tools = await provider.tools({ memory });
+    await tools.remember.execute(
+      { label: "Acme", type: "Vendor", id: "acme", attributes: { role: "reviewer" } },
+      toolContext("c3"),
+    );
+    const graph = graphs.get(JSON.stringify(memory.scope.value));
+    expect(graph?.describe("acme")?.label).toBe("Acme");
+    expect(graph?.describe("nobody")).toBeNull();
   });
 });

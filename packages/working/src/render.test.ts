@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { orderLine, type RecallView, renderHere, renderOutage, renderStanding } from "./render.js";
+import {
+  loopLine,
+  orderLine,
+  preferredRef,
+  type RecallView,
+  type Refs,
+  renderHere,
+  renderOutage,
+  renderStanding,
+  resolvedOf,
+  shortLoopLine,
+  shortOrderLine,
+  standingLoopOrder,
+} from "./render.js";
 import type { Loop, Note, Order } from "./store.js";
 
 const NOW = Date.parse("2026-11-01T16:40:27Z");
@@ -140,7 +153,7 @@ describe("recall blocks", () => {
   // The reviewers' realistic state: three 47-character hold rules, one lifted order, one note, and four loops
   // elsewhere carrying the marks a live store gives them (due, undeliverable, stale).
   const realistic = (maxCharacters: number): RecallView => {
-    const orders = ["releases:web", "releases:api", "deploys:web"].map((s) =>
+    const orders = ["releases:web", "releases:api", "releases:mobile"].map((s) =>
       order(s, { rule: "hold until the migration on this service lands" }),
     );
     const lifted = order("releases:docs", { status: "lifted", endedBy: operator, why: "shipped" });
@@ -181,7 +194,7 @@ describe("recall blocks", () => {
     // 0.1.1 fit three of the four loops here; the frame the standing header no longer repeats is the room the fourth needs.
     const standing = renderStanding(realistic(1_200));
     expect(standing.length).toBeLessThanOrEqual(1_200);
-    for (const subject of ["releases:web", "releases:api", "deploys:web", "releases:docs"])
+    for (const subject of ["releases:web", "releases:api", "releases:mobile", "releases:docs"])
       expect(standing).toContain(subject);
     expect(standing).toContain("standup moves to 10:00 this week");
     expect(loopLines(standing)).toHaveLength(4);
@@ -314,5 +327,125 @@ describe("recall blocks", () => {
     expect(standing).toMatch(
       /\+\d+ more orders \(.*, \+\d+ unnamed\): working__list lists them\.$/,
     );
+  });
+});
+
+describe("references", () => {
+  const refs: Refs = new Map([
+    ["knowledge:acme", '"Acme" (Vendor, 5d)'],
+    ["working:abc12", '"Ship the release" (done, 3d)'],
+    ["working:gone1", "(not found)"],
+  ]);
+
+  it("a loop in full shows each resolved link with its target, knowledge first, and leaves the rest as written", () => {
+    const l = loop("L1", {
+      links: ["vault:Vendors/acme.md", "working:abc12", "knowledge:acme"],
+    });
+    const line = loopLine(l, NOW, false, refs);
+    expect(line).toContain(
+      'Links: vault:Vendors/acme.md working:abc12 → "Ship the release" (done, 3d) knowledge:acme → "Acme" (Vendor, 5d)',
+    );
+    expect(loopLine(l, NOW)).toContain("Links: vault:Vendors/acme.md working:abc12 knowledge:acme");
+  });
+
+  it("a dangling reference says so once its store was read", () => {
+    expect(loopLine(loop("L1", { links: ["working:gone1"] }), NOW, false, refs)).toContain(
+      "working:gone1 → (not found)",
+    );
+  });
+
+  it("at most two references resolve per line, the thing the task is about first", () => {
+    const many: Refs = new Map([
+      ["working:a", "(a)"],
+      ["working:b", "(b)"],
+      ["knowledge:k", "(k)"],
+    ]);
+    expect(resolvedOf(["working:a", "working:b", "knowledge:k"], many, 2)).toEqual([
+      "knowledge:k",
+      "working:a",
+    ]);
+    const line = loopLine(
+      loop("L1", { links: ["working:a", "working:b", "knowledge:k"] }),
+      NOW,
+      false,
+      many,
+    );
+    expect(line).toContain("working:a → (a) working:b knowledge:k → (k)");
+  });
+
+  it("targets never cost the loop its text: over the links cap they drop from the last back, then links collapse as before", () => {
+    const long = "working:" + "x".repeat(24);
+    const wide: Refs = new Map([
+      ["knowledge:acme", '"Acme" (Vendor, 5d)'],
+      [long, '"' + "w".repeat(60) + '" (open, 1d)'],
+    ]);
+    const links = ["knowledge:acme", long, "https://example.test/" + "p".repeat(40)];
+    const l = loop("L1", { links, next: "n".repeat(120) });
+    const line = loopLine(l, NOW, false, wide);
+    // The knowledge target fits beside the links; the working target did not and was dropped; nothing collapsed.
+    expect(line).toContain('knowledge:acme → "Acme" (Vendor, 5d)');
+    expect(line).not.toContain("(open, 1d)");
+    expect(line).toContain("Links: ");
+    expect(line).toContain("Next: " + "n".repeat(120));
+    expect(line.length).toBeLessThanOrEqual(400);
+    // Bare links past the cap collapse to a count, with or without targets.
+    const over = loop("L2", {
+      links: [1, 2, 3].map((i) => `https://example.test/${"q".repeat(60)}${i}`),
+    });
+    expect(loopLine(over, NOW, false, wide)).toContain("(3 links)");
+  });
+
+  it("standing lines gain at most one resolved reference each, within 80 characters, and no raw links", () => {
+    const l = loop("L1", { links: ["vault:x.md", "working:abc12", "knowledge:acme"] });
+    const short = shortLoopLine(l, NOW, refs);
+    expect(short).toContain(' ↳ knowledge:acme "Acme" (Vendor, 5d)');
+    expect(short).not.toContain("working:abc12");
+    expect(short).not.toContain("vault:");
+    expect(shortLoopLine(l, NOW)).not.toContain("↳");
+    const o = order("releases:web", { link: "knowledge:acme" });
+    expect(shortOrderLine(o, NOW, refs)).toContain(' ↳ knowledge:acme "Acme" (Vendor, 5d)');
+    expect(
+      shortOrderLine(order("quiet", { link: "https://example.test/m/1" }), NOW, refs),
+    ).not.toContain("↳");
+    const wide: Refs = new Map([["knowledge:acme", "y".repeat(200)]]);
+    const ref = shortLoopLine(l, NOW, wide).split(" ↳ ").at(1) ?? "";
+    expect(ref.length).toBeLessThanOrEqual(80);
+  });
+
+  it("the blocks carry the turn's targets", () => {
+    const view: RecallView = {
+      ...empty,
+      refs,
+      here: { loops: [loop("L1", { links: ["knowledge:acme"] })], total: 1 },
+      orders: { orders: [order("releases:web", { link: "knowledge:acme" })], total: 1 },
+      elsewhere: {
+        loops: [loop("L2", { conversationKey: "slack-dm:T1/D9", links: ["working:abc12"] })],
+        total: 1,
+      },
+    };
+    expect(renderHere(view)).toContain('knowledge:acme → "Acme" (Vendor, 5d)');
+    const standing = renderStanding(view);
+    expect(standing).toContain(
+      'releases:web: hold (by operator 2026-10-31) ↳ knowledge:acme "Acme" (Vendor, 5d)',
+    );
+    expect(standing).toContain('↳ working:abc12 "Ship the release" (done, 3d)');
+  });
+});
+
+describe("standing's reference candidates", () => {
+  it("lists loops due first, then stale, then the rest, each in the order given", () => {
+    const due: Partial<Loop> = { wake: "pending", dueAt: NOW - 1 };
+    const stale: Partial<Loop> = { reviewBy: NOW - 1 };
+    const loops = [loop("a"), loop("b", stale), loop("c"), loop("d", due), loop("e", stale)];
+    expect(standingLoopOrder(loops, NOW).map((l) => l.id)).toEqual(["d", "b", "e", "a", "c"]);
+  });
+
+  it("prefers knowledge:, then working:, and nothing for schemes that stay as written", () => {
+    expect(preferredRef(["working:L1", "knowledge:acme", "knowledge:other"])).toBe(
+      "knowledge:acme",
+    );
+    expect(preferredRef(["vault:a.md", "working:L1"])).toBe("working:L1");
+    expect(preferredRef(["vault:a.md", "https://example.test/x"])).toBeNull();
+    expect(preferredRef([])).toBeNull();
   });
 });

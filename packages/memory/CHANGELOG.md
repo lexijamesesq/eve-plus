@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2
+
+- **`onOpen(graph, scope)`.** Runs once each time a scope's graph is opened in the process, with the scope eve resolved for it, so a host can join this memory to another: keep the graph by the scope's value and answer a `knowledge:<id>` reference with `graph.describe(id)`. The hook may be async. A hook that throws or rejects is logged and never fails the open, which does not wait for it. Nothing changes without it.
+- **Attributes may reference other memories.** The `remember` tool's `attributes` description now says a value may reference another memory by id (`knowledge:<id>` or `working:<id>`). Such values were always kept and shown as written, at turn start and in `recall`; this documents and tests it.
+
 ## 0.5.1
 
 No behaviour change. The tests use neutral example names.

@@ -9,6 +9,7 @@ import {
   type MemoryOperationContext,
   type MemoryProvider,
   type MemoryRecallResult,
+  type MemoryScope,
   type MemoryToolsContext,
   type MemoryTurnStartedContext,
 } from "eve/memory";
@@ -31,6 +32,13 @@ export interface ShaclMemoryOptions {
    * cap fails loudly instead of landing, so a run that goes wrong can't rewrite a whole memory. Off by default.
    */
   readonly maxWritesPerSession?: number;
+  /**
+   * Run once each time a scope's graph is opened in this process, with the scope eve resolved for it. A host that
+   * joins this memory to another (a reference like `knowledge:<id>` on a task) keeps the graph by the scope's value and
+   * reads it with `describe(id)`. The graph stays open for the process; don't close it. A throw or a rejection is
+   * logged and never fails the open; the open doesn't wait for an async hook.
+   */
+  readonly onOpen?: (graph: MemoryGraph, scope: MemoryScope) => void | Promise<void>;
 }
 
 const slugKey = (key: string): string =>
@@ -294,10 +302,24 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
   };
   const maxCharacters = options.maxCharacters ?? 2_000;
   const recallLimit = options.recallLimit ?? 6;
-  const get = (key: string): Promise<MemoryGraph> => {
+  const get = (scope: MemoryScope): Promise<MemoryGraph> => {
+    const key = scope.key;
     let mg = cache.get(key);
     if (mg === undefined) {
-      mg = MemoryGraph.create({ dir: `${options.dir}/${slugKey(key)}` });
+      mg = MemoryGraph.create({ dir: `${options.dir}/${slugKey(key)}` }).then((graph) => {
+        // A host hook that throws or rejects must not take the open with it: the memory is there, the join isn't.
+        // The open doesn't wait for an async hook, so a slow one can't stall it.
+        const failed = (error: unknown) =>
+          console.warn(
+            `[mem] onOpen failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        try {
+          void Promise.resolve(options.onOpen?.(graph, scope)).catch(failed);
+        } catch (error) {
+          failed(error);
+        }
+        return graph;
+      });
       cache.set(key, mg);
       // Don't cache a failed open: the next operation retries, so an outage is temporary, not sticky per process.
       mg.catch(() => cache.delete(key));
@@ -321,7 +343,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
       // history and a null keeps the earlier turn's recall, so the guard costs nothing; it stays until a resumed
       // approval on 0.91 is shown not to need it.
       if (endsInApprovalResponse(context.messages)) return null;
-      const mg = await get(context.memory.scope.key);
+      const mg = await get(context.memory.scope);
       const rules = mg.shapeIndex();
       const facts = query === null ? [] : mg.recall(query, recallLimit);
       if (facts.length === 0 && rules.length === 0) {
@@ -367,7 +389,6 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
   return defineMemoryProvider({
     recall: { "turn.started": recall },
     async tools(context: MemoryToolsContext) {
-      const key = context.memory.scope.key;
       const scope = context.memory.scope;
       return {
         recall: defineTool({
@@ -377,7 +398,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
             query: z.string().min(1).describe("what to look up, in plain words"),
           }),
           async execute({ query }) {
-            const mg = await get(key);
+            const mg = await get(scope);
             const facts = mg.recall(query);
             // A miss is not evidence of absence: search matches stored words, and can't list by kind. Say so, or the
             // agent tells the user "you have none" while records exist (observed 9/48 on "clean up my contacts").
@@ -404,14 +425,16 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
             attributes: z
               .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
               .optional()
-              .describe("plain properties, e.g. { floor: 2 }"),
+              .describe(
+                "plain properties, e.g. { floor: 2 }. A value may be a reference to another memory by id, with the prefixes knowledge:<id> and working:<id>, kept as written.",
+              ),
             relations: z
               .array(z.object({ relation: z.string(), to: z.string() }))
               .optional()
               .describe("connections to other remembered things, by their id"),
           }),
           async execute(input, tool: ToolContext) {
-            const mg = await get(key);
+            const mg = await get(scope);
             countWrite(tool);
             const r = await mg.remember(input, originOf(scope, tool));
             if (!r.ok)
@@ -426,7 +449,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
             about: z.string().min(1).describe("the thing to look up, in plain words"),
           }),
           async execute({ about }) {
-            const mg = await get(key);
+            const mg = await get(scope);
             const r = mg.relate(about);
             if (!r.found)
               return `Nothing stored matches "${about}" by name or detail — that does NOT mean it isn't there. Try another name or detail, or ask the user.`;
@@ -458,7 +481,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
               ),
           }),
           async execute(input, tool: ToolContext) {
-            const mg = await get(key);
+            const mg = await get(scope);
             countWrite(tool);
             const r = await mg.forget(input, originOf(scope, tool));
             if (!r.ok) return r.reason;
@@ -495,7 +518,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
               .describe("connections this kind must/can have"),
           }),
           async execute(input, tool: ToolContext) {
-            const mg = await get(key);
+            const mg = await get(scope);
             countWrite(tool);
             const r = await mg.extendSchema(input, originOf(scope, tool));
             if (r.ok && r.class === "raw") return "Added the shape to your memory's schema.";
@@ -509,7 +532,7 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
             "Check the things you've saved under a rule's type against that rule — finds ones that break it (for example saved before the rule existed, or missing a required detail). Reach for this after you add or change a rule, or whenever your memory seems inconsistent.",
           inputSchema: z.object({}),
           async execute() {
-            const mg = await get(key);
+            const mg = await get(scope);
             const r = await mg.check();
             if (r.rules === 0)
               return "You haven't set any rules for your memory yet, so there is nothing to check.";
