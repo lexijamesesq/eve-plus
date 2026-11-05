@@ -806,14 +806,14 @@ describe("references", () => {
       },
     });
     const done = idOf(
-      await a.call("open", { what: "the acme deploy", waitingOn: "acme", next: "n" }, ALICE_DM_2),
+      await a.call("open", { what: "the acme renewal", waitingOn: "acme", next: "n" }, ALICE_DM_2),
     );
     await a.call("close", { id: done, outcome: "done", why: "landed" }, ALICE_DM_2);
     clock += 3 * 86_400_000;
     await a.call(
       "open",
       {
-        what: "write up the acme deploy",
+        what: "write up the acme renewal",
         waitingOn: "me",
         next: "n",
         links: [`working:${done}`, "knowledge:acme", "knowledge:unseen", "vault:a.md"],
@@ -826,7 +826,7 @@ describe("references", () => {
       ALICE_DM_1,
     );
     const here = text(await a.recall(ALICE_DM_1), HERE_ID);
-    expect(here).toContain(`working:${done} → "the acme deploy" (done, 3d)`);
+    expect(here).toContain(`working:${done} → "the acme renewal" (done, 3d)`);
     expect(here).toContain('knowledge:acme → "Acme" (Vendor, 5d)');
     expect(here).toContain("knowledge:nobody → (not found)");
     // Null from the host: the link stays as written, and so does one of a scheme nobody resolves.
@@ -910,12 +910,16 @@ describe("references", () => {
   it("the list tool follows a working: reference by id, closed loops included", async () => {
     const a = await agent();
     const id = idOf(
-      await a.call("open", { what: "the acme deploy", waitingOn: "acme", next: "n" }, ALICE_DM_2),
+      await a.call("open", { what: "the acme renewal", waitingOn: "acme", next: "n" }, ALICE_DM_2),
     );
-    await a.call("close", { id, outcome: "dropped", why: "superseded by the window" }, ALICE_DM_2);
+    await a.call(
+      "close",
+      { id, outcome: "dropped", why: "superseded by the new plan" },
+      ALICE_DM_2,
+    );
     const one = await a.call("list", { id }, ALICE_DM_1);
-    expect(one).toContain(`loop ${id}, dropped (superseded by the window)`);
-    expect(one).toContain("the acme deploy");
+    expect(one).toContain(`loop ${id}, dropped (superseded by the new plan)`);
+    expect(one).toContain("the acme renewal");
     expect(await a.call("list", { view: "all" }, ALICE_DM_1)).not.toContain(id);
     expect(await a.call("list", { id: "Lffff" }, ALICE_DM_1)).toContain("No loop Lffff");
   });

@@ -151,7 +151,7 @@ describe("recall blocks", () => {
   // The reviewers' realistic state: three 47-character hold rules, one lifted order, one note, and four loops
   // elsewhere carrying the marks a live store gives them (due, undeliverable, stale).
   const realistic = (maxCharacters: number): RecallView => {
-    const orders = ["releases:web", "releases:api", "deploys:web"].map((s) =>
+    const orders = ["releases:web", "releases:api", "releases:mobile"].map((s) =>
       order(s, { rule: "hold until the migration on this service lands" }),
     );
     const lifted = order("releases:docs", { status: "lifted", endedBy: operator, why: "shipped" });
@@ -192,7 +192,7 @@ describe("recall blocks", () => {
     // 0.1.1 fit three of the four loops here; the frame the standing header no longer repeats is the room the fourth needs.
     const standing = renderStanding(realistic(1_200));
     expect(standing.length).toBeLessThanOrEqual(1_200);
-    for (const subject of ["releases:web", "releases:api", "deploys:web", "releases:docs"])
+    for (const subject of ["releases:web", "releases:api", "releases:mobile", "releases:docs"])
       expect(standing).toContain(subject);
     expect(standing).toContain("standup moves to 10:00 this week");
     expect(loopLines(standing)).toHaveLength(4);
@@ -331,7 +331,7 @@ describe("recall blocks", () => {
 describe("references", () => {
   const refs: Refs = new Map([
     ["knowledge:acme", '"Acme" (Vendor, 5d)'],
-    ["working:abc12", '"Deploy acme" (done, 3d)'],
+    ["working:abc12", '"Ship the release" (done, 3d)'],
     ["working:gone1", "(not found)"],
   ]);
 
@@ -341,7 +341,7 @@ describe("references", () => {
     });
     const line = loopLine(l, NOW, false, refs);
     expect(line).toContain(
-      'Links: vault:Vendors/acme.md working:abc12 → "Deploy acme" (done, 3d) knowledge:acme → "Acme" (Vendor, 5d)',
+      'Links: vault:Vendors/acme.md working:abc12 → "Ship the release" (done, 3d) knowledge:acme → "Acme" (Vendor, 5d)',
     );
     expect(loopLine(l, NOW)).toContain("Links: vault:Vendors/acme.md working:abc12 knowledge:acme");
   });
@@ -400,7 +400,7 @@ describe("references", () => {
     expect(short).not.toContain("working:abc12");
     expect(short).not.toContain("vault:");
     expect(shortLoopLine(l, NOW)).not.toContain("↳");
-    const o = order("deploys", { link: "knowledge:acme" });
+    const o = order("releases:web", { link: "knowledge:acme" });
     expect(shortOrderLine(o, NOW, refs)).toContain(' ↳ knowledge:acme "Acme" (Vendor, 5d)');
     expect(
       shortOrderLine(order("quiet", { link: "https://example.test/m/1" }), NOW, refs),
@@ -415,7 +415,7 @@ describe("references", () => {
       ...empty,
       refs,
       here: { loops: [loop("L1", { links: ["knowledge:acme"] })], total: 1 },
-      orders: { orders: [order("deploys", { link: "knowledge:acme" })], total: 1 },
+      orders: { orders: [order("releases:web", { link: "knowledge:acme" })], total: 1 },
       elsewhere: {
         loops: [loop("L2", { conversationKey: "slack-dm:T1/D9", links: ["working:abc12"] })],
         total: 1,
@@ -424,8 +424,8 @@ describe("references", () => {
     expect(renderHere(view)).toContain('knowledge:acme → "Acme" (Vendor, 5d)');
     const standing = renderStanding(view);
     expect(standing).toContain(
-      'deploys: hold (by operator 2026-10-31) ↳ knowledge:acme "Acme" (Vendor, 5d)',
+      'releases:web: hold (by operator 2026-10-31) ↳ knowledge:acme "Acme" (Vendor, 5d)',
     );
-    expect(standing).toContain('↳ working:abc12 "Deploy acme" (done, 3d)');
+    expect(standing).toContain('↳ working:abc12 "Ship the release" (done, 3d)');
   });
 });

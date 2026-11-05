@@ -97,7 +97,7 @@ const MAX_LINKS = 160;
 
 /**
  * What a reference resolved to this turn, by the link as written: the one-line target a `working:` or `knowledge:`
- * link points at, e.g. `"Deploy acme" (done, 3d)`, or `(not found)` once its store was read and had nothing.
+ * link points at, e.g. `"Ship the release" (done, 3d)`, or `(not found)` once its store was read and had nothing.
  */
 export type Refs = ReadonlyMap<string, string>;
 

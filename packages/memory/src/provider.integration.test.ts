@@ -870,22 +870,22 @@ describe("references between memories", () => {
   it("an attribute may be a reference to another memory, kept and shown as written", async () => {
     const { provider, memory, tools } = await open(tempDir(), "refs-1");
     const r = await tools.remember.execute({
-      label: "Deploy acme decided",
+      label: "Acme renewal decided",
       type: "Decision",
-      id: "deploy_acme_decided",
-      attributes: { loop: "working:abc12", about: "knowledge:acme", why: "Friday window" },
+      id: "acme_renewal_decided",
+      attributes: { loop: "working:abc12", about: "knowledge:acme", why: "Q4 budget" },
     });
     expect(r).not.toContain("Couldn't");
     // Turn-start recall shows the first attributes as written: the reference is followable by its id.
     const injected = await injectedText(
       provider,
       memory,
-      "what did we decide about the acme deploy?",
+      "what did we decide about the acme renewal?",
     );
     expect(injected).toContain("loop=working:abc12");
     expect(injected).toContain("about=knowledge:acme");
     // The recall tool shows every attribute as written.
-    const full = await tools.recall.execute({ query: "deploy_acme_decided" });
+    const full = await tools.recall.execute({ query: "acme_renewal_decided" });
     expect(full).toContain("loop: working:abc12");
     expect(full).toContain("about: knowledge:acme");
   });
