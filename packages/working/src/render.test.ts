@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   loopLine,
   orderLine,
+  preferredRef,
   type RecallView,
   type Refs,
   renderHere,
@@ -11,6 +12,7 @@ import {
   resolvedOf,
   shortLoopLine,
   shortOrderLine,
+  standingLoopOrder,
 } from "./render.js";
 import type { Loop, Note, Order } from "./store.js";
 
@@ -427,5 +429,23 @@ describe("references", () => {
       'releases:web: hold (by operator 2026-10-31) ↳ knowledge:acme "Acme" (Vendor, 5d)',
     );
     expect(standing).toContain('↳ working:abc12 "Ship the release" (done, 3d)');
+  });
+});
+
+describe("standing's reference candidates", () => {
+  it("lists loops due first, then stale, then the rest, each in the order given", () => {
+    const due: Partial<Loop> = { wake: "pending", dueAt: NOW - 1 };
+    const stale: Partial<Loop> = { reviewBy: NOW - 1 };
+    const loops = [loop("a"), loop("b", stale), loop("c"), loop("d", due), loop("e", stale)];
+    expect(standingLoopOrder(loops, NOW).map((l) => l.id)).toEqual(["d", "b", "e", "a", "c"]);
+  });
+
+  it("prefers knowledge:, then working:, and nothing for schemes that stay as written", () => {
+    expect(preferredRef(["working:L1", "knowledge:acme", "knowledge:other"])).toBe(
+      "knowledge:acme",
+    );
+    expect(preferredRef(["vault:a.md", "working:L1"])).toBe("working:L1");
+    expect(preferredRef(["vault:a.md", "https://example.test/x"])).toBeNull();
+    expect(preferredRef([])).toBeNull();
   });
 });

@@ -898,13 +898,120 @@ describe("references", () => {
     await a.call("open", { what: "here", waitingOn: "me", next: "n", links }, ALICE_DM_1);
     await a.call(
       "open",
-      { what: "elsewhere", waitingOn: "me", next: "n", links: ["knowledge:k0", "knowledge:k9"] },
+      { what: "elsewhere", waitingOn: "me", next: "n", links: ["knowledge:k0", "knowledge:k8"] },
       ALICE_THREAD,
+    );
+    await a.call(
+      "open",
+      { what: "elsewhere too", waitingOn: "me", next: "n", links: ["knowledge:k9"] },
+      BOB_THREAD,
     );
     const messages = await a.recall(ALICE_DM_1);
     expect(seen).toEqual([...links.slice(0, 6), "knowledge:k9"]);
     expect(text(messages, HERE_ID)).toContain("knowledge:k1 → (x) knowledge:k2 knowledge:k3");
     expect(text(messages, STANDING_ID)).toContain("↳ knowledge:k0 (x)");
+  });
+
+  it("a host resolver that fails is not called again that turn, so a hung one costs one timeout", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let calls = 0;
+    const a = await agent({
+      resolve: () => {
+        calls++;
+        return new Promise<string | null>(() => {});
+      },
+    });
+    await a.call(
+      "open",
+      { what: "here", waitingOn: "me", next: "n", links: ["knowledge:a", "knowledge:b"] },
+      ALICE_DM_1,
+    );
+    await a.call(
+      "open",
+      { what: "elsewhere", waitingOn: "me", next: "n", links: ["knowledge:c"] },
+      ALICE_THREAD,
+    );
+    await a.call(
+      "open",
+      { what: "elsewhere too", waitingOn: "me", next: "n", links: ["knowledge:d"] },
+      BOB_THREAD,
+    );
+    const started = Date.now();
+    const messages = await a.recall(ALICE_DM_1);
+    const elapsed = Date.now() - started;
+    expect(calls).toBe(1);
+    expect(elapsed).toBeLessThan(600);
+    expect(text(messages, HERE_ID)).toContain("Links: knowledge:a knowledge:b");
+    expect(text(messages, STANDING_ID)).not.toContain("↳");
+  });
+
+  it("standing spends its lookups on one link per loop, due loops first", async () => {
+    const seen: string[] = [];
+    const a = await agent({
+      maxCharacters: 6_000,
+      resolve: async (link) => {
+        seen.push(link);
+        return "(x)";
+      },
+    });
+    for (let i = 0; i < 6; i++)
+      await a.call(
+        "open",
+        {
+          what: `plain ${i}`,
+          waitingOn: "me",
+          next: "n",
+          links: [`knowledge:plain${i}a`, `knowledge:plain${i}b`],
+        },
+        ALICE_THREAD,
+      );
+    for (let i = 0; i < 2; i++)
+      await a.call(
+        "open",
+        {
+          what: `due ${i}`,
+          waitingOn: "me",
+          next: "n",
+          links: [`knowledge:due${i}a`, `knowledge:due${i}b`],
+          revisit: { when: "in 1 hour" },
+        },
+        LINEAR,
+      );
+    clock += 2 * 3_600_000;
+    const standing = text(await a.recall(ALICE_DM_1), STANDING_ID);
+    expect(seen).toHaveLength(6);
+    expect(seen.slice(0, 2).sort()).toEqual(["knowledge:due0a", "knowledge:due1a"]);
+    expect(seen.some((l) => l.endsWith("b"))).toBe(false);
+    expect(standing).toContain("↳ knowledge:due0a (x)");
+    expect(standing).toContain("↳ knowledge:due1a (x)");
+  });
+
+  it("the list tool shows the targets of a loop's references, by id and in a view", async () => {
+    const a = await agent({
+      resolve: async (link) => (link === "knowledge:acme" ? '"Acme" (Vendor, 5d)' : null),
+    });
+    const done = idOf(
+      await a.call("open", { what: "ship the release", waitingOn: "me", next: "n" }, ALICE_DM_2),
+    );
+    await a.call("close", { id: done, outcome: "done", why: "shipped" }, ALICE_DM_2);
+    const id = idOf(
+      await a.call(
+        "open",
+        {
+          what: "follow up",
+          waitingOn: "me",
+          next: "n",
+          links: [`working:${done}`, "knowledge:acme"],
+        },
+        ALICE_DM_1,
+      ),
+    );
+    const one = await a.call("list", { id }, ALICE_DM_1);
+    expect(one).toContain(`working:${done} → "ship the release" (done, today)`);
+    expect(one).toContain('knowledge:acme → "Acme" (Vendor, 5d)');
+    expect(await a.call("list", { view: "here" }, ALICE_DM_1)).toContain(
+      `working:${done} → "ship the release" (done, today)`,
+    );
   });
 
   it("the list tool follows a working: reference by id, closed loops included", async () => {

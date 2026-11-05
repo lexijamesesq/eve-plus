@@ -2,10 +2,9 @@
 
 ## 0.1.3
 
-- **References show what they point at.** A `working:<id>` link on a loop, or an order's `knowledge:` or `working:` link, now appears with its target, e.g. `working:L3f → "Ship the release" (done, 3d)`. In `standing` a reference gets one `↳ <link> <target>` per line, within 80 characters. `working:` links resolve from the store, closed loops included. Any other scheme goes to the new `resolve(link, context)` option, which answers a one-line target, `(not found)`, or null to leave the link as written.
-- **Resolution is bounded.** At most six distinct links are resolved per block, a full line resolves at most two, and targets are dropped before the links segment collapses, so a loop's own text keeps its room. Each `resolve` call is limited to 250 ms; a resolver that throws or times out leaves its links as written, with one warning per turn.
-- **`list` takes an `id`.** It returns one loop whatever its status, closed ones included, which is how a `working:<id>` reference is followed. The `open` tool's description now tells the agent to cite the record a loop is about as `knowledge:<id>`.
-- Exports `resolveRefs`, `loopTarget`, `RESOLVE_PER_BLOCK`, `RESOLVE_TIMEOUT_MS` and the `Refs` type.
+- **References show what they point at.** A `working:<id>` link on a loop, or an order's `knowledge:` or `working:` link, now appears with its target, e.g. `working:L3f → "Ship the release" (done, 3d)`. In `standing` a reference gets one `↳ <link> <target>` per line, within 80 characters. `working:` links resolve from the store, closed loops included. `knowledge:` links go to the new `resolve(link, context)` option, which answers a one-line target, `(not found)`, or null to leave the link as written. Every other scheme (`vault:`, `linear:`, `slack:`, `github:`, and any custom scheme in `linkSchemes`) shows as written.
+- **Resolution is bounded.** At most six distinct links are resolved per block, a full line resolves at most two, and targets are dropped before the links segment collapses, so a loop's own text keeps its room. In `standing`, lookups follow the order the block lists things and go to the one reference each line shows. Each `resolve` call is limited to 250 ms; a resolver that throws or times out is not called again that turn, its remaining links show as written, and one warning is logged.
+- **`list` takes an `id`.** It returns one loop whatever its status, closed ones included, which is how a `working:<id>` reference is followed. Both `list` forms show the targets of the references they list. The `open` tool's description now tells the agent to cite the record a loop is about as `knowledge:<id>`.
 
 ## 0.1.2
 

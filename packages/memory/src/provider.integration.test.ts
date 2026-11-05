@@ -925,12 +925,44 @@ describe("references between memories", () => {
     warn.mockRestore();
   });
 
+  it("an async onOpen hook that rejects is logged and doesn't fail the open or escape as unhandled", async () => {
+    const dir = tempDir();
+    const provider = shaclMemory({
+      dir,
+      onOpen: async () => {
+        await Promise.resolve();
+        throw new Error("async host bug");
+      },
+    }) as unknown as Harness;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const tools = await provider.tools({ memory: memoryFor("refs-async-boom") });
+      const saved = await tools.remember.execute({ label: "Still saved" }, toolContext("c4"));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(saved).not.toContain("Couldn't");
+      expect(
+        warn.mock.calls.some(
+          (c) => String(c[0]).includes("onOpen failed") && String(c[0]).includes("async host bug"),
+        ),
+      ).toBe(true);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      warn.mockRestore();
+    }
+  });
+
   it("the host can read a record by id through the opened graph", async () => {
     const dir = tempDir();
     const graphs = new Map<string, MemoryGraph>();
     const provider = shaclMemory({
       dir,
-      onOpen: (graph, scope) => graphs.set(JSON.stringify(scope.value), graph),
+      onOpen: (graph, scope) => {
+        graphs.set(JSON.stringify(scope.value), graph);
+      },
     }) as unknown as Harness;
     const memory = memoryFor("refs-read");
     const tools = await provider.tools({ memory });

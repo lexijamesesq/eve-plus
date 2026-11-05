@@ -33,7 +33,7 @@ export default defineMemory({
   provider: shaclMemory({
     dir: "./.eve/memory",                           // where the SQLite store lives on disk
     maxWritesPerSession: 200,                       // optional: fail loud past this many writes in one session
-    onOpen: (graph, scope) => graphs.set(key(scope.value), graph), // optional: join this memory to another (see Tools)
+    onOpen: (graph, scope) => void graphs.set(key(scope.value), graph), // optional: join this memory to another (see Tools)
   }),
   scope: byPrincipal,
 });
@@ -47,7 +47,7 @@ The agent gets a small tool surface; it never sees RDF or SPARQL — this packag
 - **`remember`** — "record Z." Writes a new fact or entity, recorded with who wrote it (see Security below).
 - **`relate`** — "what's connected to Y." Returns an entity's relations, plus its own attributes.
 
-An attribute value may be a reference to another memory by id, such as `{ loop: "working:L3f" }` for a task in `@eve-plus/working` or `{ about: "knowledge:acme" }` for another record here. It is kept and shown as written, so the agent can follow it. For the other direction, a task that cites a record here, give the provider `onOpen(graph, scope)`. It hands your host each scope's graph as it opens, and `graph.describe(id)` returns the one-line answer the other memory shows.
+An attribute value may be a reference to another memory by id, such as `{ loop: "working:L3f" }` for a task in `@eve-plus/working` or `{ about: "knowledge:acme" }` for another record here. It is kept and shown as written, so the agent can follow it. For the other direction, a task that cites a record here, give the provider `onOpen(graph, scope)`. It hands your host each scope's graph as it opens, and `graph.describe(id)` returns the one-line answer the other memory shows. The hook may be async; one that throws or rejects is logged and never fails the open.
 
 - **`extend_schema`** — author or extend a record type at runtime (e.g. "a client always needs a phone and a company"). Meta-validated against SHACL-SHACL: the agent can grow the schema, but never the metamodel it's checked against.
 - **`forget`** — remove a fact or a whole record. Appends a tombstone rather than deleting in place; nothing is destroyed.

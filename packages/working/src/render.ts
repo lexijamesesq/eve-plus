@@ -124,13 +124,23 @@ export function resolvedOf(
     .slice(0, max);
 }
 
+/** The one link a short line would show: `knowledge:` first, else `working:`; null when it has none to resolve. */
+export function preferredRef(links: readonly string[]): string | null {
+  const [first] = [...new Set(links.map(flat))]
+    .filter((l) => refRank(l) < REF_SCHEMES.length)
+    .sort((a, b) => refRank(a) - refRank(b));
+  return first ?? null;
+}
+
 const MAX_RESOLVED_PER_LINE = 2;
 const MAX_SHORT_REF = 80;
 
 /** A reference with its target, for a short line: ` ↳ knowledge:acme "Acme" (Vendor, 5d)`, or nothing. */
 function shortRef(links: readonly string[], refs: Refs | undefined): string {
-  const [l] = resolvedOf(links, refs, 1);
-  return l === undefined ? "" : ` ↳ ${clip(`${l} ${refs?.get(l) ?? ""}`, MAX_SHORT_REF)}`;
+  const l = preferredRef(links);
+  return l === null || refs?.has(l) !== true
+    ? ""
+    : ` ↳ ${clip(`${l} ${refs?.get(l) ?? ""}`, MAX_SHORT_REF)}`;
 }
 
 /**
@@ -352,8 +362,7 @@ export function renderHere(v: RecallView): string {
  */
 export function renderStanding(v: RecallView): string {
   const header = `[${STANDING_ID}] Working memory (${v.slot}) as of ${day(v.now)}: standing orders, notes, and loops open elsewhere${v.readOnly ? READ_ONLY : ""}.`;
-  const urgent = (l: Loop) => (isDue(l, v.now) ? 0 : isStale(l, v.now) ? 1 : 2);
-  const elsewhere = [...v.elsewhere.loops].sort((a, b) => urgent(a) - urgent(b));
+  const elsewhere = standingLoopOrder(v.elsewhere.loops, v.now);
   const sections: Section[] = [
     {
       heading: "Orders:",
@@ -386,6 +395,12 @@ export function renderStanding(v: RecallView): string {
     noun: "loops elsewhere",
   });
   return fitBlock(header, sections, v.maxCharacters, `${v.slot}__list`);
+}
+
+/** Loops elsewhere in the order `standing` lists them: due first, then stale, then the rest, each in store order. */
+export function standingLoopOrder(loops: readonly Loop[], now: number): Loop[] {
+  const urgent = (l: Loop) => (isDue(l, now) ? 0 : isStale(l, now) ? 1 : 2);
+  return [...loops].sort((a, b) => urgent(a) - urgent(b));
 }
 
 /**

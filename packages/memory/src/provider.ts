@@ -35,9 +35,10 @@ export interface ShaclMemoryOptions {
   /**
    * Run once each time a scope's graph is opened in this process, with the scope eve resolved for it. A host that
    * joins this memory to another (a reference like `knowledge:<id>` on a task) keeps the graph by the scope's value and
-   * reads it with `describe(id)`. The graph stays open for the process; don't close it.
+   * reads it with `describe(id)`. The graph stays open for the process; don't close it. A throw or a rejection is
+   * logged and never fails the open; the open doesn't wait for an async hook.
    */
-  readonly onOpen?: (graph: MemoryGraph, scope: MemoryScope) => void;
+  readonly onOpen?: (graph: MemoryGraph, scope: MemoryScope) => void | Promise<void>;
 }
 
 const slugKey = (key: string): string =>
@@ -306,13 +307,16 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
     let mg = cache.get(key);
     if (mg === undefined) {
       mg = MemoryGraph.create({ dir: `${options.dir}/${slugKey(key)}` }).then((graph) => {
-        // A host hook that throws must not take the open with it: the memory is there, the join isn't.
-        try {
-          options.onOpen?.(graph, scope);
-        } catch (error) {
+        // A host hook that throws or rejects must not take the open with it: the memory is there, the join isn't.
+        // The open doesn't wait for an async hook, so a slow one can't stall it.
+        const failed = (error: unknown) =>
           console.warn(
             `[mem] onOpen failed: ${error instanceof Error ? error.message : String(error)}`,
           );
+        try {
+          void Promise.resolve(options.onOpen?.(graph, scope)).catch(failed);
+        } catch (error) {
+          failed(error);
         }
         return graph;
       });
