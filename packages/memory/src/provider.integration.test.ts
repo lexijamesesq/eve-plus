@@ -870,24 +870,31 @@ describe("references between memories", () => {
   it("an attribute may be a reference to another memory, kept and shown as written", async () => {
     const { provider, memory, tools } = await open(tempDir(), "refs-1");
     const r = await tools.remember.execute({
-      label: "Deploy ollie decided",
+      label: "Deploy acme decided",
       type: "Decision",
-      id: "deploy_ollie_decided",
-      attributes: { loop: "working:abc12", about: "knowledge:ollie", why: "Friday window" },
+      id: "deploy_acme_decided",
+      attributes: { loop: "working:abc12", about: "knowledge:acme", why: "Friday window" },
     });
     expect(r).not.toContain("Couldn't");
     // Turn-start recall shows the first attributes as written: the reference is followable by its id.
     const injected = await injectedText(
       provider,
       memory,
-      "what did we decide about the ollie deploy?",
+      "what did we decide about the acme deploy?",
     );
     expect(injected).toContain("loop=working:abc12");
-    expect(injected).toContain("about=knowledge:ollie");
+    expect(injected).toContain("about=knowledge:acme");
     // The recall tool shows every attribute as written.
-    const full = await tools.recall.execute({ query: "deploy_ollie_decided" });
+    const full = await tools.recall.execute({ query: "deploy_acme_decided" });
     expect(full).toContain("loop: working:abc12");
-    expect(full).toContain("about: knowledge:ollie");
+    expect(full).toContain("about: knowledge:acme");
+  });
+
+  it("the remember tool tells the agent a value may reference another memory", async () => {
+    const { tools } = await open(tempDir(), "refs-desc");
+    const shape = tools.remember.inputSchema?.shape as Record<string, { description?: string }>;
+    expect(shape.attributes?.description).toContain("knowledge:<id>");
+    expect(shape.attributes?.description).toContain("working:<id>");
   });
 
   it("onOpen runs once per scope's graph, with the scope eve resolved, and a throwing hook doesn't take the open with it", async () => {
@@ -928,11 +935,11 @@ describe("references between memories", () => {
     const memory = memoryFor("refs-read");
     const tools = await provider.tools({ memory });
     await tools.remember.execute(
-      { label: "Ollie", type: "Agent", id: "ollie", attributes: { role: "reviewer" } },
+      { label: "Acme", type: "Vendor", id: "acme", attributes: { role: "reviewer" } },
       toolContext("c3"),
     );
     const graph = graphs.get(JSON.stringify(memory.scope.value));
-    expect(graph?.describe("ollie")?.label).toBe("Ollie");
+    expect(graph?.describe("acme")?.label).toBe("Acme");
     expect(graph?.describe("nobody")).toBeNull();
   });
 });

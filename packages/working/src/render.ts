@@ -97,7 +97,7 @@ const MAX_LINKS = 160;
 
 /**
  * What a reference resolved to this turn, by the link as written: the one-line target a `working:` or `knowledge:`
- * link points at, e.g. `"Deploy ollie" (done, 3d)`, or `(not found)` once its store was read and had nothing.
+ * link points at, e.g. `"Deploy acme" (done, 3d)`, or `(not found)` once its store was read and had nothing.
  */
 export type Refs = ReadonlyMap<string, string>;
 
@@ -127,7 +127,7 @@ export function resolvedOf(
 const MAX_RESOLVED_PER_LINE = 2;
 const MAX_SHORT_REF = 80;
 
-/** A reference with its target, for a short line: ` ↳ knowledge:ollie "Ollie" (Agent, 5d)`, or nothing. */
+/** A reference with its target, for a short line: ` ↳ knowledge:acme "Acme" (Vendor, 5d)`, or nothing. */
 function shortRef(links: readonly string[], refs: Refs | undefined): string {
   const [l] = resolvedOf(links, refs, 1);
   return l === undefined ? "" : ` ↳ ${clip(`${l} ${refs?.get(l) ?? ""}`, MAX_SHORT_REF)}`;

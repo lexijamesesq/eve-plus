@@ -86,10 +86,10 @@ export interface WorkingMemoryOptions {
   /** The `<scheme>:` references a link may be, beside http(s) URLs; empty means URLs only. Default: knowledge, working, vault, linear, slack, github. */
   readonly linkSchemes?: readonly string[];
   /**
-   * What a link other than `working:` points at, as one short line for the recall blocks, e.g. `"Ollie" (Agent, 5d)`;
+   * What a link other than `working:` points at, as one short line for the recall blocks, e.g. `"Acme" (Vendor, 5d)`;
    * `(not found)` when the host read its store and had nothing; null when it has nothing to read this turn, and the link
    * shows as written. `working:` links the package resolves itself. Called at most RESOLVE_PER_BLOCK times per block
-   * per turn, once per distinct link; a throw leaves the link as written.
+   * per turn, once per distinct link; a throw, or no answer within RESOLVE_TIMEOUT_MS, leaves the link as written.
    */
   readonly resolve?: (link: string, context: MemoryOperationContext) => Promise<string | null>;
   /** Most open loops, active orders and live notes held at once. Defaults 200, 50, 100. */
@@ -231,6 +231,17 @@ const MIN_CHARACTERS = 400;
 /** Lookups per recall block (`here`, then `standing`); references past it show as written. */
 export const RESOLVE_PER_BLOCK = 6;
 
+/** Longest a host resolver may take for one link, so a hung one can't stall the turn's recall. */
+export const RESOLVE_TIMEOUT_MS = 250;
+
+const withTimeout = <T>(work: Promise<T>, ms: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([work, expiry]).finally(() => clearTimeout(timer));
+};
+
 const ageOf = (ms: number, now: number): string => {
   const days = Math.floor((now - ms) / 86_400_000);
   return days <= 0 ? "today" : `${days}d`;
@@ -244,8 +255,8 @@ export function loopTarget(loop: Loop, now: number): string {
 /**
  * What the blocks' references point at, by link, looking up at most RESOLVE_PER_BLOCK distinct links per block in the
  * order they appear: `working:` in the store (closed loops included), anything else through the host's resolver. A
- * link already resolved for an earlier block costs nothing again. A failing resolver loses its links' targets, not the
- * turn: they show as written.
+ * link already resolved for an earlier block costs nothing again. A resolver that throws or times out loses its links'
+ * targets, not the turn: they show as written.
  */
 export async function resolveRefs(
   store: Pick<WorkingStore, "loop">,
@@ -276,7 +287,7 @@ export async function resolveRefs(
         continue;
       }
       try {
-        const target = await resolve(link);
+        const target = await withTimeout(resolve(link), RESOLVE_TIMEOUT_MS);
         if (target === null) missed.add(link);
         else refs.set(link, flat(target));
       } catch (error) {

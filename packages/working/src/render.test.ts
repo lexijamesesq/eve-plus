@@ -330,22 +330,20 @@ describe("recall blocks", () => {
 
 describe("references", () => {
   const refs: Refs = new Map([
-    ["knowledge:ollie", '"Ollie" (Agent, 5d)'],
-    ["working:abc12", '"Deploy ollie" (done, 3d)'],
+    ["knowledge:acme", '"Acme" (Vendor, 5d)'],
+    ["working:abc12", '"Deploy acme" (done, 3d)'],
     ["working:gone1", "(not found)"],
   ]);
 
   it("a loop in full shows each resolved link with its target, knowledge first, and leaves the rest as written", () => {
     const l = loop("L1", {
-      links: ["vault:Agents/ollie.md", "working:abc12", "knowledge:ollie"],
+      links: ["vault:Vendors/acme.md", "working:abc12", "knowledge:acme"],
     });
     const line = loopLine(l, NOW, false, refs);
     expect(line).toContain(
-      'Links: vault:Agents/ollie.md working:abc12 → "Deploy ollie" (done, 3d) knowledge:ollie → "Ollie" (Agent, 5d)',
+      'Links: vault:Vendors/acme.md working:abc12 → "Deploy acme" (done, 3d) knowledge:acme → "Acme" (Vendor, 5d)',
     );
-    expect(loopLine(l, NOW)).toContain(
-      "Links: vault:Agents/ollie.md working:abc12 knowledge:ollie",
-    );
+    expect(loopLine(l, NOW)).toContain("Links: vault:Vendors/acme.md working:abc12 knowledge:acme");
   });
 
   it("a dangling reference says so once its store was read", () => {
@@ -376,14 +374,14 @@ describe("references", () => {
   it("targets never cost the loop its text: over the links cap they drop from the last back, then links collapse as before", () => {
     const long = "working:" + "x".repeat(24);
     const wide: Refs = new Map([
-      ["knowledge:ollie", '"Ollie" (Agent, 5d)'],
+      ["knowledge:acme", '"Acme" (Vendor, 5d)'],
       [long, '"' + "w".repeat(60) + '" (open, 1d)'],
     ]);
-    const links = ["knowledge:ollie", long, "https://example.test/" + "p".repeat(40)];
+    const links = ["knowledge:acme", long, "https://example.test/" + "p".repeat(40)];
     const l = loop("L1", { links, next: "n".repeat(120) });
     const line = loopLine(l, NOW, false, wide);
     // The knowledge target fits beside the links; the working target did not and was dropped; nothing collapsed.
-    expect(line).toContain('knowledge:ollie → "Ollie" (Agent, 5d)');
+    expect(line).toContain('knowledge:acme → "Acme" (Vendor, 5d)');
     expect(line).not.toContain("(open, 1d)");
     expect(line).toContain("Links: ");
     expect(line).toContain("Next: " + "n".repeat(120));
@@ -396,18 +394,18 @@ describe("references", () => {
   });
 
   it("standing lines gain at most one resolved reference each, within 80 characters, and no raw links", () => {
-    const l = loop("L1", { links: ["vault:x.md", "working:abc12", "knowledge:ollie"] });
+    const l = loop("L1", { links: ["vault:x.md", "working:abc12", "knowledge:acme"] });
     const short = shortLoopLine(l, NOW, refs);
-    expect(short).toContain(' ↳ knowledge:ollie "Ollie" (Agent, 5d)');
+    expect(short).toContain(' ↳ knowledge:acme "Acme" (Vendor, 5d)');
     expect(short).not.toContain("working:abc12");
     expect(short).not.toContain("vault:");
     expect(shortLoopLine(l, NOW)).not.toContain("↳");
-    const o = order("deploys", { link: "knowledge:ollie" });
-    expect(shortOrderLine(o, NOW, refs)).toContain(' ↳ knowledge:ollie "Ollie" (Agent, 5d)');
+    const o = order("deploys", { link: "knowledge:acme" });
+    expect(shortOrderLine(o, NOW, refs)).toContain(' ↳ knowledge:acme "Acme" (Vendor, 5d)');
     expect(
       shortOrderLine(order("quiet", { link: "https://example.test/m/1" }), NOW, refs),
     ).not.toContain("↳");
-    const wide: Refs = new Map([["knowledge:ollie", "y".repeat(200)]]);
+    const wide: Refs = new Map([["knowledge:acme", "y".repeat(200)]]);
     const ref = shortLoopLine(l, NOW, wide).split(" ↳ ").at(1) ?? "";
     expect(ref.length).toBeLessThanOrEqual(80);
   });
@@ -416,18 +414,18 @@ describe("references", () => {
     const view: RecallView = {
       ...empty,
       refs,
-      here: { loops: [loop("L1", { links: ["knowledge:ollie"] })], total: 1 },
-      orders: { orders: [order("deploys", { link: "knowledge:ollie" })], total: 1 },
+      here: { loops: [loop("L1", { links: ["knowledge:acme"] })], total: 1 },
+      orders: { orders: [order("deploys", { link: "knowledge:acme" })], total: 1 },
       elsewhere: {
         loops: [loop("L2", { conversationKey: "slack-dm:T1/D9", links: ["working:abc12"] })],
         total: 1,
       },
     };
-    expect(renderHere(view)).toContain('knowledge:ollie → "Ollie" (Agent, 5d)');
+    expect(renderHere(view)).toContain('knowledge:acme → "Acme" (Vendor, 5d)');
     const standing = renderStanding(view);
     expect(standing).toContain(
-      'deploys: hold (by operator 2026-10-31) ↳ knowledge:ollie "Ollie" (Agent, 5d)',
+      'deploys: hold (by operator 2026-10-31) ↳ knowledge:acme "Acme" (Vendor, 5d)',
     );
-    expect(standing).toContain('↳ working:abc12 "Deploy ollie" (done, 3d)');
+    expect(standing).toContain('↳ working:abc12 "Deploy acme" (done, 3d)');
   });
 });

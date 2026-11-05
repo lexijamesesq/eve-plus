@@ -421,7 +421,9 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
             attributes: z
               .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
               .optional()
-              .describe("plain properties, e.g. { floor: 2 }"),
+              .describe(
+                "plain properties, e.g. { floor: 2 }. A value may be a reference to another memory by id, with the prefixes knowledge:<id> and working:<id>, kept as written.",
+              ),
             relations: z
               .array(z.object({ relation: z.string(), to: z.string() }))
               .optional()
