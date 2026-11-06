@@ -7,6 +7,7 @@
 //   eve-memory-migrate <dir> --apply --report <file> --choose "c1=A c2=Q:\"Sam (Acme)\"" [--refs <file>] [--run <id>]
 //   eve-memory-migrate <dir> --apply --decisions <file> [--refs <file>] [--run <id>]
 //     Apply. The agents using the stores must be stopped. Prints each decision it read, then the result.
+//     --check prints the decisions and what a copy says of them, and writes nothing: a read-back before applying.
 //
 // --refs names `knowledge:` references held elsewhere (one per line), checked before and after alongside the stores'
 // own. Exits 0 when it ran (per-clash outcomes are in the report), 1 when it refused before writing, 2 on bad usage.
@@ -31,7 +32,7 @@ import { scopesIn } from "./stats.js";
 const usage = (): never => {
   process.stderr.write(
     "usage: eve-memory-migrate <dir> [--report <file>] [--refs <file>]\n" +
-      "       eve-memory-migrate <dir> --apply (--report <file> --choose <choices> | --decisions <file>) [--refs <file>] [--run <id>]\n",
+      "       eve-memory-migrate <dir> --apply (--report <file> --choose <choices> | --decisions <file>) [--refs <file>] [--run <id>] [--check]\n",
   );
   process.exit(2);
 };
@@ -46,6 +47,7 @@ const parse = () =>
       decisions: { type: "string" },
       refs: { type: "string" },
       run: { type: "string" },
+      check: { type: "boolean" },
     },
   });
 const { values: opt, positionals } = (() => {
@@ -58,7 +60,7 @@ const { values: opt, positionals } = (() => {
 const dir = positionals[0];
 if (dir === undefined || positionals.length > 1) usage();
 if (opt.apply && !opt.decisions && !(opt.report && opt.choose)) usage();
-if (!opt.apply && (opt.choose || opt.decisions || opt.run)) usage();
+if (!opt.apply && (opt.choose || opt.decisions || opt.run || opt.check)) usage();
 
 const { version } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -127,6 +129,12 @@ if (!opt.apply) {
     for (const n of checked.notes) process.stdout.write(`note ${n}\n`);
   }
   if (errors.length) refuse(errors.join("; "));
+  if (opt.check) {
+    process.stdout.write(
+      `eve-memory-migrate ${version} check: ${decisions.length} decision(s), no errors; nothing written\n`,
+    );
+    process.exit(0);
+  }
   const run = opt.run ?? newRun();
   const report: Report = { mode: "apply", dir, version, scopes: [] };
   for (const scope of scopes)
