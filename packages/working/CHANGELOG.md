@@ -2,7 +2,7 @@
 
 ## 0.1.5
 
-- **`open`'s description no longer teaches citing; its `links` field does.** The sentence telling the agent to cite a record as `knowledge:<id>` is gone from the description; the `links` input says what a link may be: `knowledge:<handle>` for the record the loop is about, `working:<id>`, or a URL. One vocabulary with `@eve-plus/memory`. No behaviour change.
+- **`open`'s description no longer coaches citing.** The sentence telling the agent to cite a record as `knowledge:<id>` is gone; the link rule the host configures, which `open` already states, is the one place link kinds are named, and a `knowledge:` link is a record's handle as `@eve-plus/memory` shows it. No behaviour change.
 
 ## 0.1.4
 

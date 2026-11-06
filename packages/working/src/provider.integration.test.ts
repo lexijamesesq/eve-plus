@@ -1067,11 +1067,9 @@ describe("references", () => {
     expect(await a.call("list", { id: "Lffff" }, ALICE_DM_1)).toContain("No loop Lffff");
   });
 
-  it("open's links field says a loop may cite the record it is about", () => {
+  it("open states the link rule once, and no longer coaches citing", () => {
+    expect(workingToolSpecs.open.description).toContain("knowledge:");
     expect(workingToolSpecs.open.description).not.toContain("cite its record");
-    expect(workingToolSpecs.open.inputSchema.shape.links.description).toContain(
-      "knowledge:<handle>",
-    );
     expect(workingToolSpecs.list.description).toContain("working:<id>");
   });
 });

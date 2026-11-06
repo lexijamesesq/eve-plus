@@ -170,11 +170,7 @@ export function toolSpecs(schemes: readonly string[] = DEFAULT_LINK_SCHEMES) {
           what: text(200),
           waitingOn: text(40).describe("whose move: me, a person, a system"),
           next: text(500).describe("your next action"),
-          links: links
-            .optional()
-            .describe(
-              "knowledge:<handle> for the record the loop is about, working:<id>, or a URL",
-            ),
+          links: links.optional(),
           revisit: revisit.optional(),
           reviewBy: when.optional().describe("default 7 days"),
         })
