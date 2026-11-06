@@ -912,6 +912,33 @@ describe("references", () => {
     expect(text(messages, STANDING_ID)).toContain("↳ knowledge:k0 (x)");
   });
 
+  it("a reference too long for a standing line spends no lookup", async () => {
+    const seen: string[] = [];
+    const a = await agent({
+      resolve: async (link) => {
+        seen.push(link);
+        return "(x)";
+      },
+    });
+    const long = `knowledge:${"a".repeat(80)}`;
+    await a.call(
+      "open",
+      { what: "elsewhere", waitingOn: "me", next: "n", links: [long] },
+      ALICE_THREAD,
+    );
+    for (let i = 0; i < 6; i++) {
+      await a.call(
+        "open",
+        { what: `elsewhere ${i}`, waitingOn: "me", next: "n", links: [`knowledge:k${i}`] },
+        BOB_THREAD,
+      );
+    }
+    await a.recall(ALICE_DM_1);
+    expect(seen).not.toContain(long);
+    expect(seen).toHaveLength(6);
+    expect(seen.every((l) => /^knowledge:k\d$/.test(l))).toBe(true);
+  });
+
   it("a host resolver that fails is not called again that turn, so a hung one costs one timeout", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     let calls = 0;

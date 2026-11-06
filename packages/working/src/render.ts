@@ -124,16 +124,20 @@ export function resolvedOf(
     .slice(0, max);
 }
 
-/** The one link a short line would show: `knowledge:` first, else `working:`; null when it has none to resolve. */
+const MAX_SHORT_REF = 80;
+
+/**
+ * The one link a short line would show: `knowledge:` first, else `working:`; null when it has none to resolve. A link
+ * too long to show whole is no candidate, so it never spends one of the block's lookups on a target nobody sees.
+ */
 export function preferredRef(links: readonly string[]): string | null {
   const [first] = [...new Set(links.map(flat))]
-    .filter((l) => refRank(l) < REF_SCHEMES.length)
+    .filter((l) => refRank(l) < REF_SCHEMES.length && l.length <= MAX_SHORT_REF)
     .sort((a, b) => refRank(a) - refRank(b));
   return first ?? null;
 }
 
 const MAX_RESOLVED_PER_LINE = 2;
-const MAX_SHORT_REF = 80;
 
 /**
  * A reference with its target, for a short line: ` ↳ knowledge:acme "Acme" (Vendor, 5d)`, or nothing. Over the cap the
@@ -144,7 +148,7 @@ function shortRef(links: readonly string[], refs: Refs | undefined): string {
   if (l === null || refs?.has(l) !== true) return "";
   const full = flat(`${l} ${refs.get(l) ?? ""}`);
   if (full.length <= MAX_SHORT_REF) return ` ↳ ${full}`;
-  return l.length <= MAX_SHORT_REF ? ` ↳ ${l}` : "";
+  return ` ↳ ${l}`;
 }
 
 /**

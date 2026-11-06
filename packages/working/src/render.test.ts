@@ -465,5 +465,8 @@ describe("standing's reference candidates", () => {
     expect(preferredRef(["vault:a.md", "working:L1"])).toBe("working:L1");
     expect(preferredRef(["vault:a.md", "https://example.test/x"])).toBeNull();
     expect(preferredRef([])).toBeNull();
+    const long = `knowledge:${"a".repeat(80)}`;
+    expect(preferredRef([long, "working:L1"])).toBe("working:L1");
+    expect(preferredRef([long])).toBeNull();
   });
 });
