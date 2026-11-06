@@ -1,20 +1,20 @@
 // The eve-memory-migrate command, as a function of its arguments and streams, so it can be run and tested without a
 // process of its own. migrate-cli.ts wires it to the process.
 //
-//   eve-memory-migrate <dir> [--report <file>] [--refs <file>]
+//   eve-memory-migrate <dir> [--report -] [--refs <file>]
 //     Dry run. Plans every store under <dir> on a copy, tries each clash's options there, and prints the report with
-//     no detail values. --report writes the full report (values included) as JSON, for choosing from.
-//   eve-memory-migrate <dir> --apply --report <file> --choose "c1=A c2=Q:\"Sam (Acme)\"" [--refs <file>] [--run <id>]
-//   eve-memory-migrate <dir> --apply --decisions <file> [--refs <file>] [--run <id>]
-//     Apply. The agents using the stores must be stopped. Prints each decision it read, then the result.
-//     --check prints the decisions and what a copy says of them, and writes nothing: a read-back before applying.
+//     no detail values. With --report -, it prints the full report (values included) as JSON on stdout, for choosing
+//     from, and the report without values on stderr.
+//   eve-memory-migrate <dir> --apply --report <file> --choose "c1=A c2=Q:\"Sam (Acme)\"" [--refs <file>]
+//     Apply the choices against the full report they were made from. The agents using the stores must be stopped.
+//     Prints each decision it read, then the result.
 //
 // --refs names `knowledge:` references held elsewhere (one per line), checked in every store alongside the store's
-// own; apply reuses each store's from the dry run when given none. `-` for --report or --refs reads stdin, and a dry
-// run's `--report -` writes the full report to stdout and the shareable one to stderr, so a container needs no host
-// file. Exits 0 when it ran (per-clash outcomes are in the report), 1 when it refused before writing, 2 on bad usage.
+// own; apply reuses each store's from the dry run when given none. `-` for --report or --refs reads stdin, so a
+// container needs no host file. Exits 0 when it ran (per-clash outcomes are in the report), 1 when it refused before
+// writing, 2 on bad usage.
 
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -22,7 +22,6 @@ import { handleOf } from "./memory-graph.js";
 import {
   applyScope,
   chosen,
-  type Decision,
   dryRun,
   newRun,
   numbered,
@@ -39,8 +38,8 @@ export interface Io {
 }
 
 const USAGE =
-  "usage: eve-memory-migrate <dir> [--report <file>] [--refs <file>]\n" +
-  "       eve-memory-migrate <dir> --apply (--report <file> --choose <choices> | --decisions <file>) [--refs <file>] [--run <id>] [--check]\n";
+  "usage: eve-memory-migrate <dir> [--report -] [--refs <file>]\n" +
+  "       eve-memory-migrate <dir> --apply --report <file> --choose <choices> [--refs <file>]\n";
 
 class Exit {
   constructor(readonly code: number) {}
@@ -76,10 +75,7 @@ async function run(argv: string[], io: Io) {
           apply: { type: "boolean" },
           report: { type: "string" },
           choose: { type: "string" },
-          decisions: { type: "string" },
           refs: { type: "string" },
-          run: { type: "string" },
-          check: { type: "boolean" },
         },
       });
     } catch {
@@ -89,8 +85,9 @@ async function run(argv: string[], io: Io) {
   const { values: opt, positionals } = parsed;
   const dir = positionals[0];
   if (dir === undefined || positionals.length > 1) usage();
-  if (opt.apply && !opt.decisions && !(opt.report && opt.choose !== undefined)) usage();
-  if (!opt.apply && (opt.choose !== undefined || opt.decisions || opt.run || opt.check)) usage();
+  if (opt.apply && !(opt.report && opt.choose !== undefined)) usage();
+  if (!opt.apply && (opt.choose !== undefined || (opt.report !== undefined && opt.report !== "-")))
+    usage();
   // stdin feeds one input at most.
   if (opt.refs === "-" && opt.report === "-" && opt.apply) usage();
 
@@ -121,32 +118,17 @@ async function run(argv: string[], io: Io) {
       // The full report on stdout and the shareable one on stderr, for a caller that keeps them apart.
       io.stdout(`${JSON.stringify(report, null, 2)}\n`);
       io.stderr(`${redacted(report)}\n`);
-    } else {
-      if (opt.report) {
-        writeFileSync(opt.report, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-        // The mode applies only to a file this creates: an existing one is narrowed too.
-        chmodSync(opt.report, 0o600);
-      }
-      io.stdout(`${redacted(report)}\n`);
-    }
+    } else io.stdout(`${redacted(report)}\n`);
     return;
   }
 
-  let decisions: Decision[];
+  const from = JSON.parse(read(opt.report as string)) as Report;
   // Each store's references as its dry run checked them: the given ones plus those in its own details. A store's
   // own references are never checked against another store.
-  let refsOf = (_scope: string) => given ?? [];
-  if (opt.decisions) decisions = JSON.parse(read(opt.decisions)) as Decision[];
-  else {
-    const from = JSON.parse(read(opt.report as string)) as Report;
-    if (!given) {
-      const byScope = new Map(from.scopes.map((s) => [s.scope, s.refs.map((r) => r.ref)]));
-      refsOf = (scope) => byScope.get(scope) ?? [];
-    }
-    const { decisions: d, problems } = chosen(from, opt.choose as string);
-    if (problems.length) refuse(problems.join("; "));
-    decisions = d;
-  }
+  const byScope = new Map(from.scopes.map((s) => [s.scope, s.refs.map((r) => r.ref)]));
+  const refsOf = (scope: string) => given ?? byScope.get(scope) ?? [];
+  const { decisions, problems } = chosen(from, opt.choose as string);
+  if (problems.length) refuse(problems.join("; "));
   for (const d of decisions) {
     const qualifies = Object.entries(d.members ?? {}).flatMap(([id, ch]) =>
       typeof ch === "object" && "qualify" in ch
@@ -171,13 +153,7 @@ async function run(argv: string[], io: Io) {
     for (const n of checked.notes) io.stdout(`note ${n}\n`);
   }
   if (errors.length) refuse(errors.join("; "));
-  if (opt.check) {
-    io.stdout(
-      `eve-memory-migrate ${version} check: ${decisions.length} decision(s), no errors; nothing written\n`,
-    );
-    return;
-  }
-  const runId = opt.run ?? newRun();
+  const runId = newRun();
   const report: Report = { mode: "apply", dir, version, scopes: [] };
   for (const scope of scopes)
     report.scopes.push(

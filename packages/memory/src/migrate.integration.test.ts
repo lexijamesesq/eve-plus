@@ -828,17 +828,10 @@ describe("the command, over its arguments and streams", () => {
     expect(out.stderr).not.toMatch(/555-01/);
   });
 
-  it("apply takes the report on stdin, accepts no choices for a store with no clashes, and --check writes nothing", async () => {
+  it("apply takes the report on stdin and accepts no choices for a store with no clashes", async () => {
     const dir = memoryDir({ a: [{ id: "k_1", label: "Kettle" }] });
     const dry = io();
     await main([dir, "--report", "-"], dry.io);
-    const before = readFileSync(join(dir, "a", "graph.db"));
-    const check = io(dry.out.stdout);
-    expect(await main([dir, "--apply", "--report", "-", "--choose", "", "--check"], check.io)).toBe(
-      0,
-    );
-    expect(check.out.stdout).toMatch(/0 decision\(s\), no errors; nothing written/);
-    expect(readFileSync(join(dir, "a", "graph.db")).equals(before)).toBe(true);
     const apply = io(dry.out.stdout);
     expect(await main([dir, "--apply", "--report", "-", "--choose", ""], apply.io)).toBe(0);
     expect(apply.out.stdout).toMatch(/minted=1/);
