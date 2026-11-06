@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+
+Documentation only. The 0.7.0 entry's note on rolling back to 0.6.2 said a 0.6.2 reader ignores the new events; it
+can lose a queued closeout instead, and the note below now says how, and what to check. No code change.
+
 ## 0.7.0
 
 The conversation between the commissioner and the worker, fixed in four places. One interface change is breaking:
@@ -30,8 +35,13 @@ a custom worker connector must now implement `complete` (see the last item).
   the work is closed out, or already was, and rejects when it can't act right now so the closeout is retried
   rather than lost.
 
-No store schema change. A store written by 0.6.2 opens unchanged. A 0.6.2 reader should see the new `note` and `complete`
-events as unfamiliar kinds and ignores them.
+No store schema change: a store written by 0.6.2 opens unchanged, and 0.6.2 opens one written by 0.7.0. A 0.6.2 worker
+reads `note` and `complete` events as events of an unfamiliar kind. Rolling back to 0.6.2 can lose a closeout: its
+dispatcher sends every outbox entry other than a handoff to the commissioner as a notice, so a closeout still queued
+arrives as "Commission … has a new complete event", is marked delivered, and its issue is never completed; 0.6.2 also
+never closes the issue of a proposal accepted after the rollback. The ledger can't tell a delivered closeout from a dropped
+one, so check the issues: before rolling back, confirm each commission accepted under 0.7.0 has its issue completed, and while
+0.6.2 runs, complete by hand the issue of every commission it accepts.
 
 ## 0.6.2
 
