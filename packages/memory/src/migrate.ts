@@ -57,6 +57,8 @@ export interface Decision {
   members?: Record<string, Choice>;
   /** For a merge: a detail both records hold, taken from the duplicate named. Unnamed, the survivor's stays. */
   keys?: Record<string, string>;
+  /** For a merge: details not carried over at all, such as ones the survivor's rules refuse. */
+  drop?: string[];
 }
 
 export interface Option {
@@ -119,8 +121,11 @@ export interface ApplyResult {
   failed: { clash: string; reason: string }[];
   merges: number;
   minted: number;
+  /** Rows the run wrote that are still there, after any reverts. */
   rowsWritten: number;
   rowsReverted: number;
+  /** What the run left out on purpose, such as a connection to a record that no longer resolves. */
+  notes: string[];
 }
 
 export interface Report {
@@ -349,7 +354,12 @@ const withSkip = (
   ].map((o, i) => ({ ...o, letter: String.fromCharCode(65 + i), ok: true, problems: [] }));
 
 /** The structural rules every decision obeys, before anything is tried. */
-export function decisionProblems(g: MemoryGraph, c: Clash, d: Decision): string[] {
+export function decisionProblems(
+  g: MemoryGraph,
+  c: Clash,
+  d: Decision,
+  claimed: ReadonlySet<string> = new Set(),
+): string[] {
   if (d.skip) return [];
   const problems: string[] = [];
   const choices = d.members ?? {};
@@ -390,6 +400,10 @@ export function decisionProblems(g: MemoryGraph, c: Clash, d: Decision): string[
       else if (h === c.handle) problems.push(`"${ch.qualify}" makes the same handle`);
       else if (g.resolve(h).status !== "missing")
         problems.push(`"${ch.qualify}" makes ${REFERENCE_PREFIX}${h}, which is taken`);
+      else if (claimed.has(h))
+        problems.push(
+          `"${ch.qualify}" makes ${REFERENCE_PREFIX}${h}, which another record's name makes`,
+        );
     }
   }
   const bare =
@@ -402,6 +416,13 @@ export function decisionProblems(g: MemoryGraph, c: Clash, d: Decision): string[
     .map((m) => choices[m.id])
     .flatMap((ch) => (typeof ch === "object" && "qualify" in ch ? [handleOf(ch.qualify)] : []));
   if (new Set(quals).size !== quals.length) problems.push("two qualifiers make the same handle");
+  const merged = c.members.filter((m) => {
+    const ch = choices[m.id];
+    return ch === "carry" || (typeof ch === "object" && "merge" in ch);
+  });
+  for (const key of d.drop ?? [])
+    if (!merged.some((m) => m.keys.includes(key)))
+      problems.push(`no merged record has ${key} to leave out`);
   for (const [key, from] of Object.entries(d.keys ?? {})) {
     const m = c.members.find((x) => x.id === from);
     const ch = choices[from];
@@ -417,6 +438,8 @@ interface Planned {
   clashes: Clash[];
   mints: string[];
   unnamed: string[];
+  /** Every handle some record's current or last name makes: what a new name must not make. */
+  claimed: ReadonlySet<string>;
 }
 
 /** Every record's would-be handle, grouped: one claimant mints; two or more are a clash for the operator. */
@@ -515,7 +538,7 @@ export function plan(g: MemoryGraph, scope: string): Planned {
       ]),
     });
   }
-  return { scope, clashes, mints, unnamed };
+  return { scope, clashes, mints, unnamed, claimed: new Set(want.keys()) };
 }
 
 const originOf = (run: string, extra: Record<string, string>) =>
@@ -528,25 +551,30 @@ async function carry(
   survivor: string,
   dup: string,
   take: string[],
+  drop: string[],
   everything: boolean,
   origin: string,
+  notes: string[],
 ): Promise<string | undefined> {
   const s = g.stored(survivor);
   const d = g.stored(dup);
   if (!s || !d) return `${survivor} or ${dup} is gone`;
   const attributes: Record<string, string | number | boolean> = {};
   for (const [k, v] of Object.entries(d.attributes))
-    if (everything || !(k in s.attributes) || take.includes(k))
+    if (!drop.includes(k) && (everything || !(k in s.attributes) || take.includes(k)))
       if (s.attributes[k] !== v) attributes[k] = typed(v, d.datatypes[k]);
   const relations = d.relations.filter(
     (r) =>
       !s.relations.some((x) => x.relation === r.relation && x.to === r.to) &&
       r.to !== dup &&
-      r.to !== survivor &&
-      g.resolve(r.to).status === "found",
+      r.to !== survivor,
   );
-  if (!Object.keys(attributes).length && !relations.length) return undefined;
-  const r = await g.remember({ id: survivor, attributes, relations }, origin);
+  const reachable = relations.filter((r) => g.resolve(r.to).status === "found");
+  for (const r of relations)
+    if (!reachable.includes(r))
+      notes.push(`not carried from ${dup}: ${r.relation} → ${r.to}, which no longer resolves`);
+  if (!Object.keys(attributes).length && !reachable.length) return undefined;
+  const r = await g.remember({ id: survivor, attributes, relations: reachable }, origin);
   return r.ok ? undefined : r.problems.map((p) => p.constraint ?? p.path ?? "a rule").join("; ");
 }
 
@@ -570,6 +598,7 @@ export async function apply(
     minted: 0,
     rowsWritten: 0,
     rowsReverted: 0,
+    notes: [],
   };
   const live = new Map<string, { c: Clash; d: Decision }>();
   for (const c of p.clashes) {
@@ -579,7 +608,7 @@ export async function apply(
       result.skipped.push({ clash: c.key, reason: "changed since it was decided" });
     else if (d.skip) result.skipped.push({ clash: c.key, reason: "decided: skip" });
     else {
-      const problems = decisionProblems(g, c, d);
+      const problems = decisionProblems(g, c, d, p.claimed);
       if (problems.length) result.skipped.push({ clash: c.key, reason: problems.join("; ") });
       else live.set(c.key, { c, d });
     }
@@ -616,7 +645,16 @@ export async function apply(
   await each(async (c, d, origin) => {
     for (const { dup, into } of merges(c, d)) {
       const take = Object.entries(d.keys ?? {}).flatMap(([k, from]) => (from === dup ? [k] : []));
-      const problem = await carry(g, into, dup, take, d.members?.[dup] === "carry", origin);
+      const problem = await carry(
+        g,
+        into,
+        dup,
+        take,
+        d.drop ?? [],
+        d.members?.[dup] === "carry",
+        origin,
+        result.notes,
+      );
       if (problem) return `carrying ${dup} into ${into}: ${problem}`;
     }
     return undefined;
@@ -650,7 +688,10 @@ export async function apply(
     return undefined;
   });
   for (const [key] of live) result.applied.push(key);
-  for (const id of p.mints) g.mintHandle(id, originOf(run, { record: id }));
+  for (const id of p.mints) {
+    const r = g.mintHandle(id, originOf(run, { record: id }));
+    if (!r.ok) result.failed.push({ clash: `${p.scope}/record:${id}`, reason: r.reason });
+  }
   const n = (sql: string) => (g.db.prepare(sql).get(run) as { n: number }).n;
   result.merges = n(
     "SELECT count(*) AS n FROM handles WHERE kind = 'merge' AND json_extract(origin, '$.run') = ?",
@@ -695,9 +736,11 @@ export function checkRefs(
     const l = legacy.get(ref) ?? null;
     // Where the old target leads now: itself, or its survivor if it was merged. Not a handle lookup of its id,
     // which a new handle equal to that id would capture.
-    const redirect = b === null ? null : g.stored(b)?.merged ? at(g.resolve(b)) : b;
+    const lead = (id: string | null) =>
+      id === null ? null : g.stored(id)?.merged ? at(g.resolve(id)) : id;
+    // A reference only 0.5 resolved that now leads to some other record was captured, not just left unresolved.
     const outcome: RefCheck["outcome"] =
-      b !== null && a !== redirect
+      (b !== null && a !== lead(b)) || (b === null && l !== null && a !== null && a !== lead(l))
         ? "migration-break"
         : l !== null && b === null
           ? "pin-break"
@@ -705,6 +748,13 @@ export function checkRefs(
     return { ref, legacy: l, before: b, after: a, outcome };
   });
 }
+
+const reported = ({ scope, clashes, mints, unnamed }: Planned) => ({
+  scope,
+  clashes,
+  mints,
+  unnamed,
+});
 
 /** A copy of a scope's store to plan on: the live one is opened read-only and never written. */
 export async function snapshot(
@@ -740,20 +790,60 @@ export async function dryRun(
   try {
     const before = counts(g);
     const p = plan(g, scope);
-    for (const c of p.clashes)
+    // Try a decision on the copy and undo it: what it would leave unapplied, and why.
+    const probe = async (c: Clash, d: Decision) => {
+      const problems = decisionProblems(g, c, d, p.claimed);
+      if (problems.length || d.skip) return problems;
+      g.db.exec("SAVEPOINT probe");
+      try {
+        const r = await apply(g, { ...p, clashes: [c], mints: [] }, [d], "probe");
+        return [...r.failed, ...r.skipped].map((x) => x.reason);
+      } finally {
+        g.db.exec("ROLLBACK TO probe; RELEASE probe");
+      }
+    };
+    for (const c of p.clashes) {
       for (const o of c.options) {
-        o.problems = decisionProblems(g, c, o.decision);
-        if (!o.problems.length && !o.decision.skip) {
-          g.db.exec("SAVEPOINT probe");
-          try {
-            const r = await apply(g, { ...p, clashes: [c], mints: [] }, [o.decision], "probe");
-            o.problems = [...r.failed, ...r.skipped].map((x) => x.reason);
-          } finally {
-            g.db.exec("ROLLBACK TO probe; RELEASE probe");
-          }
-        }
+        o.problems = await probe(c, o.decision);
         o.ok = o.problems.length === 0;
       }
+      // A merge the survivor's rules refuse gets a variant that leaves out exactly the details they refuse.
+      const variants: Option[] = [];
+      for (const o of c.options) {
+        if (o.ok || !o.problems.some((x) => x.startsWith("carrying"))) continue;
+        const keys = [
+          ...new Set(
+            c.members
+              .filter((m) => {
+                const ch = o.decision.members?.[m.id];
+                return ch === "carry" || (typeof ch === "object" && "merge" in ch);
+              })
+              .flatMap((m) => m.keys),
+          ),
+        ];
+        const refused: string[] = [];
+        for (const k of keys)
+          if ((await probe(c, { ...o.decision, drop: keys.filter((x) => x !== k) })).length)
+            refused.push(k);
+        if (!refused.length) continue;
+        const decision = { ...o.decision, drop: refused };
+        const problems = await probe(c, decision);
+        variants.push({
+          letter: "",
+          summary: `${o.summary}, leaving out ${refused.join(", ")}`,
+          decision,
+          ok: problems.length === 0,
+          problems,
+        });
+      }
+      if (variants.length) {
+        const skip = c.options.pop() as Option;
+        c.options = [...c.options, ...variants, skip].map((o, i) => ({
+          ...o,
+          letter: String.fromCharCode(65 + i),
+        }));
+      }
+    }
     const refs = [...new Set([...extraRefs, ...attributeRefs(g)])];
     const legacy = new Map(refs.map((x) => [x, legacyTarget(g, x)]));
     const pre = resolveAll(g, refs);
@@ -766,7 +856,7 @@ export async function dryRun(
       g.db.exec("ROLLBACK TO mints; RELEASE mints");
     }
     // The clash-free handles' own effect on references: a break here blocks the apply, which would take it back.
-    return { ...p, refs: checks, before };
+    return { ...reported(p), refs: checks, before };
   } finally {
     done();
   }
@@ -813,9 +903,36 @@ export async function applyScope(
     applied.rowsWritten = n(
       "SELECT count(*) AS n FROM triples WHERE json_extract(origin, '$.run') = ?",
     );
-    return { ...p, refs: refs2, before, after: counts(g), applied };
+    return { ...reported(p), refs: refs2, before, after: counts(g), applied };
   } finally {
     g.close();
+  }
+}
+
+/**
+ * Check decisions against a copy of the store before anything is written: one that breaks a rule (a qualifier whose
+ * handle is taken, two records keeping one name) refuses the apply; one whose clash is gone or changed will be skipped.
+ */
+export async function preflight(
+  storeDir: string,
+  scope: string,
+  decisions: Decision[],
+): Promise<{ errors: string[]; notes: string[] }> {
+  const { graph: g, done } = await snapshot(storeDir);
+  try {
+    const p = plan(g, scope);
+    const errors: string[] = [];
+    const notes: string[] = [];
+    for (const d of decisions) {
+      const c = p.clashes.find((x) => x.key === d.clash);
+      if (!c) notes.push(`${d.clash}: no longer a clash (settled or gone); it will be skipped`);
+      else if (c.digest !== d.digest)
+        notes.push(`${d.clash}: changed since it was decided; it will be skipped`);
+      else for (const x of decisionProblems(g, c, d, p.claimed)) errors.push(`${d.clash}: ${x}`);
+    }
+    return { errors, notes };
+  } finally {
+    done();
   }
 }
 
@@ -934,6 +1051,7 @@ export function redacted(report: Report): string {
         ...a.failed.map((x) => ["failed", x] as const),
       ])
         out.push(`    ${x[0]} ${x[1].clash}: ${x[1].reason}`);
+      for (const n of a.notes) out.push(`    note ${n}`);
     }
   }
   return out.join("\n");

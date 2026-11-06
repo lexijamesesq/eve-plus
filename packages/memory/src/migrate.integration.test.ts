@@ -15,6 +15,7 @@ import {
   dryRun,
   numbered,
   plan,
+  preflight,
   type Report,
   redacted,
   type ScopeReport,
@@ -177,9 +178,7 @@ describe("a confirmed merge carries details over, retracts the duplicate, and th
     g.close();
     const { before, after, applied } = r;
     expect(after?.records).toBe((before?.records ?? 0) - (applied?.merges ?? 0));
-    expect(after?.triples).toBe(
-      (before?.triples ?? 0) + (applied?.rowsWritten ?? 0) - (applied?.rowsReverted ?? 0),
-    );
+    expect(after?.triples).toBe((before?.triples ?? 0) + (applied?.rowsWritten ?? 0));
     expect(after?.handles).toBe((before?.handles ?? 0) + (applied?.minted ?? 0));
     expect(applied?.minted).toBe(2);
   });
@@ -424,6 +423,7 @@ describe("a clash that fails part-way is undone whole", () => {
     const r = await applyScope(dir, "scope", [option(dry, "ann", /into a_1/)], [], "run-p");
     expect(r.applied?.failed.map((f) => f.clash)).toEqual(["scope/ann"]);
     expect(r.applied?.rowsReverted).toBeGreaterThan(0);
+    expect(r.after?.triples).toBe((r.before?.triples ?? 0) + (r.applied?.rowsWritten ?? 0));
     const g2 = await open(dir);
     expect(g2.stored("a_1")?.attributes).toEqual({});
     expect(g2.stored("a_2")?.exists).toBe(true);
@@ -457,6 +457,95 @@ describe("a record that already holds the handle keeps it", () => {
     expect(g3.resolve("sam")).toMatchObject({ status: "found", id: "s_2" });
     expect(g3.resolve("s_1")).toMatchObject({ status: "found", id: "s_2" });
     g3.close();
+  });
+});
+
+describe("a merge the survivor's rules refuse is offered again without what they refuse", () => {
+  it("adds a variant that leaves out the refused detail, and it applies", async () => {
+    const dir = store([
+      { id: "p_1", label: "Pat", type: "Person", at: "2026-01-01T00:00:00Z" },
+      {
+        id: "p_2",
+        label: "Pat",
+        attributes: { age: "old", city: "Oslo" },
+        at: "2026-02-01T00:00:00Z",
+      },
+    ]);
+    const g = await open(dir);
+    await g.extendSchema({
+      class: "Person",
+      requires: [{ slot: "age", datatype: "integer", minCount: 0 }],
+    });
+    g.close();
+    const dry = await dryRun(dir, "scope", []);
+    const variant = clash(dry, "pat").options.find((o) => /leaving out age/.test(o.summary));
+    expect(variant?.ok).toBe(true);
+    expect(variant?.decision.drop).toEqual(["age"]);
+    expect(clash(dry, "pat").options.at(-1)?.summary).toBe("skip");
+    await applyScope(dir, "scope", [variant?.decision as Decision], [], "run-drop");
+    const g2 = await open(dir);
+    expect(g2.describe("pat")?.attributes).toEqual({ city: "Oslo" });
+    g2.close();
+  });
+
+  it("notes a connection it didn't carry because its target no longer resolves", async () => {
+    const dir = store([
+      { id: "a_1", label: "Ann" },
+      { id: "a_2", label: "Ann", edges: [["knows", "gone_0000"]] },
+    ]);
+    const dry = await dryRun(dir, "scope", []);
+    const r = await applyScope(dir, "scope", [option(dry, "ann", /into a_1/)], [], "run-n");
+    expect(r.applied?.notes.join()).toMatch(/knows → gone_0000/);
+  });
+});
+
+describe("decisions are checked on a copy before anything is written", () => {
+  it("a new name whose handle is taken, or two records keeping one name, is an error; a stale one a note", async () => {
+    const dir = store([
+      { id: "s_1", label: "Sam", type: "Person" },
+      { id: "s_2", label: "Sam", type: "Company" },
+      { id: "x_1", label: "Sam Acme" },
+      { id: "f_1", label: "Bo", forgotten: true },
+      { id: "f_2", label: "Bo" },
+    ]);
+    const dry = await dryRun(dir, "scope", []);
+    const sam = clash(dry, "sam");
+    const bo = clash(dry, "bo");
+    const taken: Decision = {
+      clash: sam.key,
+      digest: sam.digest,
+      members: { s_1: "survivor", s_2: { qualify: "Sam (Acme)" } },
+    };
+    const two: Decision = {
+      clash: bo.key,
+      digest: bo.digest,
+      members: { f_1: "reserve", f_2: "survivor" },
+    };
+    const stale: Decision = { ...taken, digest: "0000000000000000" };
+    const r = await preflight(dir, "scope", [taken, two]);
+    expect(r.errors.join()).toMatch(/knowledge:sam-acme, which another record's name makes/);
+    expect(r.errors.join()).toMatch(/only one can/);
+    expect((await preflight(dir, "scope", [stale])).notes.join()).toMatch(
+      /changed since it was decided/,
+    );
+  });
+});
+
+describe("a reference only 0.5 resolved, which a new handle would send elsewhere, is taken back", () => {
+  it("reports the capture in the dry run and reverts the handle in apply", async () => {
+    const dir = store([
+      { id: "sam_lee", label: "Samuel" },
+      { id: "sl_9", label: "Sam Lee" },
+    ]);
+    const dry = await dryRun(dir, "scope", ["sam-lee"]);
+    expect(dry.refs.find((x) => x.ref === "sam-lee")?.outcome).toBe("migration-break");
+    const r = await applyScope(dir, "scope", [], ["sam-lee"], "run-cap");
+    expect(r.applied?.failed.map((f) => f.clash)).toContain("scope/record:sl_9");
+    expect(r.refs.find((x) => x.ref === "sam-lee")?.outcome).toBe("pin-break");
+    const g = await open(dir);
+    expect(g.stored("sl_9")?.handles).toEqual([]);
+    expect(g.stored("sam_lee")?.handles).toEqual(["samuel"]);
+    g.close();
   });
 });
 

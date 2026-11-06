@@ -11,10 +11,10 @@
 // --refs names `knowledge:` references held elsewhere (one per line), checked before and after alongside the stores'
 // own. Exits 0 when it ran (per-clash outcomes are in the report), 1 when it refused before writing, 2 on bad usage.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-
+import { handleOf } from "./memory-graph.js";
 import {
   applyScope,
   chosen,
@@ -22,6 +22,7 @@ import {
   dryRun,
   newRun,
   numbered,
+  preflight,
   type Report,
   redacted,
 } from "./migrate.js";
@@ -87,8 +88,11 @@ if (!opt.apply) {
   const report = numbered({ mode: "dry-run", dir, version, scopes: [] });
   for (const scope of scopes) report.scopes.push(await dryRun(join(dir, scope), scope, refs));
   numbered(report);
-  if (opt.report)
+  if (opt.report) {
     writeFileSync(opt.report, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+    // The mode applies only to a file this creates: an existing one is narrowed too.
+    chmodSync(opt.report, 0o600);
+  }
   process.stdout.write(`${redacted(report)}\n`);
 } else {
   let decisions: Decision[];
@@ -99,10 +103,27 @@ if (!opt.apply) {
     if (problems.length) refuse(problems.join("; "));
     decisions = d;
   }
-  for (const d of decisions)
-    process.stdout.write(
-      `decision ${d.clash} digest=${d.digest} ${d.skip ? "skip" : JSON.stringify({ members: d.members, keys: d.keys })}\n`,
+  for (const d of decisions) {
+    const qualifies = Object.entries(d.members ?? {}).flatMap(([id, ch]) =>
+      typeof ch === "object" && "qualify" in ch
+        ? [`${id} as ${JSON.stringify(ch.qualify)} → knowledge:${handleOf(ch.qualify)}`]
+        : [],
     );
+    process.stdout.write(
+      `decision ${d.clash} digest=${d.digest} ${d.skip ? "skip" : JSON.stringify({ members: d.members, keys: d.keys, drop: d.drop })}${qualifies.length ? ` qualifies ${qualifies.join("; ")}` : ""}\n`,
+    );
+  }
+  const errors: string[] = [];
+  for (const scope of scopes) {
+    const checked = await preflight(
+      join(dir, scope),
+      scope,
+      decisions.filter((d) => d.clash.startsWith(`${scope}/`)),
+    );
+    errors.push(...checked.errors);
+    for (const n of checked.notes) process.stdout.write(`note ${n}\n`);
+  }
+  if (errors.length) refuse(errors.join("; "));
   const run = opt.run ?? newRun();
   const report: Report = { mode: "apply", dir, version, scopes: [] };
   for (const scope of scopes)
