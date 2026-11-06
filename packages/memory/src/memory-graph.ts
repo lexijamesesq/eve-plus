@@ -535,6 +535,13 @@ export const CURRENT_FACTS_SQL = `SELECT (SELECT count(*) FROM triples t WHERE $
 /** How many handles are held: one live row per handle, whether current, earlier, or a forgotten record's. */
 export const LIVE_HANDLES_SQL =
   "SELECT count(*) AS n FROM handles WHERE kind = 'handle' AND superseded_by IS NULL";
+/** How many records are live: those with a current detail or a live connection. */
+export const LIVE_RECORDS_SQL = `SELECT count(*) AS n FROM (SELECT s FROM triples t WHERE ${SINGLE_VALUED} AND ot != 'tomb' AND ${LATEST_SINGLE}
+                                                         UNION SELECT s FROM triples t WHERE ${EDGE} AND ot = 'iri' AND ${LATEST_EDGE})`;
+/** How many connections are live. */
+export const LIVE_EDGES_SQL = `SELECT count(*) AS n FROM triples t WHERE ${EDGE} AND ot = 'iri' AND ${LATEST_EDGE}`;
+/** Every row in the log, tombstones included. */
+export const TRIPLES_SQL = "SELECT count(*) AS n FROM triples";
 /**
  * The store's write high-water mark: the largest `seq` ever assigned. It only grows, even when `revertBatch` deletes
  * the latest rows, so a mark lower than a previous reading means the store was lost or replaced.
@@ -828,6 +835,65 @@ export class MemoryGraph {
         .get(s) as { target: string } | undefined
     )?.target;
   }
+  /**
+   * A record exactly as stored under its internal id: not resolved, merges not followed. For operator tools that
+   * need to see a merged or forgotten record itself. Null for an id nothing was ever written under.
+   */
+  stored(id: string): {
+    id: string;
+    exists: boolean;
+    merged: boolean;
+    handles: string[];
+    lastLabel?: string;
+    label?: string;
+    type?: string;
+    attributes: Record<string, string>;
+    /** Each attribute's stored datatype (xsd local name), so a copy keeps its type. */
+    datatypes: Record<string, string>;
+    relations: { relation: string; to: string }[];
+    recorded: Record<string, Recorded>;
+    /** When anything was first and last written under this id, and by whom, from every row it ever had. */
+    firstWritten: string | null;
+    lastWritten: string | null;
+    writers: Who[];
+  } | null {
+    const s = `${E}${id}`;
+    if (!this.#known(s)) return null;
+    const v = this.#view(s);
+    const log = this.db
+      .prepare("SELECT written_at, origin FROM triples WHERE s = ? ORDER BY seq")
+      .all(s) as { written_at: string | null; origin: string | null }[];
+    return {
+      id,
+      exists: v.exists,
+      merged: this.#mergedInto(s) !== undefined,
+      handles: this.#liveHandles(s),
+      lastLabel: this.#lastLabel(s),
+      label: v.label,
+      type: v.type,
+      attributes: v.attributes,
+      datatypes: Object.fromEntries(
+        v.rows
+          .filter((r) => r.ot === "lit" && r.p.startsWith(P))
+          .map((r) => [keyOf(r.p), (r.dt ?? `${XSD}string`).slice(XSD.length)]),
+      ),
+      relations: v.relations.map((r) => ({ relation: tail(r.p), to: tail(r.o) })),
+      recorded: v.recorded,
+      firstWritten: log[0]?.written_at ?? null,
+      lastWritten: log.at(-1)?.written_at ?? null,
+      writers: [...new Set(log.map((r) => whoOf(r.origin)))].sort(),
+    };
+  }
+
+  /** Every internal id anything was ever written under, forgotten and merged records included. */
+  storedIds(): string[] {
+    return (
+      this.db.prepare("SELECT DISTINCT s FROM triples WHERE s LIKE ? ORDER BY s").all(`${E}%`) as {
+        s: string;
+      }[]
+    ).map((r) => tail(r.s));
+  }
+
   // Every row a record ever had, tombstones included: a forgotten record is still known by its id.
   #known(s: string): boolean {
     return this.db.prepare("SELECT 1 FROM triples WHERE s = ? LIMIT 1").get(s) !== undefined;
@@ -1072,7 +1138,13 @@ export class MemoryGraph {
     into: string,
     origin: string = DIRECT,
   ): { ok: true } | { ok: false; reason: string } {
-    const from = this.resolve(duplicate);
+    // A record already merged that has been written to since under its own id (by a version that didn't follow
+    // merges) is retracted again by that id: resolving it would land on `into`.
+    const revived =
+      this.#view(`${E}${duplicate}`).exists && this.#mergedInto(`${E}${duplicate}`) !== undefined;
+    const from = revived
+      ? ({ status: "found", id: duplicate, via: "id" } as const)
+      : this.resolve(duplicate);
     const to = this.resolve(into);
     if (from.status === "missing")
       return { ok: false, reason: `No record is addressed as "${duplicate}".` };

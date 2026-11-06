@@ -10,8 +10,11 @@ import Database from "better-sqlite3";
 import {
   CURRENT_FACTS_SQL,
   CURRENT_LITERALS_SQL,
+  LIVE_EDGES_SQL,
   LIVE_HANDLES_SQL,
+  LIVE_RECORDS_SQL,
   SEQ_HWM_SQL,
+  TRIPLES_SQL,
 } from "./memory-graph.js";
 
 const STORE = "graph.db";
@@ -37,6 +40,12 @@ export interface ScopeStats {
   maxSeq?: number;
   quickCheck?: string;
   currentFacts?: number;
+  /** Live records: those with a current detail or a live connection. */
+  records?: number;
+  /** Live connections. */
+  edges?: number;
+  /** Every row in the log, tombstones included. */
+  triples?: number;
   /** Handles held (current, earlier and forgotten records'), counted apart from facts; null before handles existed. */
   handles?: number | null;
   tombstones?: number;
@@ -112,6 +121,9 @@ export function scopeStats(dir: string, scope: string, options: StatsOptions = {
         db.prepare("SELECT ifnull(max(seq), 0) AS n FROM triples").get() as { n: number }
       ).n;
       stats.currentFacts = (db.prepare(CURRENT_FACTS_SQL).get() as { n: number }).n;
+      stats.records = (db.prepare(LIVE_RECORDS_SQL).get() as { n: number }).n;
+      stats.edges = (db.prepare(LIVE_EDGES_SQL).get() as { n: number }).n;
+      stats.triples = (db.prepare(TRIPLES_SQL).get() as { n: number }).n;
       const hasHandles = db
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'handles'")
         .get();
@@ -219,6 +231,9 @@ export function formatStats(dir: string, all: ScopeStats[], version: string): st
         `max_seq=${s.maxSeq}`,
         `quick_check=${q(s.quickCheck ?? "")}`,
         `current_facts=${s.currentFacts}`,
+        `records=${s.records}`,
+        `edges=${s.edges}`,
+        `triples=${s.triples}`,
         `handles=${s.handles ?? "none"}`,
         `tombstones=${s.tombstones}`,
         `search_index=${s.searchIndex?.indexed}/${s.searchIndex?.current}` +

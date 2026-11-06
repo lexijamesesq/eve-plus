@@ -130,7 +130,7 @@ describe("eve-memory-stats reports each store's facts", () => {
     expect(line).toMatch(
       /^scope="memscope1_alice" user_version=5 seq_hwm=\d+ max_seq=\d+ quick_check="ok" /,
     );
-    expect(line).toMatch(/ current_facts=\d+ handles=2 /);
+    expect(line).toMatch(/ current_facts=\d+ records=2 edges=1 triples=7 handles=2 /);
     expect(line).toMatch(/ search_index=2\/2 missing=0 extra=0 files=graph\.db:\d+:\d+:\d+/);
     expect(line).toMatch(/ findings=none$/);
   });
