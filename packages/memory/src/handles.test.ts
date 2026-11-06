@@ -519,3 +519,36 @@ describe("history and revert cover handles", () => {
     expect(g.resolve("alice")).toMatchObject({ via: "handle" });
   });
 });
+
+describe("recall finds a record by its name in any script", () => {
+  const people = async () => {
+    const g = await MemoryGraph.create();
+    for (const name of ["Zoë Park", "José García", "李明", "Kitchen floor"]) await saved(g, name);
+    return g;
+  };
+  const found = (g: MemoryGraph, query: string) => g.recall(query).map((f) => f.label);
+
+  it("by the name as written", async () => {
+    const g = await people();
+    expect(found(g, "Zoë")).toEqual(["Zoë Park"]);
+    expect(found(g, "José García")).toEqual(["José García"]);
+    expect(found(g, "李明")).toEqual(["李明"]);
+    // A two-character name isn't noise beside longer words.
+    expect(found(g, "where does 李明 sit")).toEqual(["李明"]);
+    expect(g.relate("José").label).toBe("José García");
+  });
+
+  it("without the accents, and from compatibility forms", async () => {
+    const g = await people();
+    expect(found(g, "zoe")).toEqual(["Zoë Park"]);
+    expect(found(g, "garcia")).toEqual(["José García"]);
+    expect(found(g, "Ｚｏë")).toEqual(["Zoë Park"]); // full-width, folded by NFKC
+  });
+
+  it("ASCII search is unchanged", async () => {
+    const g = await people();
+    expect(found(g, "kitchen")).toEqual(["Kitchen floor"]);
+    expect(found(g, "the kitchen is on the floor")).toEqual(["Kitchen floor"]);
+    expect(found(g, "is")).toEqual([]);
+  });
+});

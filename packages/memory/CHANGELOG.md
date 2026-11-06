@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+- **Search finds names in any script.** `recall`, `relate` and the turn-start block used to read only unaccented `a`–`z` and digits from a query, so searching "Zoë", "José" or "李明" found nothing, even with the record stored. Words are now letters and digits in any script, NFKC-normalised as handles are, and accents are optional: "zoe" finds "Zoë Park" and "garcia" finds "José García". A two-character name such as "李明" is no longer dropped as a short word. ASCII searches match as before. No store change: the index already held these words, so nothing is rebuilt.
+
 ## 0.6.1
 
 - **`eve-memory-migrate`, a command that gives a store's older records their handles.** A dry run plans each store under a directory on a copy and prints every clash (records whose names make one handle) with a proposal, `duplicate`, `namesake` or `unclear`, and lettered options, each tried on the copy. The printed report has no detail values; `--report -` prints the full one on stdout and the shareable one on stderr. Apply carries out your decisions with the agents stopped: carry-overs, merges, new names, then handles, each clash reverted alone if it fails, and a clash with no decision or that changed since the dry run skipped. Every write carries the run's origin, so `revertBatch({ run })` undoes it. References the upgrade or the migration would break are reported, and a handle that would capture one is taken back. See the README's "Migrating a store to handles".

@@ -166,7 +166,7 @@ Every rejection this package produces — a schema-validation failure, an empty-
 
 ## Known limits
 
-- **Lexical, not semantic, recall.** Full-text search over stored labels and values; a synonym with no shared token won't match. A search word is read as unaccented `a`–`z` and digits, so a query for "Zoë", "José" or "李明" doesn't find those records (a query for "jose" finds "José García"). Such a record is always reached by its handle with `get`.
+- **Lexical, not semantic, recall.** Full-text search over stored labels and values; a synonym with no shared token won't match. Names in any script are found as written ("Zoë", "José García", "李明"), and without their accents ("zoe", "garcia").
 - **No enumeration by kind yet.** You can look up a known entity; you can't yet ask "list everything of type X." A zero-hit search says so honestly rather than reporting an empty store.
 - **Type-binding, not value-binding, schema rules.** See "A note on the gate's scope" above.
 
