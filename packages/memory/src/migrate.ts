@@ -495,7 +495,14 @@ export function plan(g: MemoryGraph, scope: string): Planned {
         members.push({ ...member(st, state, h), holds: state !== "id" });
       }
     }
+    // A forgotten record's name already held by a live one has nothing left to decide: it was released (by a decision
+    // or by a save under 0.6), and the forgotten record keeps resolving as itself by its id.
+    if (r.status === "found" && r.via !== "id")
+      for (let i = members.length - 1; i >= 0; i--)
+        if (members[i].state === "forgotten") members.splice(i, 1);
+    if (members.length === 0) continue;
     if (members.length === 1) {
+      if (members[0].holds) continue;
       mints.push(members[0].id);
       continue;
     }
@@ -562,9 +569,12 @@ async function carry(
   const d = g.stored(dup);
   if (!s || !d) return `${survivor} or ${dup} is gone`;
   const attributes: Record<string, string | number | boolean> = {};
-  for (const [k, v] of Object.entries(d.attributes))
-    if (!drop.includes(k) && (everything || !(k in s.attributes) || take.includes(k)))
+  for (const [k, v] of Object.entries(d.attributes)) {
+    if (drop.includes(k)) notes.push(`left out ${dup}'s ${k}, as decided`);
+    else if (everything || !(k in s.attributes) || take.includes(k)) {
       if (s.attributes[k] !== v) attributes[k] = typed(v, d.datatypes[k]);
+    } else if (s.attributes[k] !== v) notes.push(`kept ${survivor}'s ${k} over ${dup}'s`);
+  }
   const relations = d.relations.filter(
     (r) =>
       !s.relations.some((x) => x.relation === r.relation && x.to === r.to) &&
@@ -578,6 +588,40 @@ async function carry(
   if (!Object.keys(attributes).length && !reachable.length) return undefined;
   const r = await g.remember({ id: survivor, attributes, relations: reachable }, origin);
   return r.ok ? undefined : r.problems.map((p) => p.constraint ?? p.path ?? "a rule").join("; ");
+}
+
+/** What one run wrote that is still there, from its origin. */
+function runCounts(g: MemoryGraph, run: string) {
+  const n = (sql: string) => (g.db.prepare(sql).get(run) as { n: number }).n;
+  return {
+    merges: n(
+      "SELECT count(*) AS n FROM handles WHERE kind = 'merge' AND json_extract(origin, '$.run') = ?",
+    ),
+    minted: n(
+      "SELECT count(*) AS n FROM handles WHERE kind = 'handle' AND json_extract(origin, '$.run') = ?",
+    ),
+    rowsWritten: n("SELECT count(*) AS n FROM triples WHERE json_extract(origin, '$.run') = ?"),
+  };
+}
+
+// Take back one clash's writes and everything it reported: what it noted no longer stands once it's undone.
+async function undo(
+  g: MemoryGraph,
+  result: ApplyResult,
+  key: string,
+  match: Record<string, string>,
+  reason: string,
+) {
+  result.notes = result.notes.filter((n) => !n.startsWith(`${key}: `));
+  result.applied = result.applied.filter((k) => k !== key);
+  const r = await g.revertBatch({ run: result.run, ...match });
+  result.rowsReverted += r.removed;
+  result.failed.push({
+    clash: key,
+    reason: r.conflicts.length
+      ? `${reason}; revert conflicts: ${JSON.stringify(r.conflicts)}`
+      : reason,
+  });
 }
 
 /**
@@ -603,7 +647,11 @@ export async function apply(
     notes: [],
   };
   const live = new Map<string, { c: Clash; d: Decision }>();
-  for (const c of p.clashes) {
+  // A revived duplicate's writes go to its survivor before that survivor is itself carried and merged anywhere.
+  const order = [...p.clashes].sort(
+    (a, b) => Number(b.kind === "revived") - Number(a.kind === "revived"),
+  );
+  for (const c of order) {
     const d = decisions.find((x) => x.clash === c.key);
     if (!d) result.skipped.push({ clash: c.key, reason: "no decision" });
     else if (d.digest !== c.digest)
@@ -618,16 +666,7 @@ export async function apply(
   const fail = async (key: string, reason: string) => {
     if (!live.has(key)) return;
     live.delete(key);
-    // What the clash noted no longer stands once it's undone.
-    result.notes = result.notes.filter((n) => !n.startsWith(`${key}: `));
-    const r = await g.revertBatch({ run, clash: key });
-    result.rowsReverted += r.removed;
-    result.failed.push({
-      clash: key,
-      reason: r.conflicts.length
-        ? `${reason}; revert conflicts: ${JSON.stringify(r.conflicts)}`
-        : reason,
-    });
+    await undo(g, result, key, { clash: key }, reason);
   };
   const each = async (
     step: (c: Clash, d: Decision, origin: string) => Promise<string | undefined>,
@@ -698,17 +737,7 @@ export async function apply(
     const r = g.mintHandle(id, originOf(run, { record: id }));
     if (!r.ok) result.failed.push({ clash: `${p.scope}/record:${id}`, reason: r.reason });
   }
-  const n = (sql: string) => (g.db.prepare(sql).get(run) as { n: number }).n;
-  result.merges = n(
-    "SELECT count(*) AS n FROM handles WHERE kind = 'merge' AND json_extract(origin, '$.run') = ?",
-  );
-  result.minted = n(
-    "SELECT count(*) AS n FROM handles WHERE kind = 'handle' AND json_extract(origin, '$.run') = ?",
-  );
-  result.rowsWritten = n(
-    "SELECT count(*) AS n FROM triples WHERE json_extract(origin, '$.run') = ?",
-  );
-  return result;
+  return Object.assign(result, runCounts(g, run));
 }
 
 const REF = /knowledge:([^\s<>|]+)/g;
@@ -785,7 +814,8 @@ export async function snapshot(
 
 /**
  * Plan one scope on a copy, try each option of each clash there (each undone before the next), and check what the
- * clash-free handles alone would do to references, so a handle that would capture a reference is a clash too.
+ * clash-free handles alone would do to references. A handle that would capture a reference is reported among the
+ * `migration-break`s; it isn't a clash, and nothing here blocks an apply, which takes such a handle back itself.
  */
 export async function dryRun(
   storeDir: string,
@@ -867,7 +897,7 @@ export async function dryRun(
     } finally {
       g.db.exec("ROLLBACK TO mints; RELEASE mints");
     }
-    // The clash-free handles' own effect on references: a break here blocks the apply, which would take it back.
+    // The clash-free handles' own effect on references, reported; apply takes back any it makes.
     return { ...reported(p), refs: checks, before };
   } finally {
     done();
@@ -894,27 +924,13 @@ export async function applyScope(
     // A reference this run broke takes back the write that broke it.
     for (const ch of refs2.filter((x) => x.outcome === "migration-break" && x.after)) {
       const owner = p.clashes.find((c) => c.members.some((m) => m.id === ch.after));
-      const r = owner
-        ? await g.revertBatch({ run, clash: owner.key })
-        : await g.revertBatch({ run, record: ch.after as string });
-      applied.rowsReverted += r.removed;
-      applied.failed.push({
-        clash: owner?.key ?? `${scope}/record:${ch.after}`,
-        reason: `would break ${REFERENCE_PREFIX}${ch.ref}`,
-      });
-      if (owner) applied.applied = applied.applied.filter((k) => k !== owner.key);
+      const why = `would break ${REFERENCE_PREFIX}${ch.ref}`;
+      if (owner) await undo(g, applied, owner.key, { clash: owner.key }, why);
+      else
+        await undo(g, applied, `${scope}/record:${ch.after}`, { record: ch.after as string }, why);
     }
     refs2 = checkRefs(g, refs, legacy, pre);
-    const n = (sql: string) => (g.db.prepare(sql).get(run) as { n: number }).n;
-    applied.minted = n(
-      "SELECT count(*) AS n FROM handles WHERE kind = 'handle' AND json_extract(origin, '$.run') = ?",
-    );
-    applied.merges = n(
-      "SELECT count(*) AS n FROM handles WHERE kind = 'merge' AND json_extract(origin, '$.run') = ?",
-    );
-    applied.rowsWritten = n(
-      "SELECT count(*) AS n FROM triples WHERE json_extract(origin, '$.run') = ?",
-    );
+    Object.assign(applied, runCounts(g, run));
     return { ...reported(p), refs: refs2, before, after: counts(g), applied };
   } finally {
     g.close();
@@ -1018,7 +1034,8 @@ const q = (v: string) => JSON.stringify(v);
 
 /**
  * The report as it may leave the host: counts, clashes by handle and record id, types, which details there are and
- * whether members agree on each, who wrote them and when. Never a detail's value; names are handles and ids only.
+ * whether members agree on each, who wrote them and when. Never a detail's value. Records appear by handle and id;
+ * the only names it repeats are new ones the operator chose, as qualifiers, and the labels in a store's own refusals.
  */
 export function redacted(report: Report): string {
   const out = [

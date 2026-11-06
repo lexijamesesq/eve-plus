@@ -660,6 +660,92 @@ describe("a reference that leads somewhere else afterwards is a break", () => {
   });
 });
 
+describe("round-one review findings", () => {
+  it("a revived duplicate's new writes reach the record its survivor is merged into in the same run", async () => {
+    const dir = store([
+      { id: "r_1", label: "Kim", attributes: { a: "1" }, at: "2026-01-01T00:00:00Z" },
+      { id: "t_1", label: "Kim", at: "2026-02-01T00:00:00Z" },
+      { id: "u_1", label: "Kim", at: "2026-03-01T00:00:00Z" },
+    ]);
+    // r_1 merged into t_1 outside a migration (no handle given), then written to again by a version before 0.6.
+    const g = await open(dir);
+    expect(g.merge("r_1", "t_1").ok).toBe(true);
+    g.close();
+    const raw = new Database(join(dir, "graph.db"));
+    const seq = (raw.prepare("SELECT max(seq) AS n FROM triples").get() as { n: number }).n;
+    raw
+      .prepare("INSERT INTO triples VALUES (?,?,?,?,?,?,?,?)")
+      .run(
+        `${E}r_1`,
+        `${P}late`,
+        "x",
+        "lit",
+        `${XSD}string`,
+        "2026-04-01T00:00:00Z",
+        OWNER,
+        seq + 1,
+      );
+    raw.close();
+    const dry = await dryRun(dir, "scope", []);
+    const revived = dry.clashes.find((c) => c.kind === "revived") as ScopeReport["clashes"][number];
+    const name: Decision = {
+      clash: clash(dry, "kim").key,
+      digest: clash(dry, "kim").digest,
+      members: { u_1: "survivor", t_1: { merge: "u_1" } },
+    };
+    const r = await applyScope(dir, "scope", [name, revived.options[0].decision], [], "run-rev");
+    expect(r.applied?.applied.sort()).toEqual([revived.key, name.clash].sort());
+    const g2 = await open(dir);
+    expect(g2.describe("kim")?.id).toBe("u_1");
+    expect(g2.describe("kim")?.attributes).toMatchObject({ late: "x" });
+    g2.close();
+  });
+
+  it("a released forgotten name doesn't come back as a clash on the next run", async () => {
+    const dir = store([
+      { id: "s_1", label: "Sam", forgotten: true, at: "2026-01-01T00:00:00Z" },
+      { id: "s_2", label: "Sam", at: "2026-02-01T00:00:00Z" },
+    ]);
+    const dry = await dryRun(dir, "scope", []);
+    await applyScope(dir, "scope", [option(dry, "sam", /takes the name/)], [], "run-rel");
+    const again = await dryRun(dir, "scope", []);
+    expect(again.clashes).toEqual([]);
+    expect(again.mints).toEqual([]);
+  });
+
+  it("a merge notes each detail where the survivor's value was kept over the duplicate's", async () => {
+    const dir = store([
+      { id: "a_1", label: "Ann", attributes: { phone: "1" } },
+      { id: "a_2", label: "Ann", attributes: { phone: "2" } },
+    ]);
+    const dry = await dryRun(dir, "scope", []);
+    const r = await applyScope(dir, "scope", [option(dry, "ann", /into a_1/)], [], "run-k");
+    expect(r.applied?.notes.join()).toMatch(/kept a_1's phone over a_2's/);
+  });
+
+  it("a clash taken back for breaking a reference drops what it noted", async () => {
+    const dir = store([
+      { id: "sam_lee", label: "Samuel" },
+      { id: "sl_1", label: "Sam Lee", at: "2026-01-01T00:00:00Z" },
+      { id: "sl_2", label: "Sam Lee", edges: [["knows", "gone_0000"]], at: "2026-02-01T00:00:00Z" },
+    ]);
+    const dry = await dryRun(dir, "scope", ["sam-lee"]);
+    const r = await applyScope(
+      dir,
+      "scope",
+      [option(dry, "sam-lee", /into sl_1/)],
+      ["sam-lee"],
+      "run-tb",
+    );
+    expect(r.applied?.failed.map((f) => f.clash)).toContain("scope/sam-lee");
+    expect(r.applied?.applied).toEqual([]);
+    expect(r.applied?.notes).toEqual([]);
+    const g = await open(dir);
+    expect(g.stored("sl_2")?.exists).toBe(true);
+    g.close();
+  });
+});
+
 describe("choosing by letter", () => {
   const report = async () => {
     const dir = store([
