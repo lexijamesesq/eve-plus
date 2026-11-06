@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- **`open`'s description no longer coaches citing.** The sentence telling the agent to cite a record as `knowledge:<id>` is gone; the link rule the host configures, which `open` already states, is the one place link kinds are named, and a `knowledge:` link is a record's handle as `@eve-plus/memory` shows it. No behaviour change.
+
 ## 0.1.4
 
 - **A reference on a `standing` line is shown whole or not at all.** A `↳ <link> <target>` over 80 characters used to be cut with "…", which could leave half a link that points at nothing. A link too long for the line no longer spends one of the block's lookups. Now the target is dropped first and the bare `↳ <link>` is shown if it fits. A link too long for the line is left off, never cut.

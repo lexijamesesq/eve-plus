@@ -164,7 +164,7 @@ export function toolSpecs(schemes: readonly string[] = DEFAULT_LINK_SCHEMES) {
     .describe("wake you here at `when` or `on` an event");
   return {
     open: {
-      description: `Open a loop in this conversation: something you're waiting on or owe. It shows every turn until closed; write it to stand alone. The conversation is the one your host resolves for this turn. Times: ISO 8601 with offset, or "in N minutes|hours|days". Links: ${rule}. A loop is usually about something you know: cite its record as knowledge:<id> and the record is shown with the loop every turn.`,
+      description: `Open a loop in this conversation: something you're waiting on or owe. It shows every turn until closed; write it to stand alone. The conversation is the one your host resolves for this turn. Times: ISO 8601 with offset, or "in N minutes|hours|days". Links: ${rule}.`,
       inputSchema: z
         .object({
           what: text(200),

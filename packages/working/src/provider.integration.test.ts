@@ -1067,8 +1067,9 @@ describe("references", () => {
     expect(await a.call("list", { id: "Lffff" }, ALICE_DM_1)).toContain("No loop Lffff");
   });
 
-  it("open tells the agent to cite the record a loop is about", () => {
-    expect(workingToolSpecs.open.description).toContain("knowledge:<id>");
+  it("open states the link rule once, and no longer coaches citing", () => {
+    expect(workingToolSpecs.open.description).toContain("knowledge:");
+    expect(workingToolSpecs.open.description).not.toContain("cite its record");
     expect(workingToolSpecs.list.description).toContain("working:<id>");
   });
 });

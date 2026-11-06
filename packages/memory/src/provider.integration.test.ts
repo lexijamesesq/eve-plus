@@ -1047,13 +1047,10 @@ describe("handles: every surface shows the one an agent writes", () => {
     const raw = await h.provider.tools({ memory: h.memory });
     const about = (name: ToolName) =>
       (raw as Record<string, { description?: string }>)[name]?.description ?? "";
-    expect(about("get")).toMatch(
-      /^Open one record by its handle \(knowledge:alice\) when you know which thing you mean/,
-    );
-    expect(about("recall")).toContain("when you don't have its handle");
-    expect(about("recall")).toContain("open it by its handle with get instead");
-    expect(about("relate")).toContain("with the handle, use get");
-    expect(about("remember")).toContain("it's how you address the record from then on");
+    expect(about("get")).toMatch(/^Open one record by its handle \(knowledge:alice\)/);
+    expect(about("recall")).toContain("With a record's handle, use get");
+    expect(about("relate")).toContain("With its handle, use get");
+    expect(about("remember")).toContain("or update a record by its handle");
   });
 
   it("six records with handles fit the turn-start budget", async () => {
