@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+Supports eve 1.0.0-rc.6 beside 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6`, exactly that release candidate and no other prerelease or 1.x. Built and tested against 1.0.0-rc.6, and tested against 0.91.0. No API or store schema change: a store written by 0.1.5 opens unchanged, and 0.1.5 still reads one written by 0.1.6.
+
 ## 0.1.5
 
 - **`open`'s description no longer coaches citing.** The sentence telling the agent to cite a record as `knowledge:<id>` is gone; the link rule the host configures, which `open` already states, is the one place link kinds are named, and a `knowledge:` link is a record's handle as `@eve-plus/memory` shows it. No behaviour change.

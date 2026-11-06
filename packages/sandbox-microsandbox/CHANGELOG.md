@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+Supports eve 1.0.0-rc.6 beside 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6`, exactly that release candidate and
+no other prerelease or 1.x. Built and tested against 1.0.0-rc.6, and tested against 0.91.0; the real-VM proof
+installs the eve its `devDependencies` name, now 1.0.0-rc.6. microsandbox stays 0.7.10. No state, naming or
+template-key change: sessions recorded by 0.3.0 resume.
+
 ## 0.3.0
 
 - **A `public` network policy.** `open({ networkPolicy: "public" })` creates the VM under microsandbox's own `public`
