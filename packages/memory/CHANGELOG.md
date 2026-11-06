@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.4
+
+Supports eve 1.0.0-rc.6 beside 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6`, exactly that release candidate and no other prerelease or 1.x. Built and tested against 1.0.0-rc.6, and tested against 0.91.0. No API or store change: a store written by 0.6.3 opens unchanged, and 0.6.3 still reads one written by 0.6.4.
+
 ## 0.6.3
 
 - **The tool descriptions and the turn-start block say what each tool does, once.** The handle, and how to cite or open a record with it, was explained in the turn-start block and in four tool descriptions; `remember` described the name-taken and ontology replies its own results already give. The turn-start block is now data: the facts with their handles, and a `recall` pointer when there are more. Each description is one line, with a pointer to `get` where a words-search tool and the handle tool overlap. The mechanics stay on the input fields (`id`, `attributes`, `relations`) and in the replies. No behaviour or store change.

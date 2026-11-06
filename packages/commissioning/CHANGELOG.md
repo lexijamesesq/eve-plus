@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.2
+
+Supports eve 1.0.0-rc.6 beside 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6`, exactly that release candidate and no other prerelease or 1.x. Tested against both.
+
+- **The extension is still built with eve 0.91.0.** A git install runs `prepare` with this package's own devDependency eve, and eve refuses an extension distribution built by a newer eve: built with 1.0.0-rc.6, `dist/extension/_manifest.json` records `builtWithEve: "1.0.0-rc.6"` and an agent on 0.91 fails its build with "was built with eve 1.0.0-rc.6". Built with 0.91.0, the one distribution builds on both. So the build eve stays 0.91.0 until 0.91 is no longer supported.
+
+No API or store schema change. A store written by 0.6.1 opens unchanged, and 0.6.1 can still read one written by 0.6.2.
+
 ## 0.6.1
 
 No behaviour change. The README, usage guide and tests use neutral example names for the commissioning agent

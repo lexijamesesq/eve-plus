@@ -4,7 +4,8 @@
 # PR-time check (no writes outside a temp directory). For each package under packages/, installs it from GitHub at
 # <commit_sha> in an empty consumer project, the way a consumer installs it (see write-consumer.mjs), then
 # requires every export to exist and load (see resolve-exports.mjs). It catches what a working tree hides: a file
-# left out of `files`, a broken export, a build that only works locally.
+# left out of `files`, a broken export, a build that only works locally. Then check-consumer-matrix.sh installs all
+# four in one agent on each supported eve and compiles it.
 set -euo pipefail
 
 SHA="$1"
@@ -38,5 +39,8 @@ for PACKAGE_DIR in packages/*/; do
 		FAILED=1
 	fi
 done
+
+# All four together, on every supported eve, through to a compiled agent.
+bash "$SCRIPTS/check-consumer-matrix.sh" "$SHA" || FAILED=1
 
 exit "$FAILED"
