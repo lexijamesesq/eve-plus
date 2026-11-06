@@ -130,6 +130,8 @@ It prints each decision it read, with the handle each new name makes, and checks
 
 A re-run picks up where a stopped one left off: merged records drop out of the plan, giving a handle again is a no-op, and a carry-over that landed without its merge still matches its decision. It exits 0 when it ran, whatever each clash's outcome, 1 when it refused before writing, and 2 on bad usage.
 
+The library behind it is `@eve-plus/memory/migrate`. It reads stores through two operator methods on `MemoryGraph`, `stored(id)` (a record exactly as stored under its internal id, merges not followed) and `storedIds()` (every id anything was written under). They're for operator tools; no agent tool uses them.
+
 ## Security
 
 Memory is attributed and revertable. It is not a defense against poisoning, and nothing in it decides whether a fact is true.

@@ -1,7 +1,7 @@
 ---
 issue: none
 status: implemented
-last_updated: 2026-11-05
+last_updated: 2026-11-06
 ---
 
 # Memory handles: a name an agent can write, see everywhere, and resolve to one record
@@ -128,7 +128,11 @@ because `working__open` creates. The descriptions route a known handle to `get` 
   recalled. Its handles, id, and connections to it lead to `into`, and no edge or reference is rewritten. Left live,
   a duplicate would still be recalled while every reference to it, a forget included, landed on `into`. Carry
   details worth keeping over first. `revertBatch` on the merge's origin brings the duplicate back. Self-merges and
-  cycles are refused.
+  cycles are refused. A merged record written to again under its own id (by a version before 0.6) is retracted again
+  by that id.
+- `stored(id)` and `storedIds()` (0.6.1): read a record exactly as stored under its internal id, without resolving or
+  following merges, and list every id anything was written under. They exist for operator tools such as the
+  migration, which has to see merged and forgotten records themselves. No agent tool uses them.
 
 ## Storage and invariants
 
@@ -158,7 +162,8 @@ lazily or eagerly:** not on open, not on a rename. Two old records can share a n
 operator's. Until a record has a handle it shows, and resolves, by its id. A new save whose handle equals what an
 unmigrated record's current name would make fails and names that record. It's read-only detection: it scans only
 records without a live handle, so it's empty once a store is migrated. An upgraded store should be given its handles
-with `mintHandle` (and `merge` for duplicates) before agents write to it.
+before agents write to it: `eve-memory-migrate` (0.6.1) plans that on a copy, reports each clash for the operator to
+decide, and applies the decisions through `mintHandle`, `merge` and `remember` under one run's origin.
 
 ## Not built
 
