@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3
+
+- **The tool descriptions and the turn-start block say what each tool does, once.** The handle, and how to cite or open a record with it, was explained in the turn-start block and in four tool descriptions; `remember` described the name-taken and ontology replies its own results already give. The turn-start block is now data: the facts with their handles, and a `recall` pointer when there are more. Each description is one line, with a pointer to `get` where a words-search tool and the handle tool overlap. The mechanics stay on the input fields (`id`, `attributes`, `relations`) and in the replies. No behaviour or store change.
+
 ## 0.6.2
 
 - **Search finds names in any script.** `recall`, `relate` and the turn-start block used to read only unaccented `a`–`z` and digits from a query, so searching "Zoë", "José" or "李明" found nothing, even with the record stored. Words are now letters and digits in any script, NFKC-normalised as handles are, and accents are optional: "zoe" finds "Zoë Park" and "garcia" finds "José García". One- and two-letter words stay noise in every alphabetic script, accented or not ("à" and "où" fold to "a" and "ou"), but in Han, kana and Hangul a short word is kept, so a name such as "李明" isn't dropped. ASCII searches match as before. No store change: the index already held these words, so nothing is rebuilt.
