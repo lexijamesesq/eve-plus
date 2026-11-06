@@ -67,7 +67,7 @@ export interface Option {
   problems: string[];
 }
 
-export type ClashKind = "name" | "revived" | "mint";
+export type ClashKind = "name" | "revived";
 
 export interface Clash {
   key: string;
@@ -765,46 +765,8 @@ export async function dryRun(
     } finally {
       g.db.exec("ROLLBACK TO mints; RELEASE mints");
     }
-    // A clash-free handle that would capture a reference becomes a decision of its own.
-    for (const ch of checks.filter((x) => x.outcome === "migration-break" && x.after)) {
-      const id = ch.after as string;
-      if (!p.mints.includes(id)) continue;
-      p.mints = p.mints.filter((m) => m !== id);
-      const st = g.stored(id);
-      if (!st) continue;
-      const h = handleOf(st.label ?? "");
-      const members = [member(st, "live", h)];
-      const key = `${scope}/mint:${id}`;
-      const digest = digestOf("mint", members);
-      p.clashes.push({
-        key,
-        ref: "",
-        kind: "mint",
-        handle: h,
-        members,
-        proposal: "unclear",
-        evidence: [
-          `${REFERENCE_PREFIX}${ch.ref} resolves to ${ch.before}; this handle would take it`,
-        ],
-        digest,
-        options: withSkip({ key, digest }, [
-          {
-            summary: `leave ${id} without a handle (it resolves by its id)`,
-            decision: { clash: key, digest, members: { [id]: "skip-mint" } },
-          },
-          {
-            summary: `qualify ${id}`,
-            decision: {
-              clash: key,
-              digest,
-              members: { [id]: { qualify: qualified(members[0], []) } },
-            },
-          },
-        ]),
-        qualifyTarget: id,
-      });
-    }
-    return { ...p, refs: checkRefs(g, refs, legacy, pre), before };
+    // The clash-free handles' own effect on references: a break here blocks the apply, which would take it back.
+    return { ...p, refs: checks, before };
   } finally {
     done();
   }
@@ -825,28 +787,6 @@ export async function applyScope(
     const refs = [...new Set([...extraRefs, ...attributeRefs(g)])];
     const legacy = new Map(refs.map((x) => [x, legacyTarget(g, x)]));
     const pre = resolveAll(g, refs);
-    // A clash-free handle the dry run found capturing a reference is minted only as decided.
-    for (const d of decisions) {
-      const id = d.clash.startsWith(`${scope}/mint:`)
-        ? d.clash.slice(`${scope}/mint:`.length)
-        : null;
-      if (!id || !p.mints.includes(id)) continue;
-      p.mints = p.mints.filter((m) => m !== id);
-      const st = g.stored(id);
-      if (!st) continue;
-      const m = member(st, "live", handleOf(st.label ?? ""));
-      p.clashes.push({
-        key: d.clash,
-        ref: "",
-        kind: "mint",
-        handle: handleOf(st.label ?? ""),
-        members: [m],
-        proposal: "unclear",
-        evidence: [],
-        digest: digestOf("mint", [m]),
-        options: [],
-      });
-    }
     const applied = await apply(g, p, decisions, run);
     let refs2 = checkRefs(g, refs, legacy, pre);
     // A reference this run broke takes back the write that broke it.
@@ -857,7 +797,7 @@ export async function applyScope(
         : await g.revertBatch({ run, record: ch.after as string });
       applied.rowsReverted += r.removed;
       applied.failed.push({
-        clash: owner?.key ?? `${scope}/mint:${ch.after}`,
+        clash: owner?.key ?? `${scope}/record:${ch.after}`,
         reason: `would break ${REFERENCE_PREFIX}${ch.ref}`,
       });
       if (owner) applied.applied = applied.applied.filter((k) => k !== owner.key);

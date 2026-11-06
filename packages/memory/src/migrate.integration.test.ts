@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MemoryGraph } from "./memory-graph.js";
 import {
   applyScope,
+  checkRefs,
   chosen,
   type Decision,
   decisionProblems,
@@ -500,6 +501,31 @@ describe("references", () => {
     const r = await applyScope(dir, "scope", [option(dry, "sam", /into s_1/)], ["S_2"], "run-ref");
     expect(r.refs.every((x) => x.outcome === "ok")).toBe(true);
     expect(r.refs.find((x) => x.ref === "S_2")?.after).toBe("s_1");
+  });
+});
+
+describe("a reference that leads somewhere else afterwards is a break", () => {
+  it("classifies a reference whose old target no longer gets it, and passes one that follows a merge", async () => {
+    const dir = store([
+      { id: "a_1", label: "Ann" },
+      { id: "b_1", label: "Bea" },
+    ]);
+    const g = await open(dir);
+    const legacy = new Map([
+      ["a_1", "a_1"],
+      ["moved", null],
+    ]);
+    // As if "moved" led to b_1 before and a_1 now: something captured it.
+    const before = new Map<string, string | null>([
+      ["a_1", "a_1"],
+      ["moved", "b_1"],
+    ]);
+    const checks = checkRefs(g, ["a_1", "moved"], legacy, before);
+    expect(checks.find((c) => c.ref === "a_1")?.outcome).toBe("ok");
+    expect(checks.find((c) => c.ref === "moved")?.outcome).toBe("migration-break");
+    expect(g.merge("b_1", "a_1").ok).toBe(true);
+    expect(checkRefs(g, ["b_1"], new Map(), new Map([["b_1", "b_1"]]))[0].outcome).toBe("ok");
+    g.close();
   });
 });
 
