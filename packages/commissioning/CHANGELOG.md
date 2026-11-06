@@ -19,8 +19,9 @@ a custom worker connector must now implement `complete` (see the last item).
 - **The Cyrus contract says when to propose.** The contract comment now tells the worker to submit its proposal once
   the repository's code review has cleared the head commit, not when the pull request opens, so a proposal isn't
   spent on a head that review is about to change. A handoff that posted its contract comment under 0.6.2 and had
-  not yet delegated when the agent upgrades sees a different contract text and stays pending as a conflict; open
-  such a commission again.
+  not yet delegated when the agent upgrades sees a different contract text and stays pending as a conflict.
+  Opening the commission again can't recover it: the stale contract comment is still on the issue, so `open`
+  refuses that issue. Commission the work afresh on a new issue and treat the old commission as superseded.
 - **Accepting a proposal closes out the work.** An accepted proposal queues a closeout in the same transaction as
   the decision, delivered like the handoff: leased, at least once, retried by the dispatcher and the reconcile
   schedule. The Cyrus connector's new `complete` moves the Linear issue to its team's completed workflow state with

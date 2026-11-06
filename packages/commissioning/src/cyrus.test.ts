@@ -22,8 +22,17 @@ function provider() {
     url: issueUrl,
     description: "## Objective\nKeep this objective\n\n## Done When\nKeep these criteria",
     delegate: null as null | { id: string },
-    state: { type: "started" },
-    team: { states: { nodes: [{ id: "state-done", position: 3 }] } },
+    state: { id: "state-started", type: "started" },
+    team: {
+      states: {
+        nodes: [
+          { id: "state-backlog", type: "backlog", position: 0 },
+          { id: "state-started", type: "started", position: 1 },
+          { id: "state-done", type: "completed", position: 5 },
+          { id: "state-merged", type: "completed", position: 3 },
+        ],
+      },
+    },
   };
   const comments: { id: string; body: string }[] = [];
   const journal: { query: string; variables: Record<string, string> }[] = [];
@@ -61,10 +70,16 @@ function provider() {
           comment.id === body.variables.commentId ||
           (marker !== undefined && comment.body.includes(marker)),
       );
+      // Apply the workflow-state filter the query actually sends, as Linear would.
+      const stateType = body.query.match(/states\(filter:\{type:\{eq:"([a-z]+)"\}\}\)/)?.[1];
+      const states = issue.team.states.nodes.filter(
+        (state) => stateType === undefined || state.type === stateType,
+      );
       return Response.json({
         data: {
           issue: {
             ...structuredClone(issue),
+            team: { states: { nodes: structuredClone(states) } },
             comments: {
               nodes: structuredClone(matches.slice(0, 2)),
               pageInfo: { hasNextPage: fault.extraPage || matches.length > 2 },
@@ -97,10 +112,11 @@ function provider() {
     expect(selects(body.query, "issueUpdate")).toBe(true);
     expect(body.variables.id).toBe(canonicalId);
     if (body.variables.stateId) {
-      expect(body.variables.stateId).toBe("state-done");
       if (fault.partialComplete)
         return Response.json({ data: { issueUpdate: { success: false } } });
-      issue.state = { type: "completed" };
+      const moved = issue.team.states.nodes.find((state) => state.id === body.variables.stateId);
+      if (!moved) throw new Error("unknown workflow state");
+      issue.state = { id: moved.id, type: moved.type };
       return Response.json({ data: { issueUpdate: { success: true } } });
     }
     if (fault.beforeDelegate) {
@@ -361,7 +377,8 @@ describe("public Cyrus Linear connector", () => {
     await fixture.connector.handoff({ commissionId, spec, binding });
     const writes = fixture.mutations().length;
     await fixture.connector.complete({ commissionId, binding });
-    expect(fixture.issue.state).toEqual({ type: "completed" });
+    // The earliest of the team's completed states, not backlog and not a later completed one.
+    expect(fixture.issue.state).toEqual({ id: "state-merged", type: "completed" });
     expect(fixture.mutations()).toHaveLength(writes + 1);
     await fixture.connector.complete({ commissionId, binding });
     expect(fixture.mutations()).toHaveLength(writes + 1);
@@ -375,15 +392,15 @@ describe("public Cyrus Linear connector", () => {
       code: "no_completed_state",
     });
     expect(fixture.mutations()).toHaveLength(0);
-    fixture.issue.team.states.nodes = [{ id: "state-done", position: 3 }];
+    fixture.issue.team.states.nodes = [{ id: "state-done", type: "completed", position: 3 }];
     fixture.fault.partialComplete = true;
     await expect(fixture.connector.complete({ commissionId, binding })).rejects.toMatchObject({
       code: "completion_unconfirmed",
     });
-    expect(fixture.issue.state).toEqual({ type: "started" });
+    expect(fixture.issue.state).toEqual({ id: "state-started", type: "started" });
     fixture.fault.partialComplete = false;
     await fixture.connector.complete({ commissionId, binding });
-    expect(fixture.issue.state).toEqual({ type: "completed" });
+    expect(fixture.issue.state).toEqual({ id: "state-done", type: "completed" });
   });
 
   it("does not acknowledge a provider that failed to apply delegation", async () => {
