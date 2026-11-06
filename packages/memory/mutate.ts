@@ -837,6 +837,13 @@ const mutations: Mutation[] = [
     replace: "void edge;",
     expect: "a merged record's handles, id and connections lead to the record it was merged into",
   },
+  {
+    name: "short words of any script are searched (accents fold them to the ASCII noise words)",
+    file: "src/memory-graph.ts",
+    find: "tokens.filter((t) => t.length >= 3 || IDEOGRAPHIC.test(t))",
+    replace: "tokens.filter(() => true)",
+    expect: "short words in other alphabetic scripts are noise too; a one-character Han word isn't",
+  },
 ];
 
 // Anchors survive the formatter: whitespace, line breaks around brackets, trailing commas and quote style are not part

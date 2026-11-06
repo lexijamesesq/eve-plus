@@ -281,12 +281,18 @@ const tail = (iri: string) => iri.split("/").pop() ?? iri;
 // FTS5 MATCH from free text: tokenize, drop 1–2 char noise (with a fallback so an all-short query still runs),
 // quote each token, OR-join. A single quoted phrase would require the whole string to appear adjacent+in-order —
 // so a multi-word query could never match a stored literal. OR over tokens is the "any word matches" recall we want.
+// Words are letters, marks and digits in any script, NFKC-normalised as handles are; the index's own tokenizer
+// (unicode61, diacritics removed) folds case and accents on both sides, so "Zoë" and "zoe" both find "Zoë". One- and
+// two-character words are noise in alphabetic scripts, accented or not: the index folds "à" and "où" to the "a" and
+// "ou" the rule drops. In Han, kana and Hangul one character can be a word, so "李明" is a whole name.
+const IDEOGRAPHIC = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 const ftsQuery = (s: string) => {
   const tokens =
     String(s)
+      .normalize("NFKC")
       .toLowerCase()
-      .match(/[a-z0-9]+/g) || [];
-  const use = tokens.filter((t) => t.length >= 3);
+      .match(/[\p{L}\p{M}\p{N}]+/gu) || [];
+  const use = tokens.filter((t) => t.length >= 3 || IDEOGRAPHIC.test(t));
   const terms = use.length ? use : tokens;
   return terms.length ? terms.map((t) => `"${t}"`).join(" OR ") : null;
 };

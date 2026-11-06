@@ -519,3 +519,49 @@ describe("history and revert cover handles", () => {
     expect(g.resolve("alice")).toMatchObject({ via: "handle" });
   });
 });
+
+describe("recall finds a record by its name in any script", () => {
+  const people = async () => {
+    const g = await MemoryGraph.create();
+    for (const name of ["Zoë Park", "José García", "李明", "Kitchen floor"]) await saved(g, name);
+    return g;
+  };
+  const found = (g: MemoryGraph, query: string) => g.recall(query).map((f) => f.label);
+
+  it("by the name as written", async () => {
+    const g = await people();
+    expect(found(g, "Zoë")).toEqual(["Zoë Park"]);
+    expect(found(g, "José García")).toEqual(["José García"]);
+    expect(found(g, "李明")).toEqual(["李明"]);
+    // A two-character name isn't noise beside longer words.
+    expect(found(g, "where does 李明 sit")).toEqual(["李明"]);
+    expect(g.relate("José").label).toBe("José García");
+  });
+
+  it("without the accents, and from compatibility forms", async () => {
+    const g = await people();
+    expect(found(g, "zoe")).toEqual(["Zoë Park"]);
+    expect(found(g, "garcia")).toEqual(["José García"]);
+    expect(found(g, "Ｚｏë")).toEqual(["Zoë Park"]); // full-width, folded by NFKC
+  });
+
+  it("ASCII search is unchanged", async () => {
+    const g = await people();
+    expect(found(g, "kitchen")).toEqual(["Kitchen floor"]);
+    expect(found(g, "the kitchen is on the floor")).toEqual(["Kitchen floor"]);
+    // A short word beside longer ones is noise: a record that shares only "is" isn't recalled.
+    await saved(g, "Life is good");
+    expect(found(g, "where is the attic")).toEqual([]);
+  });
+
+  it("short words in other alphabetic scripts are noise too; a one-character Han word isn't", async () => {
+    const g = await people();
+    await saved(g, "Plan a trip to Lisbon");
+    await saved(g, "Ou bien");
+    // "à" and "où" fold to "a" and "ou" in the index: kept, they would recall both records above.
+    expect(found(g, "voilà à Lisbon")).toEqual(["Plan a trip to Lisbon"]);
+    expect(found(g, "où est 李明")).toEqual(["李明"]);
+    await saved(g, "李");
+    expect(found(g, "who is 李 today")).toEqual(["李"]);
+  });
+});

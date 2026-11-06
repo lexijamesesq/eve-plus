@@ -80,8 +80,6 @@ Disk-backed SQLite (`better-sqlite3` + FTS5), not in-memory — `recall` and `re
 
 Recall is **lexical** (full-text search over stored labels and values), not semantic — a query for "availability" won't match a stored "work hours" unless they share a token. If your use case needs semantic recall, that isn't built here yet.
 
-Search reads a word as unaccented `a`–`z` and digits, so a record named "Zoë", "José" or "李明" isn't found by searching that name; `get` reaches it by its handle.
-
 Records aren't currently enumerable by kind — you can ask "what do I know about Acme Corp" but not yet "list all my clients." A zero-hit search reports that a miss isn't proof of absence, rather than claiming nothing is stored; enumeration-by-kind is on the roadmap.
 
 ## Checking a store
