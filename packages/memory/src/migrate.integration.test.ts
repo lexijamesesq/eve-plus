@@ -20,6 +20,7 @@ import {
   redacted,
   type ScopeReport,
 } from "./migrate.js";
+import { main } from "./migrate-main.js";
 
 const E = "https://eve.local/mem/e/";
 const P = "https://eve.local/mem/p/";
@@ -786,5 +787,99 @@ describe("choosing by letter", () => {
     expect(text).toMatch(/phone:differs/);
     expect(text).toMatch(/email:only/);
     expect(text).not.toMatch(/555-01|sam@example/);
+  });
+});
+
+describe("the command, over its arguments and streams", () => {
+  const io = (stdin = "") => {
+    const out = { stdout: "", stderr: "" };
+    return {
+      out,
+      io: {
+        stdin: () => stdin,
+        stdout: (x: string) => {
+          out.stdout += x;
+        },
+        stderr: (x: string) => {
+          out.stderr += x;
+        },
+      },
+    };
+  };
+  const memoryDir = (scopes: Record<string, Rec[]>) => {
+    const root = tempDir();
+    for (const [scope, recs] of Object.entries(scopes)) v4Store(join(root, scope), recs);
+    return root;
+  };
+
+  it("--report - puts the full report on stdout and the shareable one on stderr; --refs - reads stdin", async () => {
+    const dir = memoryDir({
+      a: [
+        { id: "s_1", label: "Sam", attributes: { phone: "555-0101" } },
+        { id: "s_2", label: "Sam", attributes: { phone: "555-0199" } },
+      ],
+    });
+    const { out, io: streams } = io("knowledge:s_1\n");
+    expect(await main([dir, "--report", "-", "--refs", "-"], streams)).toBe(0);
+    const report = JSON.parse(out.stdout) as Report;
+    expect(report.scopes[0].clashes[0].members[0].values.phone).toMatch(/555-01/);
+    expect(report.scopes[0].refs.map((r) => r.ref)).toContain("s_1");
+    expect(out.stderr).toMatch(/c1 name knowledge:sam/);
+    expect(out.stderr).not.toMatch(/555-01/);
+  });
+
+  it("apply takes the report on stdin, accepts no choices for a store with no clashes, and --check writes nothing", async () => {
+    const dir = memoryDir({ a: [{ id: "k_1", label: "Kettle" }] });
+    const dry = io();
+    await main([dir, "--report", "-"], dry.io);
+    const before = readFileSync(join(dir, "a", "graph.db"));
+    const check = io(dry.out.stdout);
+    expect(await main([dir, "--apply", "--report", "-", "--choose", "", "--check"], check.io)).toBe(
+      0,
+    );
+    expect(check.out.stdout).toMatch(/0 decision\(s\), no errors; nothing written/);
+    expect(readFileSync(join(dir, "a", "graph.db")).equals(before)).toBe(true);
+    const apply = io(dry.out.stdout);
+    expect(await main([dir, "--apply", "--report", "-", "--choose", ""], apply.io)).toBe(0);
+    expect(apply.out.stdout).toMatch(/minted=1/);
+  });
+
+  it("checks each store against its own references from the dry run, never another store's", async () => {
+    // Store b's new handle would capture knowledge:sam-lee if b held that reference; only store a does.
+    const dir = memoryDir({
+      a: [{ id: "n_1", label: "Note", attributes: { about: "see knowledge:sam-lee" } }],
+      b: [
+        { id: "sam_lee", label: "Samuel" },
+        { id: "sl_9", label: "Sam Lee" },
+      ],
+    });
+    const dry = io();
+    await main([dir, "--report", "-"], dry.io);
+    const apply = io(dry.out.stdout);
+    expect(await main([dir, "--apply", "--report", "-", "--choose", ""], apply.io)).toBe(0);
+    const g = await open(join(dir, "b"));
+    expect(g.stored("sl_9")?.handles).toEqual(["sam-lee"]);
+    g.close();
+  });
+
+  it("refuses bad usage with 2, and a choice the report doesn't have with 1, before writing", async () => {
+    const dir = memoryDir({
+      a: [
+        { id: "s_1", label: "Sam" },
+        { id: "s_2", label: "Sam" },
+      ],
+    });
+    expect(
+      await main([dir, "--apply", "--report", "-", "--refs", "-", "--choose", ""], io().io),
+    ).toBe(2);
+    expect(await main([dir, "--choose", "c1=A"], io().io)).toBe(2);
+    const dry = io();
+    await main([dir, "--report", "-"], dry.io);
+    const bad = io(dry.out.stdout);
+    expect(await main([dir, "--apply", "--report", "-", "--choose", "c1=Z"], bad.io)).toBe(1);
+    expect(bad.out.stdout).toMatch(/refused: c1 has no option Z/);
+    const g = await open(join(dir, "a"));
+    expect(g.stored("s_1")?.handles).toEqual([]);
+    g.close();
   });
 });

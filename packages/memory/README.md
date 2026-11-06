@@ -110,7 +110,7 @@ agent's own user. It may create `graph.db-shm` (and an empty `graph.db-wal`), bu
 - lettered options for each clash, each tried on the copy, marked if it won't apply and why;
 - `knowledge:` references (from `--refs`, one per line, and from the stores' own details) that the upgrade itself breaks, `pin_breaks`: ones 0.5 resolved by a loosely written id that 0.6 doesn't.
 
-`--report` writes the full report, values included, as JSON with mode `0600`. Keep it where only you can read it. `--report -` writes it to stdout instead, with the shareable report on stderr, and `--refs -` reads references from stdin, so the command can run in a container with no file of the host's. Apply takes `--report -` the same way, from stdin, and checks again the references the dry run checked when given no `--refs`. A store with no clashes takes `--choose ""`.
+`--report` writes the full report, values included, as JSON with mode `0600`. Keep it where only you can read it. `--report -` writes it to stdout instead, with the shareable report on stderr, and `--refs -` reads references from stdin, so the command can run in a container with no file of the host's. Apply takes `--report -` the same way, from stdin, and when given no `--refs` checks each store again against the references its own dry run checked: those given to the dry run plus the store's own, never another store's. A store with no clashes takes `--choose ""`.
 
 **The options.** Each member of a clash takes one choice, and only one member may end up answering to the bare handle:
 
