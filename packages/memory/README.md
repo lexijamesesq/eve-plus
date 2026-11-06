@@ -58,7 +58,7 @@ Every record has a handle made from its name, and that's how the agent addresses
 - `MemoryGraph.resolve(ref)` is the one resolver: current handle, then an earlier handle, then the internal id, following merges (`MemoryGraph.merge(duplicate, into)`). Every input that names a record (`remember`'s `id`, a connection's `to`, `forget`) goes through it, and a miss comes back with the nearest handles.
 - Each scope is its own graph, so a handle is unique within a scope and resolves only there.
 
-A store from before 0.6.0 gains the handles table on open, but its records get no handles until you give them with `MemoryGraph.mintHandle(id)`, so two old records that share a name are never settled without you. Do it before agents write to the upgraded store. Until then those records show and resolve by their id. See [CHANGELOG.md](./CHANGELOG.md).
+A store from before 0.6.0 gains the handles table on open, but its records get no handles until you give them, so two old records that share a name are never settled without you. `eve-memory-migrate` does it (see [Migrating a store to handles](#migrating-a-store-to-handles)); do it before agents write to the upgraded store. Until then those records show and resolve by their id.
 
 An attribute value may be a reference to another memory, such as `{ loop: "working:L3f" }` for a task in `@eve-plus/working` or `{ about: "knowledge:acme" }` for another record here. It is kept and shown as written, so the agent can follow it. For the other direction, a task that cites a record here, give the provider `onOpen(graph, scope)`. It hands your host each scope's graph as it opens, and `graph.describe(ref)` resolves a `knowledge:<handle>` reference to the one-line answer the other memory shows. The hook may be async; one that throws or rejects is logged and never fails the open.
 
@@ -98,6 +98,38 @@ compare the two readings. A lower mark or a vanished scope means the store was l
 agent's own user. It may create `graph.db-shm` (and an empty `graph.db-wal`), but it never writes the store or the contents of its WAL; run as root, those files would lock the agent out. See
 [CHANGELOG.md](./CHANGELOG.md) for each field.
 
+## Migrating a store to handles
+
+`eve-memory-migrate <dir>` gives the records of stores saved before 0.6.0 their handles. A record whose name makes a handle no other record wants gets it. Records whose names make one handle are a **clash**, and a clash is settled only by your decision.
+
+**Dry run.** `eve-memory-migrate <dir> [--report report.json] [--refs refs.txt]` copies each store under `<dir>` and plans on the copy; the store itself is opened read-only and never written. It prints, per scope:
+
+- the counts (`records`, `edges`, `triples`, `handles`);
+- each clash as `c1`, `c2`, …, with its handle, its members by id and type, and whether they agree on each detail (`same`, `differs`, `only`), with who wrote them and when. No detail values are printed;
+- a proposal (`duplicate`, `namesake` or `unclear`) from the evidence. A record left untyped beside a typed one, an equal value, or a shared connection points to one thing saved twice. Two concrete types, or one-off connections to different places, point to two things. A connection to a record most others link to counts for nothing. It is only a proposal;
+- lettered options for each clash, each tried on the copy, marked if it won't apply and why;
+- `knowledge:` references (from `--refs`, one per line, and from the stores' own details) that the upgrade itself breaks, `pin_breaks`: ones 0.5 resolved by a loosely written id that 0.6 doesn't.
+
+`--report` writes the full report, values included, as JSON readable only by you. Keep it where only you can read it.
+
+**The options.** Each member of a clash takes one choice, and only one member may end up answering to the bare handle:
+
+- live records: keep the name (`survivor`), merge into the survivor (details only the duplicate holds are carried over first; a detail both hold stays the survivor's unless the decision takes it from the duplicate; type and name are never carried; connections are carried only to records that still resolve), or qualify with a new name ("Sam (Acme)" → `knowledge:sam-acme`), or stay without a handle;
+- forgotten records: `reserve` the name, as forgetting does now, or `release` it to a live record;
+- a record whose internal id is the handle keeps it; the others qualify or stay without a handle;
+- a merged record written to again under its own id (by a version before 0.6) is reported on its own, to carry what was written since over to its survivor.
+
+**Apply**, with the agents using the stores stopped:
+
+```sh
+eve-memory-migrate <dir> --apply --report report.json --choose 'c1=A c2=Q:"Sam (Acme)" c3=D'
+eve-memory-migrate <dir> --apply --decisions decisions.json
+```
+
+It prints each decision it read, then works in phases across every clash: carry-overs, merges, new names, then handles. A clash whose step fails is reverted alone and the rest go on. A clash with no decision, or that changed since the dry run (a member added, renamed, retyped, or a detail key or connection added), is skipped and reported, and its records keep resolving by their id. References are checked before and after; a handle that would capture a reference is taken back. Every write carries the run's origin (`{ source: "migration", run }`, written as unattributed, never as the owner), so `MemoryGraph.revertBatch({ run })` undoes a run, and `{ run, clash }` one clash. The result line gives the merges, handles minted, rows written and rows reverted, so `eve-memory-stats` before and after reconciles: records go down by the merges, triples up by the rows written less those reverted, and handles up by those minted.
+
+A re-run picks up where a stopped one left off: merged records drop out of the plan, giving a handle again is a no-op, and a carry-over that landed without its merge still matches its decision. It exits 0 when it ran, whatever each clash's outcome, 1 when it refused before writing, and 2 on bad usage.
+
 ## Security
 
 Memory is attributed and revertable. It is not a defense against poisoning, and nothing in it decides whether a fact is true.
@@ -124,7 +156,7 @@ Memory is attributed and revertable. It is not a defense against poisoning, and 
 
 ## Changes
 
-See [CHANGELOG.md](./CHANGELOG.md). 0.6.0 adds handles and makes `remember`'s `id` update-only; read its upgrade note before upgrading. 0.4.0 adds the write high-water mark and `eve-memory-stats`. 0.3.0 removes 0.2.x's precedence and the model's `source` field; read it before upgrading from 0.2.x.
+See [CHANGELOG.md](./CHANGELOG.md). 0.6.1 adds `eve-memory-migrate`. 0.6.0 adds handles and makes `remember`'s `id` update-only; read its upgrade note before upgrading. 0.4.0 adds the write high-water mark and `eve-memory-stats`. 0.3.0 removes 0.2.x's precedence and the model's `source` field; read it before upgrading from 0.2.x.
 
 ## Testing this package
 
