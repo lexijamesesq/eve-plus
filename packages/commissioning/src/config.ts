@@ -46,7 +46,12 @@ export const configSchema = z
   .object({
     dataDir: z.string().refine(isAbsolute, "dataDir must be absolute"),
     namespace: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
-    worker: z.object({ id: z.string().min(1).max(256), prepare: fn, handoff: fn }),
+    worker: z.object({
+      id: z.string().min(1).max(256),
+      prepare: fn,
+      handoff: fn,
+      complete: fn,
+    }),
     authenticateWorker: fn,
     commissioner: fn,
     deliver: fn,

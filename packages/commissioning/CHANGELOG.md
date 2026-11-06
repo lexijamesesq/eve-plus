@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.7.0
+
+The conversation between the commissioner and the worker, fixed in four places. One interface change is breaking:
+a custom worker connector must now implement `complete` (see the last item).
+
+- **The commissioner sees the worker's latest checkpoint.** `commissioning__read` now shows the most recent
+  checkpoint's text and time. Checkpoints were stored but never rendered, so a commissioner reading a commission
+  concluded the worker had reported none.
+- **A note the commissioner can send at any time: `commissioning__note`.** Until now `decide` was the only way to
+  reach the worker, and each question or proposal takes exactly one final decision, so a status message
+  ("hold on merging") used up the verdict. A note takes `{ commissionId, text }`, appears among the events the worker
+  reads with `commission_read`, and decides nothing: it doesn't answer a question or settle a proposal. It doesn't
+  restart the worker's quiet-time clock, since that tracks the worker's activity. A note on an accepted commission is
+  refused: the worker's session has ended, so a note would go unread. The note's identity comes from the
+  tool call, so a retried call records it once. The tool description says plainly that this is the only way to tell
+  the worker something and that a Linear comment doesn't reach it. No change to the worker's three tools.
+- **The Cyrus contract says when to propose.** The contract comment now tells the worker to submit its proposal once
+  the repository's code review has cleared the head commit, not when the pull request opens, so a proposal isn't
+  spent on a head that review is about to change. A handoff that posted its contract comment under 0.6.2 and had
+  not yet delegated when the agent upgrades sees a different contract text and stays pending as a conflict.
+  Opening the commission again can't recover it: the stale contract comment is still on the issue, so `open`
+  refuses that issue. Commission the work afresh on a new issue and treat the old commission as superseded.
+- **Accepting a proposal closes out the work.** An accepted proposal queues a closeout in the same transaction as
+  the decision, delivered like the handoff: leased, at least once, retried by the dispatcher and the reconcile
+  schedule. The Cyrus connector's new `complete` moves the Linear issue to its team's completed workflow state with
+  the access token it already uses for the handoff, and does nothing when the issue is already completed. A
+  connector must implement `complete`, which is a breaking change for custom connectors: add one that resolves when
+  the work is closed out, or already was, and rejects when it can't act right now so the closeout is retried
+  rather than lost.
+
+No store schema change. A store written by 0.6.2 opens unchanged. A 0.6.2 reader should see the new `note` and `complete`
+events as unfamiliar kinds and ignores them.
+
 ## 0.6.2
 
 Supports eve 1.0.0-rc.6 beside 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6`, exactly that release candidate and

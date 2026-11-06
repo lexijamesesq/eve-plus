@@ -99,6 +99,17 @@ export function decideCommission(
   return `${done} on commission ${result.commissionId}; it's now ${result.status.replaceAll("_", " ")}. The worker reads this on its next poll.`;
 }
 
+export function noteCommission(
+  { store, config }: Owner,
+  input: { commissionId: string; text: string },
+  ctx: Context,
+): string {
+  // Derived from the call, so eve's retry of the same call records the same note.
+  const noteId = createHash("sha256").update(`${ctx.session.id}:${ctx.callId}`).digest("hex");
+  const result = store.note(commissioner(config, ctx), { ...input, noteId });
+  return `Sent your note on commission ${result.commissionId}; it's still ${result.status.replaceAll("_", " ")}. The worker sees it on its next read, and nothing was decided.`;
+}
+
 function describe(view: CommissionView): string {
   const lines = [
     `Commission ${view.commissionId}: ${view.status.replaceAll("_", " ")}.`,
@@ -113,6 +124,10 @@ function describe(view: CommissionView): string {
       question.status === "pending"
         ? `Question ${question.questionId}, waiting for your answer: ${question.question.text}`
         : `Question ${question.questionId}: ${question.question.text}\nAnswered: ${question.answer}`,
+    );
+  if (view.latestCheckpoint)
+    lines.push(
+      `Latest checkpoint from the worker, ${new Date(view.latestCheckpoint.at).toISOString()}: ${view.latestCheckpoint.summary}`,
     );
   const proposal = view.currentProposal;
   if (proposal)

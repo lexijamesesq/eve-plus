@@ -22,6 +22,17 @@ function provider() {
     url: issueUrl,
     description: "## Objective\nKeep this objective\n\n## Done When\nKeep these criteria",
     delegate: null as null | { id: string },
+    state: { id: "state-started", type: "started" },
+    team: {
+      states: {
+        nodes: [
+          { id: "state-backlog", type: "backlog", position: 0 },
+          { id: "state-started", type: "started", position: 1 },
+          { id: "state-done", type: "completed", position: 5 },
+          { id: "state-merged", type: "completed", position: 3 },
+        ],
+      },
+    },
   };
   const comments: { id: string; body: string }[] = [];
   const journal: { query: string; variables: Record<string, string> }[] = [];
@@ -33,6 +44,7 @@ function provider() {
     readbackUnavailable: false,
     partialComment: false,
     partialDelegate: false,
+    partialComplete: false,
     nextReadUnavailable: false,
     extraPage: false,
     humanDescriptionEdit: "",
@@ -58,10 +70,16 @@ function provider() {
           comment.id === body.variables.commentId ||
           (marker !== undefined && comment.body.includes(marker)),
       );
+      // Apply the workflow-state filter the query actually sends, as Linear would.
+      const stateType = body.query.match(/states\(filter:\{type:\{eq:"([a-z]+)"\}\}\)/)?.[1];
+      const states = issue.team.states.nodes.filter(
+        (state) => stateType === undefined || state.type === stateType,
+      );
       return Response.json({
         data: {
           issue: {
             ...structuredClone(issue),
+            team: { states: { nodes: structuredClone(states) } },
             comments: {
               nodes: structuredClone(matches.slice(0, 2)),
               pageInfo: { hasNextPage: fault.extraPage || matches.length > 2 },
@@ -93,6 +111,14 @@ function provider() {
     }
     expect(selects(body.query, "issueUpdate")).toBe(true);
     expect(body.variables.id).toBe(canonicalId);
+    if (body.variables.stateId) {
+      if (fault.partialComplete)
+        return Response.json({ data: { issueUpdate: { success: false } } });
+      const moved = issue.team.states.nodes.find((state) => state.id === body.variables.stateId);
+      if (!moved) throw new Error("unknown workflow state");
+      issue.state = { id: moved.id, type: moved.type };
+      return Response.json({ data: { issueUpdate: { success: true } } });
+    }
     if (fault.beforeDelegate) {
       fault.beforeDelegate = false;
       throw new Error("synthetic failure before delegation");
@@ -344,6 +370,38 @@ describe("public Cyrus Linear connector", () => {
       expect(fixture.delegations()).toHaveLength(kind === "beforeDelegate" ? 2 : 1);
     },
   );
+
+  it("moves the issue to its team's completed state once, and leaves a completed one alone", async () => {
+    const fixture = provider();
+    const binding = await fixture.prepare();
+    await fixture.connector.handoff({ commissionId, spec, binding });
+    const writes = fixture.mutations().length;
+    await fixture.connector.complete({ commissionId, binding });
+    // The earliest of the team's completed states, not backlog and not a later completed one.
+    expect(fixture.issue.state).toEqual({ id: "state-merged", type: "completed" });
+    expect(fixture.mutations()).toHaveLength(writes + 1);
+    await fixture.connector.complete({ commissionId, binding });
+    expect(fixture.mutations()).toHaveLength(writes + 1);
+  });
+
+  it("does not report completion for a team with no completed state or an update Linear refused", async () => {
+    const fixture = provider();
+    const binding = await fixture.prepare();
+    fixture.issue.team.states.nodes = [];
+    await expect(fixture.connector.complete({ commissionId, binding })).rejects.toMatchObject({
+      code: "no_completed_state",
+    });
+    expect(fixture.mutations()).toHaveLength(0);
+    fixture.issue.team.states.nodes = [{ id: "state-done", type: "completed", position: 3 }];
+    fixture.fault.partialComplete = true;
+    await expect(fixture.connector.complete({ commissionId, binding })).rejects.toMatchObject({
+      code: "completion_unconfirmed",
+    });
+    expect(fixture.issue.state).toEqual({ id: "state-started", type: "started" });
+    fixture.fault.partialComplete = false;
+    await fixture.connector.complete({ commissionId, binding });
+    expect(fixture.issue.state).toEqual({ id: "state-done", type: "completed" });
+  });
 
   it("does not acknowledge a provider that failed to apply delegation", async () => {
     const fixture = provider();

@@ -65,7 +65,7 @@ export async function handleWorkerRequest(
     "commission_read",
     {
       description:
-        "Read the commission and its events after a cursor. Poll it to find the commissioner's answers and decisions; it doesn't start or resume work.",
+        "Read the commission and its events after a cursor. Poll it to find the commissioner's answers, decisions and notes; it doesn't start or resume work.",
       inputSchema: readSchema,
     },
     (input) => run(() => store.read(input.commissionId, input.after)),

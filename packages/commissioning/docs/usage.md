@@ -29,8 +29,10 @@ They keep identity and routing in your application; the package never derives th
 ## The commissioner's tools
 
 - **`commissioning__open`**: `{ spec: { brief, acceptance }, workReference }`. Opens one commission per tool call: a retry of the same call opens the same one, and the connector prepares the work only the first time.
-- **`commissioning__read`**: `{ commissionId }`. The status, whether the handoff is confirmed, the worker's questions and their answers, the current proposal and an overdue notice, in plain language.
+- **`commissioning__read`**: `{ commissionId }`. The status, whether the handoff is confirmed, the worker's questions and their answers, the worker's latest checkpoint (text and time), the current proposal and an overdue notice, in plain language.
 - **`commissioning__decide`**: answers a question (`target: "question"`, `questionId`, `decision: { answer }`) or decides the pending proposal (`target: "proposal"`, `proposalId`, `decision: { verdict: "accept" | "revise", feedback }`). Each decision has its own `eventId`. A proposal can't be decided while a question is unanswered, and only the current proposal can be decided.
+
+- **`commissioning__note`**: `{ commissionId, text }`. A message to the worker that decides nothing. It's the only way to tell the worker something short of a decision; a Linear comment doesn't reach it. The worker reads it among the events on its next `commission_read`. It answers no question, settles no proposal, and doesn't count as worker activity, so it doesn't postpone an overdue notice. A retried call records it once. On an accepted commission it's refused: the worker's session has ended, so a note would go unread.
 
 Refusals come back as a sentence the agent can act on, such as "Couldn't record the decision: Decide the current pending proposal." A failed delivery attempt logs `[commissioning] delivery failed: commission=<id> reason=<reason> attempt=<n>`.
 
@@ -38,7 +40,7 @@ Refusals come back as a sentence the agent can act on, such as "Couldn't record 
 
 At the mount's MCP endpoint, stateless Streamable HTTP:
 
-- **`commission_read`**: `{ commissionId, after? }`. The commission, its questions, the current proposal and its events after a cursor. Poll it for answers and verdicts.
+- **`commission_read`**: `{ commissionId, after? }`. The commission, its questions, the current proposal and its events after a cursor. Poll it for answers, verdicts and notes. A note is an event of kind `note` with `{ text }`.
 - **`commission_consult`**: `{ commissionId, questionId, question: { text, options? } }`.
 - **`commission_report`**: `{ commissionId, eventId, kind, data }`, where `kind` is `checkpoint` (work is under way), `failure` (blocked), or `proposal` with `data.artifact: { repository, commit, pullRequest }`. The repository and PR are credential-free HTTPS URLs, the PR belongs to the repository, and `commit` is the full lowercase 40-hex commit. Failures and proposals reach the commissioner's conversation. A checkpoint reaches it only while a proposal awaits its verdict, when the worker's news, such as the pull request merging, may decide it; otherwise a checkpoint is recorded quietly.
 
@@ -52,6 +54,8 @@ A result is `{ result, recorded: true }`, or `{ error: { code, message } }` with
 - `delegateId`: Cyrus's Linear user ID.
 - `mcp.serverName` and `mcp.endpoint`: the name Cyrus's MCP configuration gives this mount, and the URL Cyrus reaches it at (HTTPS, or HTTP on this host only).
 - `timeoutMs`: the deadline for each Linear operation. Default 15 seconds.
+
+**The closeout.** When the commissioner accepts a proposal, the dispatcher moves the work's Linear issue to the first completed-type workflow state of its team, using the same access token as the handoff. A repeat finds the issue already completed and changes nothing. A failure leaves the closeout pending and retried, with `reason=completion_failed` in the log.
 
 **The handoff.** `open` reads the issue: it must have no delegate and no commissioning contract yet, meaning no comment and no description containing `## Commissioning contract`. The dispatcher then adds one root comment holding the commission's contract (its ID, the server name and endpoint, the brief and the acceptance criteria), reads it back, sets only the delegate, and reads that back. It never edits the issue's description or another comment. A lost response is reconciled by reading the issue before retrying. Linear has no compare-and-swap on delegation, so use an issue dedicated to the commission.
 
@@ -75,4 +79,4 @@ Allow exactly `mcp__<server>__commission_read`, `mcp__<server>__commission_consu
 
 ## Writing your own connector
 
-A connector is `{ id, prepare, handoff }`. `prepare({ commissionId, reference })` checks the work item without changing anything and returns a small record of string fields, which is stored with the commission. When it fails for a reason that may pass, such as the work system being unreachable, reject with an error carrying `retryable: true`: `open` then tells the commissioner to try again and logs `[commissioning] work preparation failed: commission=<id> reason=worker_unavailable`. Any other rejection refuses the work reference. `handoff({ commissionId, spec, binding })` makes the handoff and resolves only once it's observed; an uncertain outcome must reject, so the dispatcher retries it. Keep `id` stable: a pending handoff recorded under one `id` isn't sent through another.
+A connector is `{ id, prepare, handoff, complete }`. `prepare({ commissionId, reference })` checks the work item without changing anything and returns a small record of string fields, which is stored with the commission. When it fails for a reason that may pass, such as the work system being unreachable, reject with an error carrying `retryable: true`: `open` then tells the commissioner to try again and logs `[commissioning] work preparation failed: commission=<id> reason=worker_unavailable`. Any other rejection refuses the work reference. `handoff({ commissionId, spec, binding })` makes the handoff and resolves only once it's observed; an uncertain outcome must reject, so the dispatcher retries it. Keep `id` stable: a pending handoff recorded under one `id` isn't sent through another. `complete({ commissionId, binding })` closes out the work after the commissioner accepts a proposal, and is delivered at least once, so it must resolve when the work is already closed out. It must reject when the connector can't act right now, such as when its credential is missing, so the closeout stays pending and is retried rather than lost. A connector with nothing to close out resolves immediately.

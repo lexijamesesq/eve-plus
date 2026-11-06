@@ -22,4 +22,10 @@ export interface WorkerConnector {
     spec: CommissionSpec;
     binding: WorkerBinding;
   }): Promise<void>;
+  /**
+   * Close out the work after the commissioner accepts the proposal. Delivered at least once, so it must be safe to
+   * repeat: resolve when the work is already closed out. A connector that can't act right now (for instance its
+   * credential is missing) must reject, so the closeout stays pending and is retried instead of being lost.
+   */
+  complete(input: { commissionId: string; binding: WorkerBinding }): Promise<void>;
 }

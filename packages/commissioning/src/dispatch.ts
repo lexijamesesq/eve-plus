@@ -67,6 +67,14 @@ export function createDispatcher(store: CommissionStore, config: CommissioningCo
               spec: commission.spec,
               binding: commission.binding,
             });
+          } else if (entry.kind === "complete") {
+            failure = "completion_failed";
+            if (commission.connectorId !== config.worker.id)
+              throw new Error("The worker connector changed since this commission was opened");
+            await config.worker.complete({
+              commissionId: entry.commissionId,
+              binding: commission.binding,
+            });
           } else {
             failure = "commissioner_unavailable";
             const route = config.deliver(commission.conversation);

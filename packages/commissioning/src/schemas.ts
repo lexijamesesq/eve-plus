@@ -59,6 +59,7 @@ export const ownerReadSchema = z.object({ commissionId: id }).strict();
 export const readSchema = z
   .object({ commissionId: id, after: z.number().int().nonnegative().default(0) })
   .strict();
+export const noteSchema = z.object({ commissionId: id, text }).strict();
 export const consultSchema = z
   .object({
     commissionId: id,

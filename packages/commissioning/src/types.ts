@@ -40,6 +40,12 @@ export type DecisionInput = { commissionId: string; eventId: string } & (
       decision: { verdict: "accept" | "revise"; feedback: string };
     }
 );
+export interface NoteInput {
+  commissionId: string;
+  /** Names the note, so a retry of the same call records it once. */
+  noteId: string;
+  text: string;
+}
 export type CommissionStatus =
   | "working"
   | "awaiting_commissioner"
@@ -82,6 +88,8 @@ export interface CommissionView extends MutationResult {
     artifact: ArtifactReference;
   } | null;
   questions: QuestionView[];
+  /** The worker's most recent checkpoint, if it has reported one. */
+  latestCheckpoint: { summary: string; at: number } | null;
   events: EventView[];
   nextCursor: number;
   /** The worker has been quiet past its grace interval: a prompt to check on it, not a verdict that it stopped. */
@@ -98,7 +106,11 @@ export interface OutboxEntry {
   attempt: number;
 }
 /** Fixed reasons a delivery stays pending. Raw callback and provider errors are never stored or shown. */
-export type OutboxFailureClass = "handoff_failed" | "commissioner_unavailable" | "delivery_failed";
+export type OutboxFailureClass =
+  | "handoff_failed"
+  | "completion_failed"
+  | "commissioner_unavailable"
+  | "delivery_failed";
 export interface StoreOptions {
   now?: () => number;
   overdueAfterMs?: number;
