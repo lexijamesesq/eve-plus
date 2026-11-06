@@ -23,7 +23,9 @@ FAILED=0
 for PACKAGE_DIR in packages/*/; do
 	PACKAGE_DIR="${PACKAGE_DIR%/}"
 	CONSUMER="$(mktemp -d "$WORK_ROOT/consumer.XXXXXX")"
-	NAME="$(node "$SCRIPTS/write-consumer.mjs" "$PACKAGE_DIR" "$CONSUMER" "$REPO" "$SHA" "$CONSUMER_PNPM")"
+	# eve at the version the package is built against.
+	EVE="$(node -p "require('./$PACKAGE_DIR/package.json').devDependencies.eve")"
+	NAME="$(node "$SCRIPTS/write-consumer.mjs" "$CONSUMER" "$REPO" "$CONSUMER_PNPM" "$EVE" "$PACKAGE_DIR#$SHA")"
 
 	if ! (cd "$CONSUMER" && pnpm install); then
 		echo "FAIL $NAME at $SHA: the consumer install failed" >&2

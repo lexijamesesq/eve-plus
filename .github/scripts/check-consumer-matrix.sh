@@ -5,7 +5,8 @@
 # packages from GitHub in one consumer with strict peer checking (each runs its own prepare, as a git install does),
 # imports their public APIs and writes to the native stores (consumer-agent/smoke.mjs), then compiles an agent that
 # mounts the knowledge and working slots, the commissioning extension and the microsandbox sandbox
-# (consumer-agent/agent/). `tags` installs each package by its release tag, which must point at <commit_sha>.
+# (consumer-agent/agent/). Consumers are written by write-consumer.mjs. `tags` installs each package by its release
+# tag, `<package>--v<version>` at this checkout's version, wherever that tag points.
 #
 # Three gates must fail, so the passes mean something:
 # - strict peers refuse an eve outside the peer range (EXCLUDED_EVE);
@@ -32,25 +33,30 @@ SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 WORK_ROOT="${RUNNER_TEMP:-$(mktemp -d)}"
 FAILED=0
 
-if [[ "$REF_MODE" == "tags" ]]; then
-	for PACKAGE_DIR in packages/*/; do
-		PACKAGE_DIR="${PACKAGE_DIR%/}"
-		VERSION="$(node -p "require('./$PACKAGE_DIR/package.json').version")"
-		TAG="$(basename "$PACKAGE_DIR")--v$VERSION"
-		TAGGED="$(git ls-remote --tags "https://github.com/$REPO.git" "refs/tags/$TAG^{}" | awk '{print $1}')"
-		if [[ "$TAGGED" != "$SHA" ]]; then
-			echo "FAIL $TAG points at '${TAGGED:-nothing}', not $SHA" >&2
-			exit 1
-		fi
-	done
-fi
+case "$REF_MODE" in
+commit | tags) ;;
+*)
+	echo "FAIL: expected commit or tags, got '$REF_MODE'" >&2
+	exit 1
+	;;
+esac
+PACKAGES=()
+for PACKAGE_DIR in packages/*/; do
+	PACKAGE_DIR="${PACKAGE_DIR%/}"
+	REF="$SHA"
+	if [[ "$REF_MODE" == "tags" ]]; then
+		REF="$(basename "$PACKAGE_DIR")--v$(node -p "require('./$PACKAGE_DIR/package.json').version")"
+	fi
+	PACKAGES+=("$PACKAGE_DIR#$REF")
+done
 
-# Writes a consumer of the four packages next to the given eve, and prints its directory.
+# Writes a consumer of the agent next to eve $1, depending on the rest of the arguments (<package_dir>#<ref>), and
+# prints its directory.
 new_consumer() {
 	local consumer
 	consumer="$(mktemp -d "$WORK_ROOT/matrix.XXXXXX")"
 	cp -R "$SCRIPTS/consumer-agent/." "$consumer/"
-	node "$SCRIPTS/write-matrix-consumer.mjs" "$consumer" "$REPO" "$SHA" "$CONSUMER_PNPM" "$1" "$REF_MODE"
+	node "$SCRIPTS/write-consumer.mjs" "$consumer" "$REPO" "$CONSUMER_PNPM" "$@" >/dev/null
 	echo "$consumer"
 }
 
@@ -66,7 +72,7 @@ compiled_whole() {
 }
 
 for EVE in "${SUPPORTED_EVE[@]}"; do
-	CONSUMER="$(new_consumer "$EVE")"
+	CONSUMER="$(new_consumer "$EVE" "${PACKAGES[@]}")"
 	if ! (cd "$CONSUMER" && pnpm install); then
 		echo "FAIL eve $EVE: the consumer install failed" >&2
 		FAILED=1
@@ -106,16 +112,11 @@ refused_on_peers() {
 	fi
 }
 
-refused_on_peers "$(new_consumer "$EXCLUDED_EVE")" "eve $EXCLUDED_EVE"
+refused_on_peers "$(new_consumer "$EXCLUDED_EVE" "${PACKAGES[@]}")" "eve $EXCLUDED_EVE"
 
 NEWEST_EVE="${SUPPORTED_EVE[${#SUPPORTED_EVE[@]} - 1]}"
-CONSUMER="$(mktemp -d "$WORK_ROOT/matrix.XXXXXX")"
-cat >"$CONSUMER/package.json" <<EOF
-{ "name": "consumer", "private": true, "type": "module", "packageManager": "$CONSUMER_PNPM",
-  "dependencies": { "@eve-plus/memory": "github:$REPO#$OLD_RANGE_REF&path:packages/memory", "eve": "$NEWEST_EVE" } }
-EOF
-printf 'strictPeerDependencies: true\nminimumReleaseAge: 0\n' >"$CONSUMER/pnpm-workspace.yaml"
-refused_on_peers "$CONSUMER" "$OLD_RANGE_REF next to eve $NEWEST_EVE"
+refused_on_peers "$(new_consumer "$NEWEST_EVE" "packages/memory#$OLD_RANGE_REF")" \
+	"$OLD_RANGE_REF next to eve $NEWEST_EVE"
 
 # Commissioning from this checkout, its extension built by the newest eve instead, in the oldest eve's consumer.
 if [[ -n "${OLDEST_CONSUMER:-}" ]]; then
