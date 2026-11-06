@@ -16,20 +16,54 @@ The agent doesn't need to be told to save this. On a well-instructed agent, the 
 
 In a later session — no chat history, a fresh conversation — the user asks the agent to draft an availability note. Turn-start auto-recall surfaces the stored schedule, and the agent drafts the note using the persisted hours, not a guess and not a re-ask.
 
-## `recall` and `relate`
+## Handles — how a record is addressed
+
+Every record has a **handle** made from its name, and the agent writes it the way it knows the thing: by name.
 
 ```text
-recall("Jordan Lee")
-→ { id: "...", label: "Jordan Lee", type: "ClientContact",
-    attributes: { phone: "555-0142", company: "Acme Robotics" } }
-
-relate("Jordan Lee")
-→ { id: "...", label: "Jordan Lee", type: "ClientContact",
-    attributes: { phone: "555-0142", company: "Acme Robotics" },
-    relations: [] }
+remember({ type: "Person", label: "Alice" })
+→ "Remembered Alice (Person) as knowledge:alice. Use knowledge:alice to refer to it: to connect other things to it,
+   in links, and to update it."
 ```
 
-Both tools return an entity's attributes as well as its identity — a memory the agent can write into but not read back is only half a memory, so neither tool stops at `{id, label, type}`.
+The handle is shown everywhere the record appears: the turn-start memory block, `recall`, `relate` and each of its connections, `check_memory`, and `remember`'s reply. It's what the agent passes as `id` to update the record, as `to` to connect to it, and in a link on a task (`knowledge:alice`). The record's internal id never changes; the handle is how it's found.
+
+- **Unicode names keep their script.** "李明" is `knowledge:李明`, "José García" is `knowledge:josé-garcía`. Handles are lowercase with one `-` between words, so "Alice" and "alice" are the same handle; "Alicé" is a different one.
+- **A taken name is never saved twice by accident.** A new save whose handle is taken fails and says what holds it, so the agent updates that record on purpose or gives its new one a name that tells them apart:
+
+  ```text
+  remember({ type: "Person", label: "Sam", attributes: { company: "Acme" } })
+  → "Not saved: that name is taken.
+     • "Sam" (Person) already has the handle knowledge:sam. If it's the same thing, update it: save with id
+       "knowledge:sam". If it's a different thing, give it a name that tells them apart, such as "Sam (Acme)", and save
+       again."
+
+  remember({ type: "Person", label: "Sam (Acme)", attributes: { company: "Acme" } })
+  → "Remembered Sam (Acme) (Person) as knowledge:sam-acme. …"
+  ```
+
+  The same save arriving twice (eve re-runs a step interrupted mid-write) succeeds with the record that holds it.
+- **Renames keep references working.** Renaming Alice to Alicia makes `knowledge:alicia` its handle; `knowledge:alice` still leads to it and stays reserved for it.
+- **Forgetting reserves the name.** A reference to a forgotten record says it was forgotten; it never lands on a newer thing saved under the same name. A save on that name is told so. Saving the record by its handle (`id: "knowledge:alice"`) brings it back; letting a new record take the name is the operator's call (`reclaimHandle`, below).
+- **A slightly wrong handle gets suggestions.** `get({ handle: "knowledge:alce" })` → `Nothing is remembered as "knowledge:alce". Did you mean knowledge:alice?`
+
+## `get`, `recall` and `relate`
+
+```text
+get({ handle: "knowledge:jordan-lee" })
+→ Jordan Lee (ClientContact) knowledge:jordan-lee
+    phone: 555-0142  (recorded during the memory owner's own conversation on 2026-11-05)
+    company: Acme Robotics  (recorded during the memory owner's own conversation on 2026-11-05)
+
+  Connections:
+  - works_at → Acme Robotics knowledge:acme-robotics
+
+recall("Jordan")
+→ - Jordan Lee (ClientContact) knowledge:jordan-lee
+      phone: 555-0142  …
+```
+
+`get` opens one record by its handle, for when the agent knows which thing it means. `recall` searches words and details, for when it doesn't. `relate` returns one thing described in words, with what it's connected to. All three return a record's details as well as its identity — a memory the agent can write into but not read back is only half a memory.
 
 A miss is reported honestly:
 
@@ -84,7 +118,7 @@ check_memory()
 `forget` removes a fact or a whole record without ever deleting history:
 
 ```text
-forget({ id: "...", details: ["phone"] })
+forget({ id: "knowledge:dana-ruiz", details: ["phone"] })
 → "Removed Dana Ruiz's phone number. This record no longer meets the
    ClientContact requirement (needs a phone) — ask for a replacement,
    or tell the user their record is now incomplete."
@@ -116,6 +150,8 @@ await graph.revertBatch({ who: "scheduled", sessionId: "<the run's session>" });
 graph.close();
 ```
 
+The same operator surface settles names. A handle a forgotten record held, or a record's earlier name, stays reserved until `graph.reclaimHandle("knowledge:alice")` frees it for the next record named for it. `graph.merge("knowledge:alice-2", "knowledge:alice")` records that two records are one thing and retracts the first: references and connections to it then lead to the second, and nothing is rewritten. Carry over any details worth keeping first. A revert that would give a record back a handle another record now holds isn't applied; `revertBatch` returns the `conflicts` so they can be settled first.
+
 One rule is enforced: a record type created or extended in the owner's conversation, and a record typed there, change type or definition only in the owner's conversation. Another writer gets a reason it can act on:
 
 ```text
@@ -130,7 +166,7 @@ Every rejection this package produces — a schema-validation failure, an empty-
 
 ## Known limits
 
-- **Lexical, not semantic, recall.** Full-text search over stored labels and values; a synonym with no shared token won't match.
+- **Lexical, not semantic, recall.** Full-text search over stored labels and values; a synonym with no shared token won't match. A search word is read as unaccented `a`–`z` and digits, so a query for "Zoë", "José" or "李明" doesn't find those records (a query for "jose" finds "José García"). Such a record is always reached by its handle with `get`.
 - **No enumeration by kind yet.** You can look up a known entity; you can't yet ask "list everything of type X." A zero-hit search says so honestly rather than reporting an empty store.
 - **Type-binding, not value-binding, schema rules.** See "A note on the gate's scope" above.
 

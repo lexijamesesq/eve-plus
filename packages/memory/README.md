@@ -13,7 +13,7 @@ Install it from a release tag as a git dependency, next to eve 0.91.0 or later w
 ```json
 {
   "dependencies": {
-    "@eve-plus/memory": "github:lexijamesesq/eve-plus#memory--v0.5.1&path:packages/memory",
+    "@eve-plus/memory": "github:lexijamesesq/eve-plus#memory--v0.6.0&path:packages/memory",
     "eve": "0.91.0"
   }
 }
@@ -43,11 +43,24 @@ export default defineMemory({
 
 The agent gets a small tool surface; it never sees RDF or SPARQL — this package maps natural language to the graph and back internally.
 
-- **`recall`** — "what do I know about X." Returns matched entities with their attributes.
-- **`remember`** — "record Z." Writes a new fact or entity, recorded with who wrote it (see Security below).
-- **`relate`** — "what's connected to Y." Returns an entity's relations, plus its own attributes.
+- **`recall`** — "what do I know about X." Searches words and details; returns matched records with their attributes.
+- **`get`** — "open Alice." Opens one record by its handle, with its details and connections.
+- **`remember`** — "record Z." Saves a new record (no `id`) or updates one (its handle as `id`), recorded with who wrote it (see Security below).
+- **`relate`** — "what's connected to Y." Returns a record's connections, plus its own attributes.
 
-An attribute value may be a reference to another memory by id, such as `{ loop: "working:L3f" }` for a task in `@eve-plus/working` or `{ about: "knowledge:acme" }` for another record here. It is kept and shown as written, so the agent can follow it. For the other direction, a task that cites a record here, give the provider `onOpen(graph, scope)`. It hands your host each scope's graph as it opens, and `graph.describe(id)` returns the one-line answer the other memory shows. The hook may be async; one that throws or rejects is logged and never fails the open.
+### Handles
+
+Every record has a handle made from its name, and that's how the agent addresses it: "Alice" is `knowledge:alice`, "José García" is `knowledge:josé-garcía`. The handle is on every surface the agent sees a record: the turn-start block, `recall`, `get`, `relate` and its connections, `check_memory`, and `remember`'s reply. The record's internal id never changes.
+
+- Handles keep Unicode letters, are lowercase, use one `-` between words, and are at most 118 characters, so `knowledge:<handle>` fits a link. `handleOf(name)` computes one.
+- A new save whose handle is taken fails and names the record that holds it, so the agent updates that record or gives its new one a name that tells them apart ("Sam (Acme)" → `knowledge:sam-acme`). An identical save arriving twice succeeds with the record that holds it. A unique index guarantees one record per handle under concurrent writes.
+- A rename keeps the old handle leading to the record. A forgotten record's handle stays reserved, and references to it say it was forgotten. `MemoryGraph.reclaimHandle(handle)` frees one for the next record named for it.
+- `MemoryGraph.resolve(ref)` is the one resolver: current handle, then an earlier handle, then the internal id, following merges (`MemoryGraph.merge(duplicate, into)`). Every input that names a record (`remember`'s `id`, a connection's `to`, `forget`) goes through it, and a miss comes back with the nearest handles.
+- Each scope is its own graph, so a handle is unique within a scope and resolves only there.
+
+A store from before 0.6.0 gains the handles table on open, but its records get no handles until you give them with `MemoryGraph.mintHandle(id)`, so two old records that share a name are never settled without you. Do it before agents write to the upgraded store. Until then those records show and resolve by their id. See [CHANGELOG.md](./CHANGELOG.md).
+
+An attribute value may be a reference to another memory, such as `{ loop: "working:L3f" }` for a task in `@eve-plus/working` or `{ about: "knowledge:acme" }` for another record here. It is kept and shown as written, so the agent can follow it. For the other direction, a task that cites a record here, give the provider `onOpen(graph, scope)`. It hands your host each scope's graph as it opens, and `graph.describe(ref)` resolves a `knowledge:<handle>` reference to the one-line answer the other memory shows. The hook may be async; one that throws or rejects is logged and never fails the open.
 
 - **`extend_schema`** — author or extend a record type at runtime (e.g. "a client always needs a phone and a company"). Meta-validated against SHACL-SHACL: the agent can grow the schema, but never the metamodel it's checked against.
 - **`forget`** — remove a fact or a whole record. Appends a tombstone rather than deleting in place; nothing is destroyed.
@@ -66,6 +79,8 @@ This is distinct from `shaclMemory`'s own `dir` option, which just names where t
 Disk-backed SQLite (`better-sqlite3` + FTS5), not in-memory — `recall` and `relate` add under 5 MB of memory whether the graph holds 10k or 100k triples; it doesn't grow with the graph (3 runs; reproduce with `node --expose-gc bench/ram.mjs`). SQLite's WAL mode gives crash safety for free: a process crash and restart doesn't lose or corrupt data.
 
 Recall is **lexical** (full-text search over stored labels and values), not semantic — a query for "availability" won't match a stored "work hours" unless they share a token. If your use case needs semantic recall, that isn't built here yet.
+
+Search reads a word as unaccented `a`–`z` and digits, so a record named "Zoë", "José" or "李明" isn't found by searching that name; `get` reaches it by its handle.
 
 Records aren't currently enumerable by kind — you can ask "what do I know about Acme Corp" but not yet "list all my clients." A zero-hit search reports that a miss isn't proof of absence, rather than claiming nothing is stored; enumeration-by-kind is on the roadmap.
 
@@ -109,7 +124,7 @@ Memory is attributed and revertable. It is not a defense against poisoning, and 
 
 ## Changes
 
-See [CHANGELOG.md](./CHANGELOG.md). 0.4.0 adds the write high-water mark and `eve-memory-stats`. 0.3.0 removes 0.2.x's precedence and the model's `source` field; read it before upgrading from 0.2.x.
+See [CHANGELOG.md](./CHANGELOG.md). 0.6.0 adds handles and makes `remember`'s `id` update-only; read its upgrade note before upgrading. 0.4.0 adds the write high-water mark and `eve-memory-stats`. 0.3.0 removes 0.2.x's precedence and the model's `source` field; read it before upgrading from 0.2.x.
 
 ## Testing this package
 

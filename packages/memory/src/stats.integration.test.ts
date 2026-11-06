@@ -38,9 +38,8 @@ afterEach(() => {
 async function memoryDir(scope = "memscope1_alice") {
   const dir = tempDir();
   const g = await MemoryGraph.create({ dir: join(dir, scope) });
-  await g.remember({ id: "kettle", label: "Kettle", type: "Thing", attributes: { colour: "red" } });
+  await g.remember({ label: "Kettle", type: "Thing", attributes: { colour: "red" } });
   await g.remember({
-    id: "mug",
     label: "Mug",
     type: "Thing",
     relations: [{ relation: "near", to: "kettle" }],
@@ -52,20 +51,47 @@ async function memoryDir(scope = "memscope1_alice") {
 const hash = (path: string) =>
   existsSync(path) ? createHash("sha256").update(readFileSync(path)).digest("hex") : "absent";
 
-describe("a 0.3 store opened by 0.4 gets a high-water mark seeded from its rows", () => {
-  it("seeds seq_hwm from max(seq) and moves to user_version 4", async () => {
+describe("an older store opened now gets a high-water mark seeded from its rows, and no handles", () => {
+  it("seeds seq_hwm from max(seq), moves to user_version 5, and assigns no handles", async () => {
     const dir = tempDir();
     const db = new Database(join(dir, "graph.db"));
     db.exec(`CREATE TABLE triples(s TEXT, p TEXT, o TEXT, ot TEXT, dt TEXT, written_at TEXT, origin TEXT, seq INTEGER);
              CREATE VIRTUAL TABLE lit_fts USING fts5(s UNINDEXED, o);
              CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO triples VALUES ('https://eve.local/mem/e/a','http://www.w3.org/2000/01/rdf-schema#label','Ada','lit',NULL,'','{}',40);
              INSERT INTO triples VALUES ('https://eve.local/mem/e/a','https://eve.local/mem/p/n','x','lit',NULL,'','{}',41);
              PRAGMA user_version = 3;`);
     db.close();
-    expect(scopeStats(dir, ".").seqHwm).toBeNull();
+    expect(scopeStats(dir, ".")).toMatchObject({ seqHwm: null, handles: null });
     const g = await MemoryGraph.create({ dir });
     g.close();
-    expect(scopeStats(dir, ".")).toMatchObject({ userVersion: 4, seqHwm: 41, maxSeq: 41 });
+    // A handle for an existing record is the migration's to give, never the open's.
+    expect(scopeStats(dir, ".")).toMatchObject({
+      userVersion: 5,
+      seqHwm: 41,
+      maxSeq: 41,
+      handles: 0,
+    });
+  });
+});
+
+describe("a 0.5 store (user_version 4) opened now gets the handles table and no handles", () => {
+  it("moves to user_version 5 with its records shown by id", async () => {
+    const dir = tempDir();
+    const g = await MemoryGraph.create({ dir });
+    await g.remember({ label: "Kettle", type: "Thing" });
+    g.close();
+    // Back to the shape 0.5.2 leaves: no handles table, user_version 4.
+    const db = new Database(join(dir, "graph.db"));
+    db.exec("DROP TABLE handles; PRAGMA user_version = 4;");
+    db.close();
+    expect(scopeStats(dir, ".")).toMatchObject({ userVersion: 4, handles: null });
+    const again = await MemoryGraph.create({ dir });
+    const [kettle] = again.recall("kettle");
+    again.close();
+    expect(scopeStats(dir, ".")).toMatchObject({ userVersion: 5, handles: 0 });
+    expect(kettle?.handle).toBeUndefined();
+    expect(kettle?.id).toMatch(/^kettle_/);
   });
 });
 
@@ -83,7 +109,7 @@ describe("eve-memory-stats reports each store's facts", () => {
     const { dir, g } = await memoryDir();
     const s = scopeStats(dir, "memscope1_alice");
     g.close();
-    expect(s).toMatchObject({ userVersion: 4, quickCheck: "ok", tombstones: 1 });
+    expect(s).toMatchObject({ userVersion: 5, quickCheck: "ok", tombstones: 1, handles: 2 });
     expect(s.seqHwm).toBe(s.maxSeq);
     // kettle: type, label; mug: type, label, the edge
     expect(s.currentFacts).toBe(5);
@@ -102,8 +128,9 @@ describe("eve-memory-stats reports each store's facts", () => {
     const [header, line] = text.split("\n");
     expect(header).toBe(`eve-memory-stats 0.4.0 dir=${JSON.stringify(dir)} scopes=1`);
     expect(line).toMatch(
-      /^scope="memscope1_alice" user_version=4 seq_hwm=\d+ max_seq=\d+ quick_check="ok" /,
+      /^scope="memscope1_alice" user_version=5 seq_hwm=\d+ max_seq=\d+ quick_check="ok" /,
     );
+    expect(line).toMatch(/ current_facts=\d+ handles=2 /);
     expect(line).toMatch(/ search_index=2\/2 missing=0 extra=0 files=graph\.db:\d+:\d+:\d+/);
     expect(line).toMatch(/ findings=none$/);
   });
@@ -249,7 +276,7 @@ describe("read-only: it never writes the store or its WAL, even with a live writ
     expect(s.quickCheck).toBe("ok");
     expect([hash(db), hash(`${db}-wal`)]).toEqual(before);
     // The writer still works afterwards.
-    await g.remember({ id: "teapot", label: "Teapot", type: "Thing" });
+    await g.remember({ label: "Teapot", type: "Thing" });
     g.close();
   });
 

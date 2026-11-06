@@ -7,7 +7,12 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 
-import { CURRENT_FACTS_SQL, CURRENT_LITERALS_SQL, SEQ_HWM_SQL } from "./memory-graph.js";
+import {
+  CURRENT_FACTS_SQL,
+  CURRENT_LITERALS_SQL,
+  LIVE_HANDLES_SQL,
+  SEQ_HWM_SQL,
+} from "./memory-graph.js";
 
 const STORE = "graph.db";
 const FILES = [STORE, `${STORE}-wal`, `${STORE}-shm`];
@@ -32,6 +37,8 @@ export interface ScopeStats {
   maxSeq?: number;
   quickCheck?: string;
   currentFacts?: number;
+  /** Handles held (current, earlier and forgotten records'), counted apart from facts; null before handles existed. */
+  handles?: number | null;
   tombstones?: number;
   searchIndex?: { indexed: number; current: number; missing: number; extra: number };
   files: FileStat[];
@@ -105,6 +112,10 @@ export function scopeStats(dir: string, scope: string, options: StatsOptions = {
         db.prepare("SELECT ifnull(max(seq), 0) AS n FROM triples").get() as { n: number }
       ).n;
       stats.currentFacts = (db.prepare(CURRENT_FACTS_SQL).get() as { n: number }).n;
+      const hasHandles = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'handles'")
+        .get();
+      stats.handles = hasHandles ? (db.prepare(LIVE_HANDLES_SQL).get() as { n: number }).n : null;
       stats.tombstones = (
         db.prepare("SELECT count(*) AS n FROM triples WHERE ot IN ('tomb', 'tomb-edge')").get() as {
           n: number;
@@ -208,6 +219,7 @@ export function formatStats(dir: string, all: ScopeStats[], version: string): st
         `max_seq=${s.maxSeq}`,
         `quick_check=${q(s.quickCheck ?? "")}`,
         `current_facts=${s.currentFacts}`,
+        `handles=${s.handles ?? "none"}`,
         `tombstones=${s.tombstones}`,
         `search_index=${s.searchIndex?.indexed}/${s.searchIndex?.current}` +
           ` missing=${s.searchIndex?.missing} extra=${s.searchIndex?.extra}`,
