@@ -921,22 +921,31 @@ describe("references", () => {
       },
     });
     const long = `knowledge:${"a".repeat(80)}`;
+    // Due, so it is the first standing candidate and would take a lookup ahead of the six that follow.
     await a.call(
       "open",
-      { what: "elsewhere", waitingOn: "me", next: "n", links: [long] },
+      {
+        what: "the due one",
+        waitingOn: "me",
+        next: "n",
+        links: [long],
+        revisit: { when: "in 1 minute" },
+      },
       ALICE_THREAD,
     );
-    for (let i = 0; i < 6; i++) {
+    const others = Array.from({ length: 6 }, (_, i) => `knowledge:k${i}`);
+    for (const [i, link] of others.entries()) {
+      clock += 1_000;
       await a.call(
         "open",
-        { what: `elsewhere ${i}`, waitingOn: "me", next: "n", links: [`knowledge:k${i}`] },
-        BOB_THREAD,
+        { what: `fresh ${i}`, waitingOn: "me", next: "n", links: [link] },
+        ALICE_THREAD,
       );
     }
+    clock += 120_000;
     await a.recall(ALICE_DM_1);
     expect(seen).not.toContain(long);
-    expect(seen).toHaveLength(6);
-    expect(seen.every((l) => /^knowledge:k\d$/.test(l))).toBe(true);
+    expect([...seen].sort()).toEqual(others);
   });
 
   it("a host resolver that fails is not called again that turn, so a hung one costs one timeout", async () => {
