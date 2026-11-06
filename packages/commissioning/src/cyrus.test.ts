@@ -35,6 +35,7 @@ function provider() {
     readbackUnavailable: false,
     partialComment: false,
     partialDelegate: false,
+    partialComplete: false,
     nextReadUnavailable: false,
     extraPage: false,
     humanDescriptionEdit: "",
@@ -97,6 +98,8 @@ function provider() {
     expect(body.variables.id).toBe(canonicalId);
     if (body.variables.stateId) {
       expect(body.variables.stateId).toBe("state-done");
+      if (fault.partialComplete)
+        return Response.json({ data: { issueUpdate: { success: false } } });
       issue.state = { type: "completed" };
       return Response.json({ data: { issueUpdate: { success: true } } });
     }
@@ -357,21 +360,30 @@ describe("public Cyrus Linear connector", () => {
     const binding = await fixture.prepare();
     await fixture.connector.handoff({ commissionId, spec, binding });
     const writes = fixture.mutations().length;
-    await fixture.connector.complete?.({ commissionId, binding });
+    await fixture.connector.complete({ commissionId, binding });
     expect(fixture.issue.state).toEqual({ type: "completed" });
     expect(fixture.mutations()).toHaveLength(writes + 1);
-    await fixture.connector.complete?.({ commissionId, binding });
+    await fixture.connector.complete({ commissionId, binding });
     expect(fixture.mutations()).toHaveLength(writes + 1);
   });
 
-  it("does not report completion for a team with no completed state or a refused update", async () => {
+  it("does not report completion for a team with no completed state or an update Linear refused", async () => {
     const fixture = provider();
     const binding = await fixture.prepare();
     fixture.issue.team.states.nodes = [];
-    await expect(fixture.connector.complete?.({ commissionId, binding })).rejects.toMatchObject({
+    await expect(fixture.connector.complete({ commissionId, binding })).rejects.toMatchObject({
       code: "no_completed_state",
     });
     expect(fixture.mutations()).toHaveLength(0);
+    fixture.issue.team.states.nodes = [{ id: "state-done", position: 3 }];
+    fixture.fault.partialComplete = true;
+    await expect(fixture.connector.complete({ commissionId, binding })).rejects.toMatchObject({
+      code: "completion_unconfirmed",
+    });
+    expect(fixture.issue.state).toEqual({ type: "started" });
+    fixture.fault.partialComplete = false;
+    await fixture.connector.complete({ commissionId, binding });
+    expect(fixture.issue.state).toEqual({ type: "completed" });
   });
 
   it("does not acknowledge a provider that failed to apply delegation", async () => {

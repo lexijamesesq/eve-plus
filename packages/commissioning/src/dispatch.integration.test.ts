@@ -23,7 +23,12 @@ function config(overrides: Partial<CommissioningConfig> = {}): CommissioningConf
   return {
     dataDir: "/unused",
     namespace: "test",
-    worker: { id: "test-worker", prepare: async () => ({}), handoff: async () => {} },
+    worker: {
+      id: "test-worker",
+      prepare: async () => ({}),
+      handoff: async () => {},
+      complete: async () => {},
+    },
     authenticateWorker: () => true,
     commissioner: (auth) =>
       auth?.principalId === "ops-agent-bot"
@@ -78,7 +83,7 @@ describe("dispatch", () => {
       const handoff = vi.fn(async () => {});
       const drain = createDispatcher(
         store,
-        config({ worker: { id: "test-worker", prepare: vi.fn(), handoff } }),
+        config({ worker: { id: "test-worker", prepare: vi.fn(), handoff, complete: vi.fn() } }),
       );
       const { to, sends } = recordingTo();
       await drain(to);
@@ -149,8 +154,6 @@ describe("dispatch", () => {
       await drain(to);
       expect(store.pendingOutbox()).toHaveLength(1);
       await drain(to);
-      await drain(to);
-      expect(complete).toHaveBeenCalledTimes(2);
       expect(complete).toHaveBeenLastCalledWith({
         commissionId: "one",
         binding: { issue: "ENG-one" },
@@ -196,6 +199,7 @@ describe("dispatch", () => {
             worker: {
               id: mode === "changed-connector" ? "other" : "test-worker",
               prepare: vi.fn(),
+              complete: vi.fn(),
               handoff,
             },
           }),

@@ -50,7 +50,7 @@ export const configSchema = z
       id: z.string().min(1).max(256),
       prepare: fn,
       handoff: fn,
-      complete: fn.optional(),
+      complete: fn,
     }),
     authenticateWorker: fn,
     commissioner: fn,

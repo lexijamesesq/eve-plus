@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.6.3
+## 0.7.0
 
-The conversation between the commissioner and the worker, fixed in four places.
+The conversation between the commissioner and the worker, fixed in four places. One interface change is breaking:
+a custom worker connector must now implement `complete` (see the last item).
 
 - **The commissioner sees the worker's latest checkpoint.** `commissioning__read` now shows the most recent
   checkpoint's text and time. Checkpoints were stored but never rendered, so a commissioner reading a commission
@@ -11,7 +12,8 @@ The conversation between the commissioner and the worker, fixed in four places.
   reach the worker, and each question or proposal takes exactly one final decision, so a status message
   ("hold on merging") used up the verdict. A note takes `{ commissionId, text }`, appears among the events the worker
   reads with `commission_read`, and decides nothing: it doesn't answer a question or settle a proposal. It doesn't
-  restart the worker's quiet-time clock, since that tracks the worker's activity. The note's identity comes from the
+  restart the worker's quiet-time clock, since that tracks the worker's activity. A note on an accepted commission is
+  refused: the worker's session has ended, so a note would go unread. The note's identity comes from the
   tool call, so a retried call records it once. The tool description says plainly that this is the only way to tell
   the worker something and that a Linear comment doesn't reach it. No change to the worker's three tools.
 - **The Cyrus contract says when to propose.** The contract comment now tells the worker to submit its proposal once
@@ -23,10 +25,11 @@ The conversation between the commissioner and the worker, fixed in four places.
   the decision, delivered like the handoff: leased, at least once, retried by the dispatcher and the reconcile
   schedule. The Cyrus connector's new `complete` moves the Linear issue to its team's completed workflow state with
   the access token it already uses for the handoff, and does nothing when the issue is already completed. A
-  connector's `complete` is optional; one that exists but can't act right now should reject, so the closeout is
-  retried rather than acknowledged and lost.
+  connector must implement `complete`, which is a breaking change for custom connectors: add one that resolves when
+  the work is closed out, or already was, and rejects when it can't act right now so the closeout is retried
+  rather than lost.
 
-No store schema change. A store written by 0.6.2 opens unchanged. A 0.6.2 reader sees the new `note` and `complete`
+No store schema change. A store written by 0.6.2 opens unchanged. A 0.6.2 reader should see the new `note` and `complete`
 events as unfamiliar kinds and ignores them.
 
 ## 0.6.2

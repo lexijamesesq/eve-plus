@@ -71,7 +71,7 @@ export function createDispatcher(store: CommissionStore, config: CommissioningCo
             failure = "completion_failed";
             if (commission.connectorId !== config.worker.id)
               throw new Error("The worker connector changed since this commission was opened");
-            await config.worker.complete?.({
+            await config.worker.complete({
               commissionId: entry.commissionId,
               binding: commission.binding,
             });

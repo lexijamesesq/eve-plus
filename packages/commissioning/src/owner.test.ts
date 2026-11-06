@@ -33,7 +33,7 @@ function setup() {
   const owner = {
     store,
     config: {
-      worker: { id: "test-worker", prepare, handoff: async () => {} },
+      worker: { id: "test-worker", prepare, handoff: async () => {}, complete: async () => {} },
       // Only the operator commissions, as the agent; anyone else gets null.
       commissioner: (value: SessionAuthContext | null) =>
         value?.principalId === "U-operator"
