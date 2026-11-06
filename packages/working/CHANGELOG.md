@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- **A reference on a `standing` line is shown whole or not at all.** A `↳ <link> <target>` over 80 characters used to be cut with "…", which could leave half a link that points at nothing. A link too long for the line no longer spends one of the block's lookups. Now the target is dropped first and the bare `↳ <link>` is shown if it fits. A link too long for the line is left off, never cut.
+
 ## 0.1.3
 
 - **References show what they point at.** A `working:<id>` link on a loop, or an order's `knowledge:` or `working:` link, now appears with its target, e.g. `working:L3f → "Ship the release" (done, 3d)`. In `standing` a reference gets one `↳ <link> <target>` per line, within 80 characters. `working:` links resolve from the store, closed loops included. `knowledge:` links go to the new `resolve(link, context)` option, which answers a one-line target, `(not found)`, or null to leave the link as written. Every other scheme (`vault:`, `linear:`, `slack:`, `github:`, and any custom scheme in `linkSchemes`) shows as written.

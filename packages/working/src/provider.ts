@@ -463,7 +463,7 @@ export function workingMemory(options: WorkingMemoryOptions): MemoryProvider {
           here?.loops.flatMap((l) => l.links) ?? [],
           // The lookups follow what `standing` shows: orders, then loops in display order, one link each.
           [
-            ...orders.orders.map((o) => o.link),
+            ...orders.orders.flatMap((o) => preferredRef([o.link]) ?? []),
             ...standingLoopOrder(elsewhere.loops, t).flatMap((l) => preferredRef(l.links) ?? []),
           ],
         ],

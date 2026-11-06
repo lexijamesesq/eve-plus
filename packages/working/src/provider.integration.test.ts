@@ -912,6 +912,42 @@ describe("references", () => {
     expect(text(messages, STANDING_ID)).toContain("↳ knowledge:k0 (x)");
   });
 
+  it("a reference too long for a standing line spends no lookup", async () => {
+    const seen: string[] = [];
+    const a = await agent({
+      resolve: async (link) => {
+        seen.push(link);
+        return "(x)";
+      },
+    });
+    const long = `knowledge:${"a".repeat(80)}`;
+    // Due, so it is the first standing candidate and would take a lookup ahead of the six that follow.
+    await a.call(
+      "open",
+      {
+        what: "the due one",
+        waitingOn: "me",
+        next: "n",
+        links: [long],
+        revisit: { when: "in 1 minute" },
+      },
+      ALICE_THREAD,
+    );
+    const others = Array.from({ length: 6 }, (_, i) => `knowledge:k${i}`);
+    for (const [i, link] of others.entries()) {
+      clock += 1_000;
+      await a.call(
+        "open",
+        { what: `fresh ${i}`, waitingOn: "me", next: "n", links: [link] },
+        ALICE_THREAD,
+      );
+    }
+    clock += 120_000;
+    await a.recall(ALICE_DM_1);
+    expect(seen).not.toContain(long);
+    expect([...seen].sort()).toEqual(others);
+  });
+
   it("a host resolver that fails is not called again that turn, so a hung one costs one timeout", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     let calls = 0;
