@@ -412,6 +412,24 @@ describe("references", () => {
     expect(ref.length).toBeLessThanOrEqual(80);
   });
 
+  it("a short line drops the target before the link, and shows no link it cannot show whole", () => {
+    const at = (link: string, target: string): string[] => [
+      shortLoopLine(loop("L1", { links: [link] }), NOW, new Map([[link, target]])),
+      shortOrderLine(order("releases:web", { link }), NOW, new Map([[link, target]])),
+    ];
+    for (const line of at("knowledge:acme", `"${"Ship the release ".repeat(10)}" (Vendor, 5d)`)) {
+      expect(line.endsWith(" ↳ knowledge:acme")).toBe(true);
+    }
+    const long = `knowledge:${"a".repeat(80)}`;
+    for (const line of at(long, '"Acme"')) {
+      expect(line).not.toContain("↳");
+      expect(line).not.toContain("knowledge:a");
+    }
+    for (const line of at("knowledge:acme", '"Acme" (Vendor, 5d)')) {
+      expect(line.endsWith(' ↳ knowledge:acme "Acme" (Vendor, 5d)')).toBe(true);
+    }
+  });
+
   it("the blocks carry the turn's targets", () => {
     const view: RecallView = {
       ...empty,

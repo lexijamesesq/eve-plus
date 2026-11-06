@@ -135,12 +135,16 @@ export function preferredRef(links: readonly string[]): string | null {
 const MAX_RESOLVED_PER_LINE = 2;
 const MAX_SHORT_REF = 80;
 
-/** A reference with its target, for a short line: ` ↳ knowledge:acme "Acme" (Vendor, 5d)`, or nothing. */
+/**
+ * A reference with its target, for a short line: ` ↳ knowledge:acme "Acme" (Vendor, 5d)`, or nothing. Over the cap the
+ * target goes first, then the link: a link is shown whole or not at all, because a cut handle points at nothing.
+ */
 function shortRef(links: readonly string[], refs: Refs | undefined): string {
   const l = preferredRef(links);
-  return l === null || refs?.has(l) !== true
-    ? ""
-    : ` ↳ ${clip(`${l} ${refs?.get(l) ?? ""}`, MAX_SHORT_REF)}`;
+  if (l === null || refs?.has(l) !== true) return "";
+  const full = flat(`${l} ${refs.get(l) ?? ""}`);
+  if (full.length <= MAX_SHORT_REF) return ` ↳ ${full}`;
+  return l.length <= MAX_SHORT_REF ? ` ↳ ${l}` : "";
 }
 
 /**
