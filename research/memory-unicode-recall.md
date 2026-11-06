@@ -32,9 +32,11 @@ the tokenizer folds them the way it folds the index. Results:
   one.
 - Full-width "Ｚｏë" finds "Zoë Park": NFKC folds the query.
 
-The rule that drops one- and two-character words as noise now applies to ASCII words only, so a two-character name
-such as "李明" isn't dropped beside longer words. For ASCII input the tokens are the same as before, so ASCII search is
-unchanged.
+The rule that drops one- and two-character words as noise still applies in every alphabetic script, accented or not:
+the tokenizer folds "à", "où" and "sí" to the very "a", "ou" and "si" the rule exists to drop, so keeping them would
+recall unrelated records for a message in French or Spanish. In Han, Hiragana, Katakana and Hangul, one or two
+characters are commonly a whole word or name, so short words there are kept, and "李明" isn't dropped beside longer
+words. For ASCII input the tokens are the same as before, so ASCII search is unchanged.
 
 No new tokenizer is configured and nothing is hand-rolled; `unicode61` is the default the index was created with.
 

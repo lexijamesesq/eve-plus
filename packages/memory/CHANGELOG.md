@@ -2,7 +2,7 @@
 
 ## 0.6.2
 
-- **Search finds names in any script.** `recall`, `relate` and the turn-start block used to read only unaccented `a`–`z` and digits from a query, so searching "Zoë", "José" or "李明" found nothing, even with the record stored. Words are now letters and digits in any script, NFKC-normalised as handles are, and accents are optional: "zoe" finds "Zoë Park" and "garcia" finds "José García". A two-character name such as "李明" is no longer dropped as a short word. ASCII searches match as before. No store change: the index already held these words, so nothing is rebuilt.
+- **Search finds names in any script.** `recall`, `relate` and the turn-start block used to read only unaccented `a`–`z` and digits from a query, so searching "Zoë", "José" or "李明" found nothing, even with the record stored. Words are now letters and digits in any script, NFKC-normalised as handles are, and accents are optional: "zoe" finds "Zoë Park" and "garcia" finds "José García". One- and two-letter words stay noise in every alphabetic script, accented or not ("à" and "où" fold to "a" and "ou"), but in Han, kana and Hangul a short word is kept, so a name such as "李明" isn't dropped. ASCII searches match as before. No store change: the index already held these words, so nothing is rebuilt.
 
 ## 0.6.1
 

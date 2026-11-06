@@ -549,6 +549,19 @@ describe("recall finds a record by its name in any script", () => {
     const g = await people();
     expect(found(g, "kitchen")).toEqual(["Kitchen floor"]);
     expect(found(g, "the kitchen is on the floor")).toEqual(["Kitchen floor"]);
-    expect(found(g, "is")).toEqual([]);
+    // A short word beside longer ones is noise: a record that shares only "is" isn't recalled.
+    await saved(g, "Life is good");
+    expect(found(g, "where is the attic")).toEqual([]);
+  });
+
+  it("short words in other alphabetic scripts are noise too; a one-character Han word isn't", async () => {
+    const g = await people();
+    await saved(g, "Plan a trip to Lisbon");
+    await saved(g, "Ou bien");
+    // "à" and "où" fold to "a" and "ou" in the index: kept, they would recall both records above.
+    expect(found(g, "voilà à Lisbon")).toEqual(["Plan a trip to Lisbon"]);
+    expect(found(g, "où est 李明")).toEqual(["李明"]);
+    await saved(g, "李");
+    expect(found(g, "who is 李 today")).toEqual(["李"]);
   });
 });
