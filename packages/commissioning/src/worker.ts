@@ -22,4 +22,12 @@ export interface WorkerConnector {
     spec: CommissionSpec;
     binding: WorkerBinding;
   }): Promise<void>;
+  /**
+   * Close out the work after the commissioner accepts the proposal. Delivered at least once, so it must be safe to
+   * repeat: resolve when the work is already closed out. Omit it when there is nothing to close out; the dispatcher
+   * then treats an accepted commission as done. A connector that exists but can't act right now (for instance its
+   * credential is missing) must reject rather than omit this, because an omitted method is acknowledged, and the
+   * closeout would be lost instead of retried.
+   */
+  complete?(input: { commissionId: string; binding: WorkerBinding }): Promise<void>;
 }

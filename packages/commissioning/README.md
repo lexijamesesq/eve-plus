@@ -50,7 +50,8 @@ export default commissioning({
 1. **Open.** The commissioner calls `commissioning__open` with a brief, acceptance criteria and a work reference (a Linear issue for Cyrus). The connector checks the work item, and the commission and its handoff are recorded together. Then the dispatcher hands the work off: for Cyrus, a contract comment on the issue and a delegation, each confirmed by reading it back.
 2. **Talk.** The worker calls the mount's MCP endpoint (`/commissioning/mcp`) with three tools: `commission_read`, `commission_consult` to ask a question, and `commission_report` for a checkpoint, a failure or a proposal. A proposal names an exact commit and its pull request.
 3. **Hear about it.** What the worker asks, proposes or reports as a failure is delivered into the conversation the commission was opened in, through eve's `to(channel, target)`, as a queued turn. So is an overdue notice when the worker goes quiet past its grace interval.
-4. **Decide.** The commissioner reads with `commissioning__read` and records answers and verdicts only with `commissioning__decide`. Saying it in a reply records nothing. The worker finds the answer or verdict on its next `commission_read`.
+4. **Decide.** The commissioner reads with `commissioning__read`, which shows the worker's questions, its latest checkpoint and the proposal, and records answers and verdicts only with `commissioning__decide`. Saying it in a reply records nothing. The worker finds the answer or verdict on its next `commission_read`. To tell the worker something that isn't a decision, the commissioner sends a note with `commissioning__note`; the worker reads it the same way, and it settles nothing.
+5. **Close out.** When the commissioner accepts a proposal, the dispatcher asks the worker connector to close out the work: for Cyrus, it moves the Linear issue to its team's completed state. It's delivered at least once, so an issue already completed is left alone.
 
 ## What it guarantees
 

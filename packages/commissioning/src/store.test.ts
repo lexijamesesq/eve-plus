@@ -222,6 +222,16 @@ describe("commission ledger", () => {
     expect(claimAll(store)).toEqual([]);
   });
 
+  it("doesn't count a commissioner's note as worker activity", () => {
+    let now = 0;
+    const store = setup(() => now);
+    claimAll(store);
+    now = 50_000;
+    store.note(owner, { commissionId: "c1", noteId: "n1", text: "Status?" });
+    now = 60_001;
+    expect(store.reconcileOverdue()).toBe(1);
+  });
+
   it("notifies an overdue worker once per quiet spell, without changing its state", () => {
     let now = 0;
     const store = setup(() => now);

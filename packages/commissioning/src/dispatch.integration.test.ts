@@ -108,6 +108,60 @@ describe("dispatch", () => {
     }
   });
 
+  it("closes out the work once the proposal is accepted, and keeps retrying until it lands", async () => {
+    const store = new CommissionStore(":memory:");
+    try {
+      openHandedOff(store, "one");
+      store.report({
+        commissionId: "one",
+        eventId: "p1",
+        kind: "proposal",
+        data: {
+          summary: "Done",
+          artifact: {
+            repository: "https://github.com/example/repo",
+            commit: "a".repeat(40),
+            pullRequest: "https://github.com/example/repo/pull/1",
+          },
+        },
+      });
+      const complete = vi
+        .fn<NonNullable<CommissioningConfig["worker"]["complete"]>>()
+        .mockRejectedValueOnce(new Error("provider detail"))
+        .mockResolvedValue(undefined);
+      const drain = createDispatcher(
+        store,
+        config({
+          worker: { id: "test-worker", prepare: vi.fn(), handoff: vi.fn(), complete },
+        }),
+      );
+      const { to } = recordingTo();
+      await drain(to);
+      expect(complete).not.toHaveBeenCalled();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      store.decide(owner, {
+        commissionId: "one",
+        eventId: "d1",
+        target: "proposal",
+        proposalId: "p1",
+        decision: { verdict: "accept", feedback: "Reviewed" },
+      });
+      await drain(to);
+      expect(store.pendingOutbox()).toHaveLength(1);
+      await drain(to);
+      await drain(to);
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect(complete).toHaveBeenLastCalledWith({
+        commissionId: "one",
+        binding: { issue: "ENG-one" },
+      });
+      expect(store.pendingOutbox()).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+      store.close();
+    }
+  });
+
   it("keeps a notice pending when the delivery's auth doesn't resolve to the commission's owner", async () => {
     const store = new CommissionStore(":memory:");
     try {

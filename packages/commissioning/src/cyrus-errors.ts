@@ -7,6 +7,8 @@ const reasons = {
   work_unavailable: "The canonical Linear work record is unavailable",
   handoff_conflict: "The Linear work record conflicts with this commission",
   handoff_unconfirmed: "The Cyrus handoff is not confirmed",
+  no_completed_state: "The work item's team has no completed workflow state",
+  completion_unconfirmed: "The work item was not moved to its completed state",
   provider_unavailable: "The Linear provider is unavailable",
   cancelled: "The Cyrus request was cancelled",
   timeout: "The Cyrus request timed out",

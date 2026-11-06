@@ -22,6 +22,8 @@ function provider() {
     url: issueUrl,
     description: "## Objective\nKeep this objective\n\n## Done When\nKeep these criteria",
     delegate: null as null | { id: string },
+    state: { type: "started" },
+    team: { states: { nodes: [{ id: "state-done", position: 3 }] } },
   };
   const comments: { id: string; body: string }[] = [];
   const journal: { query: string; variables: Record<string, string> }[] = [];
@@ -93,6 +95,11 @@ function provider() {
     }
     expect(selects(body.query, "issueUpdate")).toBe(true);
     expect(body.variables.id).toBe(canonicalId);
+    if (body.variables.stateId) {
+      expect(body.variables.stateId).toBe("state-done");
+      issue.state = { type: "completed" };
+      return Response.json({ data: { issueUpdate: { success: true } } });
+    }
     if (fault.beforeDelegate) {
       fault.beforeDelegate = false;
       throw new Error("synthetic failure before delegation");
@@ -344,6 +351,28 @@ describe("public Cyrus Linear connector", () => {
       expect(fixture.delegations()).toHaveLength(kind === "beforeDelegate" ? 2 : 1);
     },
   );
+
+  it("moves the issue to its team's completed state once, and leaves a completed one alone", async () => {
+    const fixture = provider();
+    const binding = await fixture.prepare();
+    await fixture.connector.handoff({ commissionId, spec, binding });
+    const writes = fixture.mutations().length;
+    await fixture.connector.complete?.({ commissionId, binding });
+    expect(fixture.issue.state).toEqual({ type: "completed" });
+    expect(fixture.mutations()).toHaveLength(writes + 1);
+    await fixture.connector.complete?.({ commissionId, binding });
+    expect(fixture.mutations()).toHaveLength(writes + 1);
+  });
+
+  it("does not report completion for a team with no completed state or a refused update", async () => {
+    const fixture = provider();
+    const binding = await fixture.prepare();
+    fixture.issue.team.states.nodes = [];
+    await expect(fixture.connector.complete?.({ commissionId, binding })).rejects.toMatchObject({
+      code: "no_completed_state",
+    });
+    expect(fixture.mutations()).toHaveLength(0);
+  });
 
   it("does not acknowledge a provider that failed to apply delegation", async () => {
     const fixture = provider();

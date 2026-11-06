@@ -87,6 +87,15 @@ const bindingSchema = z
     mcpEndpoint: endpoint,
   })
   .strict();
+const completionSchema = z.object({
+  id: identifier,
+  state: z.object({ type: z.string() }),
+  team: z.object({
+    states: z.object({
+      nodes: z.array(z.object({ id: identifier, position: z.number() })).max(50),
+    }),
+  }),
+});
 const maxContractCharacters = 1_048_576;
 // The contract's first line, and how a contract is recognized on an issue. It's a visible heading because Linear
 // shows HTML comments as text.
@@ -228,7 +237,7 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
         `MCP server: ${target.mcpServerName}`,
         `Endpoint: ${target.mcpEndpoint}`,
         `Canonical work issue: ${target.issueUrl}`,
-        "Read commission_read with this commissionId before starting work. Use commission_consult for bounded questions and commission_report for checkpoints, failures and immutable proposals. Poll commission_read for answers and revisions. Only the commissioner records decisions.",
+        "Read commission_read with this commissionId before starting work. Use commission_consult for bounded questions and commission_report for checkpoints and failures. Submit your proposal with commission_report once the repository's code review has cleared the head commit, not when the pull request opens: a proposal is immutable and gets one verdict. Poll commission_read for answers, notes and revisions. Only the commissioner records decisions; a note informs you and decides nothing.",
         "",
         spec.brief,
         "",
@@ -280,6 +289,29 @@ export function cyrus(options: CyrusOptions): WorkerConnector {
       const confirmed = await readIssue(target.issueId, target.contractCommentId);
       if (!matchesContract(confirmed) || confirmed.delegate?.id !== target.delegateId)
         fail("handoff_unconfirmed");
+    },
+    async complete({ commissionId, binding }) {
+      const parsedBinding = bindingSchema.safeParse(binding);
+      if (!parsedBinding.success || parsedBinding.data.commissionId !== commissionId)
+        fail("invalid_binding");
+      const { issueId } = parsedBinding.data;
+      const response = await request<{ issue: unknown }>(
+        "CommissionCompletion",
+        'query CommissionCompletion($id:String!){issue(id:$id){id state{type} team{states(filter:{type:{eq:"completed"}}){nodes{id position}}}}}',
+        { id: issueId },
+      );
+      const issue = completionSchema.safeParse(response?.issue);
+      if (!issue.success || issue.data.id !== issueId) return fail("work_unavailable");
+      // A redelivery after the move landed finds the issue already completed and has nothing to do.
+      if (issue.data.state.type === "completed") return;
+      const [target] = [...issue.data.team.states.nodes].sort((a, b) => a.position - b.position);
+      if (!target) return fail("no_completed_state");
+      const updated = await request<{ issueUpdate?: { success?: boolean } }>(
+        "CommissionComplete",
+        "mutation CommissionComplete($id:String!,$stateId:String!){issueUpdate(id:$id,input:{stateId:$stateId}){success}}",
+        { id: issueId, stateId: target.id },
+      );
+      if (updated?.issueUpdate?.success !== true) fail("completion_unconfirmed");
     },
   };
 }

@@ -1,6 +1,12 @@
 import type { SessionAuthContext } from "eve/context";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { decideCommission, explain, openCommission, readCommission } from "./owner.js";
+import {
+  decideCommission,
+  explain,
+  noteCommission,
+  openCommission,
+  readCommission,
+} from "./owner.js";
 import { CommissionStore } from "./store.js";
 import type { Conversation } from "./types.js";
 
@@ -104,5 +110,61 @@ describe("the commissioner's tools", () => {
     };
     expect(decideCommission(owner, decision, ctx)).toContain("Answered question q");
     expect(store.read(id).questions).toMatchObject([{ status: "answered", answer: "No" }]);
+  });
+
+  it("shows the commissioner the worker's latest checkpoint", async () => {
+    const { owner, store } = setup();
+    const ctx = context() as unknown as Context;
+    const id = /commission ([0-9a-f]{64})/.exec(await openCommission(owner, input, ctx))?.[1] ?? "";
+    expect(readCommission(owner, { commissionId: id }, ctx)).not.toContain("checkpoint");
+    for (const [eventId, summary] of [
+      ["c1", "Reading the code"],
+      ["c2", "Labels trimmed, tests running"],
+    ])
+      store.report({ commissionId: id, eventId, kind: "checkpoint", data: { summary } });
+    const read = readCommission(owner, { commissionId: id }, ctx);
+    expect(read).toContain("Labels trimmed, tests running");
+    expect(read).not.toContain("Reading the code");
+  });
+
+  it("sends a note without touching the pending proposal, once per call, and the worker reads it", async () => {
+    const { owner, store } = setup();
+    const ctx = context() as unknown as Context;
+    const id = /commission ([0-9a-f]{64})/.exec(await openCommission(owner, input, ctx))?.[1] ?? "";
+    store.report({
+      commissionId: id,
+      eventId: "p1",
+      kind: "proposal",
+      data: {
+        summary: "Labels trimmed",
+        artifact: {
+          repository: "https://github.com/example/repo",
+          commit: "a".repeat(40),
+          pullRequest: "https://github.com/example/repo/pull/1",
+        },
+      },
+    });
+    const note = { commissionId: id, text: "Hold on merging; review is still running" };
+    const noteCtx = context("1.0", "call-note") as unknown as Context;
+    noteCommission(owner, note, noteCtx);
+    noteCommission(owner, note, noteCtx);
+    const worker = store.read(id);
+    expect(worker.events.filter((event) => event.kind === "note")).toMatchObject([
+      { payload: { text: note.text } },
+    ]);
+    expect(worker.status).toBe("needs_review");
+    expect(
+      decideCommission(
+        owner,
+        {
+          commissionId: id,
+          eventId: "d1",
+          target: "proposal",
+          proposalId: "p1",
+          decision: { verdict: "accept", feedback: "Reviewed" },
+        },
+        ctx,
+      ),
+    ).toContain("Accepted proposal p1");
   });
 });

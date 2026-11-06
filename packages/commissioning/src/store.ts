@@ -12,6 +12,7 @@ import type {
   Conversation,
   DecisionInput,
   MutationResult,
+  NoteInput,
   OutboxEntry,
   OutboxFailureClass,
   QuestionInput,
@@ -365,9 +366,27 @@ export class CommissionStore {
         }
         this.touch(row.id, false);
         this.event(row.id, `event:${input.eventId}`, commissioner.id, "decision", input, false);
+        // An accepted proposal ends the commission once; its closeout is delivered like the handoff.
+        if (input.target === "proposal" && input.decision.verdict === "accept")
+          this.event(row.id, "complete", commissioner.id, "complete", {}, true);
         return this.result(row.id);
       },
     );
+  }
+  /**
+   * A message from the commissioner that asks nothing of the ledger: it settles no question or proposal and moves
+   * no state. It deliberately skips `touch`, because the overdue clock tracks the worker's activity and a note is
+   * not that. The worker finds it among the events on its next read.
+   */
+  note(commissioner: Commissioner, input: NoteInput): MutationResult {
+    this.owned(commissioner, input.commissionId);
+    const key = `note:${input.noteId}`;
+    return this.operation(input.commissionId, key, commissioner.id, input, () => {
+      const row = this.row(input.commissionId);
+      if (row.state === "accepted") fail("conflict", "The commission is already accepted");
+      this.event(row.id, key, commissioner.id, "note", { text: input.text }, false);
+      return this.result(row.id);
+    });
   }
   /** The worker's view, and the owner's once `commissioner` has been checked against the commission. */
   read(id: string, after = 0, commissioner?: Commissioner): CommissionView {
@@ -404,6 +423,11 @@ export class CommissionStore {
     const overdue = this.db
       .prepare(`SELECT 1 FROM commissions c WHERE c.id=? AND ${overdueEligibility}`)
       .get(id, this.now() - this.overdueAfterMs);
+    const checkpoint = this.db
+      .prepare(
+        "SELECT payload,created FROM events WHERE commission_id=? AND kind='checkpoint' ORDER BY seq DESC LIMIT 1",
+      )
+      .get(id) as { payload: string; created: number } | undefined;
     const questions = this.db
       .prepare("SELECT id FROM questions WHERE commission_id=? ORDER BY rowid")
       .all(id) as { id: string }[];
@@ -429,6 +453,12 @@ export class CommissionStore {
             }
           : null,
       questions: questions.map((question) => this.question(id, question.id)),
+      latestCheckpoint: checkpoint
+        ? {
+            summary: (JSON.parse(checkpoint.payload) as { data: { summary: string } }).data.summary,
+            at: checkpoint.created,
+          }
+        : null,
       events,
       nextCursor: events.at(-1)?.cursor ?? after,
       ...(overdue
