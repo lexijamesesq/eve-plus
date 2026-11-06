@@ -106,7 +106,7 @@ agent's own user. It may create `graph.db-shm` (and an empty `graph.db-wal`), bu
 
 - the counts (`records`, `edges`, `triples`, `handles`);
 - each clash as `c1`, `c2`, …, with its handle, its members by id and type, and whether they agree on each detail (`same`, `differs`, `only`), with who wrote them and when. No detail values are printed;
-- a proposal (`duplicate`, `namesake` or `unclear`) from the evidence. A record left untyped beside a typed one, an equal value, or a shared connection points to one thing saved twice. Two concrete types, or one-off connections to different places, point to two things. A connection to a record that a quarter or more of the scope's records link to (at least three) counts for nothing. It is only a proposal;
+- a proposal (`duplicate`, `namesake` or `unclear`) from the evidence. A record left untyped beside a typed one, an equal value, or a shared connection points to one thing saved twice. Two concrete types, or one-off connections to different places, point to two things. A connection to a record that more than a quarter of the scope's records link to (and at least three) counts for nothing. It is only a proposal;
 - lettered options for each clash, each tried on the copy, marked if it won't apply and why;
 - `knowledge:` references (from `--refs`, one per line, and from the stores' own details) that the upgrade itself breaks, `pin_breaks`: ones 0.5 resolved by a loosely written id that 0.6 doesn't.
 

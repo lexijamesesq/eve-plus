@@ -494,8 +494,31 @@ describe("a merge the survivor's rules refuse is offered again without what they
       { id: "a_2", label: "Ann", edges: [["knows", "gone_0000"]] },
     ]);
     const dry = await dryRun(dir, "scope", []);
+    expect(
+      clash(dry, "ann")
+        .options.find((o) => /into a_1/.test(o.summary))
+        ?.notes?.join(),
+    ).toMatch(/knows → gone_0000/);
     const r = await applyScope(dir, "scope", [option(dry, "ann", /into a_1/)], [], "run-n");
     expect(r.applied?.notes.join()).toMatch(/knows → gone_0000/);
+  });
+
+  it("drops a note when its clash is undone", async () => {
+    const dir = store([
+      { id: "a_1", label: "Ann", type: "Person", at: "2026-01-01T00:00:00Z" },
+      { id: "a_2", label: "Ann", edges: [["knows", "gone_0000"]], at: "2026-02-01T00:00:00Z" },
+      { id: "a_3", label: "Ann", attributes: { age: "old" }, at: "2026-03-01T00:00:00Z" },
+    ]);
+    const g = await open(dir);
+    await g.extendSchema({
+      class: "Person",
+      requires: [{ slot: "age", datatype: "integer", minCount: 0 }],
+    });
+    g.close();
+    const dry = await dryRun(dir, "scope", []);
+    const r = await applyScope(dir, "scope", [option(dry, "ann", /into a_1$/)], [], "run-nn");
+    expect(r.applied?.failed.map((f) => f.clash)).toEqual(["scope/ann"]);
+    expect(r.applied?.notes).toEqual([]);
   });
 });
 
@@ -528,6 +551,25 @@ describe("decisions are checked on a copy before anything is written", () => {
     expect((await preflight(dir, "scope", [stale])).notes.join()).toMatch(
       /changed since it was decided/,
     );
+  });
+
+  it("two decisions giving one new name are an error, though each passes alone", async () => {
+    const dir = store([
+      { id: "s_1", label: "Sam", type: "Person" },
+      { id: "s_2", label: "Sam", type: "Company" },
+      { id: "t_1", label: "Tam", type: "Person" },
+      { id: "t_2", label: "Tam", type: "Company" },
+    ]);
+    const dry = await dryRun(dir, "scope", []);
+    const [sam, tam] = [clash(dry, "sam"), clash(dry, "tam")];
+    const q = (c: typeof sam, keep: string, other: string): Decision => ({
+      clash: c.key,
+      digest: c.digest,
+      members: { [keep]: "survivor", [other]: { qualify: "Acme Co" } },
+    });
+    expect((await preflight(dir, "scope", [q(sam, "s_1", "s_2")])).errors).toEqual([]);
+    const both = await preflight(dir, "scope", [q(sam, "s_1", "s_2"), q(tam, "t_1", "t_2")]);
+    expect(both.errors.join()).toMatch(/knowledge:acme-co, which scope\/sam also gives/);
   });
 });
 

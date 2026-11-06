@@ -114,6 +114,9 @@ if (!opt.apply) {
     );
   }
   const errors: string[] = [];
+  for (const d of decisions)
+    if (!scopes.some((scope) => d.clash.startsWith(`${scope}/`)))
+      errors.push(`${d.clash}: no store under ${dir} has that scope`);
   for (const scope of scopes) {
     const checked = await preflight(
       join(dir, scope),

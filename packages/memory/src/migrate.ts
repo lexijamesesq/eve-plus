@@ -67,6 +67,8 @@ export interface Option {
   decision: Decision;
   ok: boolean;
   problems: string[];
+  /** What applying it would leave out on purpose, from trying it on the copy. */
+  notes?: string[];
 }
 
 export type ClashKind = "name" | "revived";
@@ -616,6 +618,8 @@ export async function apply(
   const fail = async (key: string, reason: string) => {
     if (!live.has(key)) return;
     live.delete(key);
+    // What the clash noted no longer stands once it's undone.
+    result.notes = result.notes.filter((n) => !n.startsWith(`${key}: `));
     const r = await g.revertBatch({ run, clash: key });
     result.rowsReverted += r.removed;
     result.failed.push({
@@ -643,6 +647,7 @@ export async function apply(
           : [];
     });
   await each(async (c, d, origin) => {
+    const mine: string[] = [];
     for (const { dup, into } of merges(c, d)) {
       const take = Object.entries(d.keys ?? {}).flatMap(([k, from]) => (from === dup ? [k] : []));
       const problem = await carry(
@@ -653,10 +658,11 @@ export async function apply(
         d.drop ?? [],
         d.members?.[dup] === "carry",
         origin,
-        result.notes,
+        mine,
       );
       if (problem) return `carrying ${dup} into ${into}: ${problem}`;
     }
+    result.notes.push(...mine.map((n) => `${c.key}: ${n}`));
     return undefined;
   });
   await each(async (c, d, origin) => {
@@ -791,20 +797,26 @@ export async function dryRun(
     const before = counts(g);
     const p = plan(g, scope);
     // Try a decision on the copy and undo it: what it would leave unapplied, and why.
-    const probe = async (c: Clash, d: Decision) => {
+    const tried = async (c: Clash, d: Decision) => {
       const problems = decisionProblems(g, c, d, p.claimed);
-      if (problems.length || d.skip) return problems;
+      if (problems.length || d.skip) return { problems, notes: [] as string[] };
       g.db.exec("SAVEPOINT probe");
       try {
         const r = await apply(g, { ...p, clashes: [c], mints: [] }, [d], "probe");
-        return [...r.failed, ...r.skipped].map((x) => x.reason);
+        return {
+          problems: [...r.failed, ...r.skipped].map((x) => x.reason),
+          notes: r.notes.map((n) => n.slice(`${c.key}: `.length)),
+        };
       } finally {
         g.db.exec("ROLLBACK TO probe; RELEASE probe");
       }
     };
+    const probe = async (c: Clash, d: Decision) => (await tried(c, d)).problems;
     for (const c of p.clashes) {
       for (const o of c.options) {
-        o.problems = await probe(c, o.decision);
+        const t = await tried(c, o.decision);
+        o.problems = t.problems;
+        if (t.notes.length) o.notes = t.notes;
         o.ok = o.problems.length === 0;
       }
       // A merge the survivor's rules refuse gets a variant that leaves out exactly the details they refuse.
@@ -923,6 +935,19 @@ export async function preflight(
     const p = plan(g, scope);
     const errors: string[] = [];
     const notes: string[] = [];
+    // Two decisions giving records one new name would each pass alone; only one could land.
+    const named = new Map<string, string>();
+    for (const d of decisions)
+      for (const ch of Object.values(d.members ?? {}))
+        if (typeof ch === "object" && "qualify" in ch) {
+          const h = handleOf(ch.qualify);
+          const other = named.get(h);
+          if (other && other !== d.clash)
+            errors.push(
+              `${d.clash}: "${ch.qualify}" makes ${REFERENCE_PREFIX}${h}, which ${other} also gives`,
+            );
+          else named.set(h, d.clash);
+        }
     for (const d of decisions) {
       const c = p.clashes.find((x) => x.key === d.clash);
       if (!c) notes.push(`${d.clash}: no longer a clash (settled or gone); it will be skipped`);
@@ -1030,7 +1055,7 @@ export function redacted(report: Report): string {
       }
       for (const o of cl.options)
         out.push(
-          `    ${o.letter}: ${o.summary}${o.ok ? "" : ` (won't apply: ${o.problems.join("; ")})`}`,
+          `    ${o.letter}: ${o.summary}${o.ok ? "" : ` (won't apply: ${o.problems.join("; ")})`}${o.notes ? ` (note: ${o.notes.join("; ")})` : ""}`,
         );
     }
     const breaks = s.refs.filter((r) => r.outcome !== "ok");
