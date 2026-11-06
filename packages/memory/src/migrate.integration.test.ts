@@ -862,6 +862,24 @@ describe("the command, over its arguments and streams", () => {
     g.close();
   });
 
+  it("apply given no --refs checks again the references the dry run was given, and takes back a capture", async () => {
+    // knowledge:sam-lee is held outside the store (a loop); only the dry run is told of it.
+    const dir = memoryDir({
+      b: [
+        { id: "sam_lee", label: "Samuel" },
+        { id: "sl_9", label: "Sam Lee" },
+      ],
+    });
+    const dry = io("knowledge:sam-lee\n");
+    await main([dir, "--report", "-", "--refs", "-"], dry.io);
+    const apply = io(dry.out.stdout);
+    expect(await main([dir, "--apply", "--report", "-", "--choose", ""], apply.io)).toBe(0);
+    expect(apply.out.stdout).toMatch(/failed b\/record:sl_9: would break knowledge:sam-lee/);
+    const g = await open(join(dir, "b"));
+    expect(g.stored("sl_9")?.handles).toEqual([]);
+    g.close();
+  });
+
   it("refuses bad usage with 2, and a choice the report doesn't have with 1, before writing", async () => {
     const dir = memoryDir({
       a: [
