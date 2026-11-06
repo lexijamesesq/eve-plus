@@ -660,7 +660,7 @@ describe("a reference that leads somewhere else afterwards is a break", () => {
   });
 });
 
-describe("round-one review findings", () => {
+describe("what one clash leaves for another, and for the next run", () => {
   it("a revived duplicate's new writes reach the record its survivor is merged into in the same run", async () => {
     const dir = store([
       { id: "r_1", label: "Kim", attributes: { a: "1" }, at: "2026-01-01T00:00:00Z" },

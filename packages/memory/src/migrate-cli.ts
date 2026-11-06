@@ -10,7 +10,8 @@
 //     --check prints the decisions and what a copy says of them, and writes nothing: a read-back before applying.
 //
 // --refs names `knowledge:` references held elsewhere (one per line), checked before and after alongside the stores'
-// own. Exits 0 when it ran (per-clash outcomes are in the report), 1 when it refused before writing, 2 on bad usage.
+// own; apply reuses the dry run's when given none. `-` for --report or --refs reads stdin, and a dry run's
+// `--report -` writes the full report to stdout and the shareable one to stderr, so a container needs no host file. Exits 0 when it ran (per-clash outcomes are in the report), 1 when it refused before writing, 2 on bad usage.
 
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -59,7 +60,9 @@ const { values: opt, positionals } = (() => {
 })();
 const dir = positionals[0];
 if (dir === undefined || positionals.length > 1) usage();
-if (opt.apply && !opt.decisions && !(opt.report && opt.choose)) usage();
+if (opt.apply && !opt.decisions && !(opt.report && opt.choose !== undefined)) usage();
+// stdin feeds one input at most.
+if (opt.refs === "-" && opt.apply && opt.report === "-") usage();
 if (!opt.apply && (opt.choose || opt.decisions || opt.run || opt.check)) usage();
 
 const { version } = JSON.parse(
@@ -67,8 +70,10 @@ const { version } = JSON.parse(
 ) as {
   version: string;
 };
-const refs = opt.refs
-  ? readFileSync(opt.refs, "utf8")
+// `-` reads stdin, so a tool run in a container needs no file of the host's.
+const read = (path: string) => readFileSync(path === "-" ? 0 : path, "utf8");
+let refs = opt.refs
+  ? read(opt.refs)
       .split("\n")
       .map((l) => l.trim().replace(/^knowledge:/, ""))
       .filter(Boolean)
@@ -90,17 +95,25 @@ if (!opt.apply) {
   const report = numbered({ mode: "dry-run", dir, version, scopes: [] });
   for (const scope of scopes) report.scopes.push(await dryRun(join(dir, scope), scope, refs));
   numbered(report);
-  if (opt.report) {
-    writeFileSync(opt.report, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-    // The mode applies only to a file this creates: an existing one is narrowed too.
-    chmodSync(opt.report, 0o600);
+  if (opt.report === "-") {
+    // The full report on stdout and the shareable one on stderr, for a caller that keeps them apart.
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    process.stderr.write(`${redacted(report)}\n`);
+  } else {
+    if (opt.report) {
+      writeFileSync(opt.report, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+      // The mode applies only to a file this creates: an existing one is narrowed too.
+      chmodSync(opt.report, 0o600);
+    }
+    process.stdout.write(`${redacted(report)}\n`);
   }
-  process.stdout.write(`${redacted(report)}\n`);
 } else {
   let decisions: Decision[];
   if (opt.decisions) decisions = JSON.parse(readFileSync(opt.decisions, "utf8")) as Decision[];
   else {
-    const from = JSON.parse(readFileSync(opt.report as string, "utf8")) as Report;
+    const from = JSON.parse(read(opt.report as string)) as Report;
+    // The references the dry run checked are checked again, unless others are given.
+    if (!opt.refs) refs = [...new Set(from.scopes.flatMap((s) => s.refs.map((r) => r.ref)))];
     const { decisions: d, problems } = chosen(from, opt.choose as string);
     if (problems.length) refuse(problems.join("; "));
     decisions = d;
