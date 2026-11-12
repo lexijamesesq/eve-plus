@@ -8,12 +8,12 @@ A knowledge memory answers "what do I know about X" when the agent thinks to ask
 
 ## Install
 
-Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or exactly 1.0.0-rc.6, on Node 24 or later:
+Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or exactly 1.0.0-rc.6 or 1.0.0-rc.10, on Node 24 or later:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/working": "github:lexijamesesq/eve-plus#working--v0.1.6&path:packages/working",
+    "@eve-plus/working": "github:lexijamesesq/eve-plus#working--v0.1.7&path:packages/working",
     "eve": "0.91.0"
   }
 }
