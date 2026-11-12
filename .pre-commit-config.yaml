@@ -108,5 +108,5 @@ repos:
     hooks:
       - id: prettier
         types_or: [html]
-        additional_dependencies: ["prettier@3.10.0"]
+        additional_dependencies: ["prettier@3.10.1"]
         stages: [pre-commit]
