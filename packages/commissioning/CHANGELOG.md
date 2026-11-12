@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2
+
+Supports eve 1.0.0-rc.10 beside 1.0.0-rc.6 and 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10`,
+exactly those two release candidates and no other prerelease or 1.x. The extension is still built with eve 0.91.0,
+for the reason the 0.6.2 entry gives, so the one distribution builds on all three. No code change.
+
 ## 0.7.1
 
 Documentation only. The 0.7.0 entry's note on rolling back to 0.6.2 said a 0.6.2 reader ignores the new events; it

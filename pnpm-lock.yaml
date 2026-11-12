@@ -219,8 +219,8 @@ importers:
         specifier: 7.0.141
         version: 7.0.141(zod@4.6.5)
       eve:
-        specifier: 1.0.0-rc.6
-        version: 1.0.0-rc.6(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5))
+        specifier: 1.0.0-rc.10
+        version: 1.0.0-rc.10(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -241,8 +241,8 @@ importers:
         specifier: 7.0.141
         version: 7.0.141(zod@4.6.6)
       eve:
-        specifier: 1.0.0-rc.6
-        version: 1.0.0-rc.6(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
+        specifier: 1.0.0-rc.10
+        version: 1.0.0-rc.10(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -260,8 +260,8 @@ importers:
         specifier: ^24.0.0
         version: 24.19.2
       eve:
-        specifier: 1.0.0-rc.6
-        version: 1.0.0-rc.6(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
+        specifier: 1.0.0-rc.10
+        version: 1.0.0-rc.10(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -1017,8 +1017,8 @@ packages:
       vue:
         optional: true
 
-  eve@1.0.0-rc.6:
-    resolution: {integrity: sha512-4bThh+8nLvsROIpXW9n6prUnHRKha0T9fMvo30rase6XG6xGJ3IAYe5zI2PFSOxc5UooN4B5Vtj6WdOPNvkjpQ==}
+  eve@1.0.0-rc.10:
+    resolution: {integrity: sha512-MOtxgjphSv4RLlOMFyFpSjJme2gCF+NdpbS6GEBOzOFR3iiV4kfHq7FrpyUfzsh5TSAJE1t6RE3pv9udqSBwrw==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -1030,12 +1030,12 @@ packages:
       ai: ^7.0.137
       braintrust: ^3.0.0
       chat: ^4.42.0
-      dd-trace: ^6.13.0
+      dd-trace: ^6.20.1
       just-bash: ^3.6.0
       next: ^16.0.0
       react: ^19.0.0
       svelte: ^5.0.0
-      vite: ^8.3.1
+      vite: ^8.3.3
       vue: ^3.5.0
     peerDependenciesMeta:
       '@linqapp/sdk':
@@ -2496,7 +2496,7 @@ snapshots:
     optionalDependencies:
       vite: 8.3.5(@types/node@22.20.5)
 
-  eve@1.0.0-rc.6(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5)):
+  eve@1.0.0-rc.10(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5)):
     dependencies:
       ai: 7.0.141(zod@4.6.5)
       nitro: 3.0.261103-rc
@@ -2505,7 +2505,7 @@ snapshots:
     optionalDependencies:
       vite: 8.3.5(@types/node@22.20.5)
 
-  eve@1.0.0-rc.6(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2)):
+  eve@1.0.0-rc.10(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2)):
     dependencies:
       ai: 7.0.141(zod@4.6.6)
       nitro: 3.0.261103-rc
@@ -3145,7 +3145,7 @@ snapshots:
       lightningcss: 1.33.0
       picomatch: 4.0.7
       postcss: 8.5.32
-      rolldown: 1.2.15
+      rolldown: 1.2.16
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 22.20.5
@@ -3156,7 +3156,7 @@ snapshots:
       lightningcss: 1.33.0
       picomatch: 4.0.7
       postcss: 8.5.32
-      rolldown: 1.2.15
+      rolldown: 1.2.16
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 24.19.2
