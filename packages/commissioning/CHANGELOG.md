@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.3
+
+Supports eve 1.0.0-rc.11 beside 1.0.0-rc.10, 1.0.0-rc.6 and 0.91: the peer range is
+`^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10 || 1.0.0-rc.11`, exactly those three release candidates and no other prerelease or 1.x.
+The extension is still built with eve 0.91.0, for the reason the 0.6.2 entry gives, so the one distribution builds on
+all four. No code change.
+
 ## 0.7.2
 
 Supports eve 1.0.0-rc.10 beside 1.0.0-rc.6 and 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10`,
