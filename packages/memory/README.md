@@ -8,12 +8,12 @@ Most agent memory is a flat key-value or vector store: the agent can save things
 
 ## Install
 
-Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or exactly 1.0.0-rc.6 or 1.0.0-rc.10:
+Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or exactly 1.0.0-rc.6, 1.0.0-rc.10 or 1.0.0-rc.13:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/memory": "github:lexijamesesq/eve-plus#memory--v0.6.5&path:packages/memory",
+    "@eve-plus/memory": "github:lexijamesesq/eve-plus#memory--v0.6.6&path:packages/memory",
     "eve": "0.91.0"
   }
 }

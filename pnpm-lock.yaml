@@ -219,8 +219,8 @@ importers:
         specifier: 7.0.141
         version: 7.0.141(zod@4.6.5)
       eve:
-        specifier: 1.0.0-rc.10
-        version: 1.0.0-rc.10(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5))
+        specifier: 1.0.0-rc.13
+        version: 1.0.0-rc.13(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -241,8 +241,8 @@ importers:
         specifier: 7.0.141
         version: 7.0.141(zod@4.6.6)
       eve:
-        specifier: 1.0.0-rc.10
-        version: 1.0.0-rc.10(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
+        specifier: 1.0.0-rc.13
+        version: 1.0.0-rc.13(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -260,8 +260,8 @@ importers:
         specifier: ^24.0.0
         version: 24.19.2
       eve:
-        specifier: 1.0.0-rc.10
-        version: 1.0.0-rc.10(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
+        specifier: 1.0.0-rc.13
+        version: 1.0.0-rc.13(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -1017,8 +1017,8 @@ packages:
       vue:
         optional: true
 
-  eve@1.0.0-rc.10:
-    resolution: {integrity: sha512-MOtxgjphSv4RLlOMFyFpSjJme2gCF+NdpbS6GEBOzOFR3iiV4kfHq7FrpyUfzsh5TSAJE1t6RE3pv9udqSBwrw==}
+  eve@1.0.0-rc.13:
+    resolution: {integrity: sha512-odA77N8zyH7vClZmVFKvwFvYFiZfKKE3q+2/fugvsI3ELVNUnb4tuQjTgk0aKducArkRRVEecMj7Nd2TP6x1lg==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -2496,7 +2496,7 @@ snapshots:
     optionalDependencies:
       vite: 8.3.5(@types/node@22.20.5)
 
-  eve@1.0.0-rc.10(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5)):
+  eve@1.0.0-rc.13(ai@7.0.141(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5)):
     dependencies:
       ai: 7.0.141(zod@4.6.5)
       nitro: 3.0.261103-rc
@@ -2505,7 +2505,7 @@ snapshots:
     optionalDependencies:
       vite: 8.3.5(@types/node@22.20.5)
 
-  eve@1.0.0-rc.10(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2)):
+  eve@1.0.0-rc.13(ai@7.0.141(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2)):
     dependencies:
       ai: 7.0.141(zod@4.6.6)
       nitro: 3.0.261103-rc

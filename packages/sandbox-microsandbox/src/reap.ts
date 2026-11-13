@@ -9,10 +9,12 @@ export interface StaleSandboxState {
 /**
  * Finds this provider's VMs in `MSB_HOME` that nothing has used for `unusedForMs`, by microsandbox's own record of
  * them. eve can't list its sessions, so a VM's last use stands for its session's liveness: microsandbox updates a
- * VM's record whenever it starts or stops, and an idle timeout stops a VM soon after its last command. A running VM
- * is never stale. Removing a live session's VM loses only its files: eve's resume then finds it gone and the session
- * continues in a fresh sandbox. A session stranded by an eve upgrade never comes back for its VM at all, which is the
- * leak this exists for. Templates are left alone.
+ * VM's record whenever it starts or stops, and an idle timeout stops a VM soon after its last command. Before eve
+ * 1.0.0-rc.11 every turn resumed the session's VM when it started; on 1.0.0-rc.11 and later only an operation that
+ * needs the sandbox does, so a live session that doesn't use its sandbox looks unused. A running VM is never stale.
+ * Removing a live session's VM loses only its files: eve's resume then finds it gone and the session continues in a
+ * fresh sandbox. A session stranded by an eve upgrade never comes back for its VM at all, which is the leak this
+ * exists for. Templates are left alone.
  */
 export async function staleSandboxState(options: {
   readonly unusedForMs: number;

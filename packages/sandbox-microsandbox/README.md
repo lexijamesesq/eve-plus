@@ -4,12 +4,12 @@ A sandbox provider for [eve](https://github.com/vercel/eve) that runs each sessi
 
 ## Install
 
-Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or exactly 1.0.0-rc.6 or 1.0.0-rc.10:
+Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or exactly 1.0.0-rc.6, 1.0.0-rc.10 or 1.0.0-rc.13:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.3.2&path:packages/sandbox-microsandbox",
+    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.3.3&path:packages/sandbox-microsandbox",
     "eve": "0.91.0"
   }
 }
@@ -138,7 +138,7 @@ for (const item of await staleSandboxState({ unusedForMs: 7 * 24 * 60 * 60_000 }
 }
 ```
 
-A running VM is never stale, and `remove()` skips a VM something started since it was found. eve can't list its sessions, so last use stands for liveness. Set `idleTimeoutSecs`, so a VM stops soon after its last command and its record says when that was. Removing a live session's VM loses only its files: eve's resume finds it gone and the session continues in a fresh sandbox. Templates aren't reaped; see below.
+A running VM is never stale, and `remove()` skips a VM something started since it was found. eve can't list its sessions, so last use stands for liveness. Before eve 1.0.0-rc.11 every turn of a session resumed its VM when it started, so any turn counted as use; on 1.0.0-rc.11 and later only a tool or file operation that needs the sandbox resumes it, so a live session that doesn't use its sandbox looks unused. Set `unusedForMs` longer than the longest stretch a live session is expected to go without using its sandbox. Set `idleTimeoutSecs`, so a VM stops soon after its last command and its record says when that was. Removing a live session's VM loses only its files: eve's resume finds it gone and the session continues in a fresh sandbox. Templates aren't reaped; see below.
 
 ## Pruning templates
 

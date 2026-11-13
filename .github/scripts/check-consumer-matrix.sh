@@ -25,10 +25,10 @@ REF_MODE="${2:-commit}"
 REPO="lexijamesesq/eve-plus"
 CONSUMER_PNPM="pnpm@12.4.2"
 # Every eve the peer ranges admit, oldest first, and one they don't.
-SUPPORTED_EVE=("0.91.0" "1.0.0-rc.6" "1.0.0-rc.10")
-EXCLUDED_EVE="1.0.0-rc.9"
-# The last memory release whose peer range stopped at 1.0.0-rc.6.
-OLD_RANGE_REF="memory--v0.6.4"
+SUPPORTED_EVE=("0.91.0" "1.0.0-rc.6" "1.0.0-rc.10" "1.0.0-rc.13")
+EXCLUDED_EVE="1.0.0-rc.11"
+# The last memory release whose peer range stopped at 1.0.0-rc.10.
+OLD_RANGE_REF="memory--v0.6.5"
 SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 WORK_ROOT="${RUNNER_TEMP:-$(mktemp -d)}"
 FAILED=0
