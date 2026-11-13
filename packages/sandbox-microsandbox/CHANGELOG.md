@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.3
+
+Supports eve 1.0.0-rc.13 beside 1.0.0-rc.10, 1.0.0-rc.6 and 0.91: the peer range is
+`^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10 || 1.0.0-rc.13`, exactly those three release candidates and no other prerelease
+or 1.x. Built and tested against 1.0.0-rc.13; the real-VM proof installs the eve its `devDependencies` name, now
+1.0.0-rc.13. microsandbox stays 0.7.10. No state, naming or template-key change: sessions recorded by 0.3.2 resume.
+The package's code is unchanged, but eve's timing is not: on eve 1.0.0-rc.11 and later a turn no longer resumes the VM
+when it starts, so a live session that doesn't use its sandbox looks idle to `staleSandboxState`. Set `unusedForMs`
+longer than the longest stretch a live session is expected to go without using its sandbox.
+
 ## 0.3.2
 
 Supports eve 1.0.0-rc.10 beside 1.0.0-rc.6 and 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10`,

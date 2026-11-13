@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8
+
+Supports eve 1.0.0-rc.13 beside 1.0.0-rc.10, 1.0.0-rc.6 and 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10 || 1.0.0-rc.13`, exactly those three release candidates and no other prerelease or 1.x. Built and tested against 1.0.0-rc.13. No API or store schema change: a store written by 0.1.7 opens unchanged, and 0.1.7 still reads one written by 0.1.8.
+
 ## 0.1.7
 
 Supports eve 1.0.0-rc.10 beside 1.0.0-rc.6 and 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10`, exactly those two release candidates and no other prerelease or 1.x. Built and tested against 1.0.0-rc.10. No API or store schema change: a store written by 0.1.6 opens unchanged, and 0.1.6 still reads one written by 0.1.7.
