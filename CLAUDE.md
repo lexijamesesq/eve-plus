@@ -77,7 +77,7 @@ CI does not run `pnpm run test`; run it locally before pushing.
 - **A release is a version bump.** Raise `version` in the package's `package.json` in the same pull request as the change. On merge, CI cuts the tag `<package>--v<version>` and a GitHub Release for any version not yet tagged. Never tag by hand. A pre-push hook checks each package's version.
 - **Packages are installed by tag, not from npm:** `github:lexijamesesq/eve-plus#<package>--v<version>&path:packages/<package>`.
 - **The supported eve versions are listed by hand** in `.github/scripts/check-consumer-matrix.sh` and in each package's peer range. Change them together.
-- `@eve-plus/commissioning` builds with `eve extension build` and pins a different development eve from the other three packages; check its `package.json` before assuming they match.
+- `@eve-plus/commissioning` builds with `eve extension build` and keeps its development eve at the oldest eve the packages support, because eve refuses an extension built by a newer eve than the one running it. Don't raise it when you add a newer eve to the range.
 
 ## Key Files
 
