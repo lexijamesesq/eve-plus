@@ -16,7 +16,7 @@
 - **What still goes by last use.** Without `isSessionLive` the result is what 0.3.3 returned. A VM that 0.3.3 or
   earlier created has no recorded session until its session next uses the sandbox, and until then it is judged by its
   last use even when `isSessionLive` is given, so `unusedForMs` still has to outlast a live session's quiet stretch
-  for those.
+  for those. The same holds for a VM whose record could not be written or can no longer be read.
 
 On eve 1.0.0-rc.11 and later a turn resumes the VM only when it needs the sandbox, so last use alone found a live but
 quiet session's VM stale, and removing it lost the session's files. No state, naming or template-key change: sessions

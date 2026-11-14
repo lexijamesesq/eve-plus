@@ -159,7 +159,7 @@ The provider knows a VM's session because `start` and `resume` record it, in one
 Two cases fall back to last use alone, where a VM unused past `unusedForMs` is found stale whether or not its session is live:
 
 - **Without `isSessionLive`.** `staleSandboxState({ unusedForMs })` behaves as it did in 0.3.3.
-- **A VM with no recorded session.** A VM created by 0.3.3 or earlier has none until its session next uses the sandbox. After an upgrade, a live session that never touches its sandbox again stays in this case.
+- **A VM with no readable record of its session.** A VM created by 0.3.3 or earlier has none until its session next uses the sandbox, so after an upgrade a live session that never touches its sandbox again stays in this case. A VM whose record could not be written when it started or resumed, or whose record can no longer be read, is in it too: the provider doesn't fail the session over the record, and writes it again at the next start or resume.
 
 Last use is a weak sign of a live session. Before eve 1.0.0-rc.11 every turn of a session resumed its VM when it started, so any turn counted as use. On 1.0.0-rc.11 and later only a tool or file operation that needs the sandbox resumes it, so a live session that doesn't use its sandbox looks unused. For these two cases, set `unusedForMs` longer than the longest stretch a live session is expected to go without using its sandbox. Removing a live session's VM loses that VM's files: eve's resume finds it gone and the session continues in a fresh sandbox.
 

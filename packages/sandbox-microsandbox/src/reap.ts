@@ -22,9 +22,10 @@ export interface StaleSandboxState {
  * `isSessionLive` closes that gap. The provider records each VM's session when it starts or resumes it, and a VM
  * past the cutoff is stale only if `isSessionLive` returns false for that session's id, however long ago the VM was
  * last used. The id is the `SandboxSessionContext.session.id` eve gave the provider: the session's own id, or for a
- * subagent that shares its parent's sandbox, the parent's id. A VM with no recorded session, which is one that
- * release 0.3.3 or earlier created and nothing has used since, is judged by its last use alone. If `isSessionLive`
- * throws or rejects, so does this call, and nothing is returned to remove.
+ * subagent that shares its parent's sandbox, the parent's id. A VM with no readable record of its session is judged
+ * by its last use alone. That is a VM release 0.3.3 or earlier created and nothing has used since, and also a VM
+ * whose record could not be written when it started or resumed, or can no longer be read. If `isSessionLive` throws
+ * or rejects, so does this call, and nothing is returned to remove.
  */
 export async function staleSandboxState(options: {
   readonly unusedForMs: number;
