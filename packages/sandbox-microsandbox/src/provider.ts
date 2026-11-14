@@ -23,6 +23,7 @@ import {
   resolveNetworkPolicy,
 } from "./network-policy.js";
 import { assertPinnedRuntime, MICROSANDBOX_VERSION } from "./runtime.js";
+import { forgetSandboxSession, recordSandboxSession } from "./session-record.js";
 
 export const PROVIDER_NAME = "eve-plus-microsandbox";
 
@@ -181,11 +182,12 @@ export function createImplementation(
         policy,
         ...limits,
       });
+      await recordSandboxSession(sandboxName, ctx.session.id);
       const state: MicrosandboxState = { sandboxName, msbVersion: MICROSANDBOX_VERSION };
       return { connection: createConnection(sandbox), state };
     },
 
-    async resume(_ctx, _artifact, state: MicrosandboxState) {
+    async resume(ctx, _artifact, state: MicrosandboxState) {
       if (typeof state?.sandboxName !== "string") {
         throw new Error("The microsandbox provider's recorded session state is invalid.");
       }
@@ -201,11 +203,16 @@ export function createImplementation(
         }
         throw error;
       }
-      return createConnection(await handle.connectOrStart({ detached: true }));
+      const sandbox = await handle.connectOrStart({ detached: true });
+      // A VM an earlier release created has no record of its session until it is next used.
+      await recordSandboxSession(state.sandboxName, ctx.session.id);
+      return createConnection(sandbox);
     },
 
     async onSessionEnd(ctx, state: MicrosandboxState | null) {
-      await removeSandbox(state?.sandboxName ?? sessionSandboxName(ctx));
+      const sandboxName = state?.sandboxName ?? sessionSandboxName(ctx);
+      await removeSandbox(sandboxName);
+      await forgetSandboxSession(sandboxName);
     },
   };
 }

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.4
+
+`staleSandboxState` no longer has to guess whether a session is live from when its VM was last used.
+
+- **The provider records each VM's session.** `start` and `resume` write which session a VM belongs to, as one small
+  file per VM under `eve-plus-sessions/` in `MSB_HOME`; `onSessionEnd` and a reaped VM's `remove()` delete it. The id
+  is the `SandboxSessionContext.session.id` eve names the sandbox from, so for a subagent that shares its parent's
+  sandbox it is the parent's id. A record that can't be written doesn't fail the session: that VM goes by its last
+  use until the next `start` or `resume` writes it.
+- **`staleSandboxState` takes `isSessionLive`.** An optional function from a session id to a boolean, or a promise of
+  one. A VM whose recorded session it reports live is never returned, however long the VM has gone unused; a VM
+  whose session it reports not live is returned once it is also unused past `unusedForMs`. If the function fails, the
+  call fails and returns nothing to remove.
+- **What still goes by last use.** Without `isSessionLive` the result is what 0.3.3 returned. A VM that 0.3.3 or
+  earlier created has no recorded session until its session next uses the sandbox, and until then it is judged by its
+  last use even when `isSessionLive` is given, so `unusedForMs` still has to outlast a live session's quiet stretch
+  for those.
+
+On eve 1.0.0-rc.11 and later a turn resumes the VM only when it needs the sandbox, so last use alone found a live but
+quiet session's VM stale, and removing it lost the session's files. No state, naming or template-key change: sessions
+recorded by 0.3.3 resume, and `stateProtocolVersion` stays 1. microsandbox stays 0.7.10. The real-VM proof is
+unchanged and was not run for this release.
+
 ## 0.3.3
 
 Supports eve 1.0.0-rc.13 beside 1.0.0-rc.10, 1.0.0-rc.6 and 0.91: the peer range is
