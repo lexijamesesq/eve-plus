@@ -1,11 +1,13 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type SandboxPrepareContext,
   type SandboxSessionContext,
   SandboxSessionGoneError,
   SandboxTemplateNotProvisionedError,
 } from "eve/sandbox/provider";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UnsupportedNetworkPolicyError } from "./network-policy.js";
 import {
   createImplementation,
@@ -14,6 +16,7 @@ import {
   PROVIDER_NAME,
   STATE_PROTOCOL_VERSION,
 } from "./provider.js";
+import { staleSandboxState } from "./reap.js";
 import { MICROSANDBOX_VERSION, MicrosandboxRuntimeMismatchError } from "./runtime.js";
 
 // The policies as microsandbox records them in a sandbox's config (read back from a real VM's `configJson`).
@@ -136,6 +139,15 @@ vi.mock("microsandbox", () => {
         };
         return builder;
       },
+      // Every sandbox as a stopped VM last used long ago, which is what a clean-up job looks for.
+      list: async () => ({
+        sandboxes: [...msb.sandboxes.keys()].map((name) => ({
+          name,
+          status: "stopped",
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+        })),
+      }),
       async get(name: string) {
         msb.calls.push(`get ${name}`);
         const egress = msb.sandboxes.get(name);
@@ -224,7 +236,17 @@ const ctx = {
   storagePath: "/app/.eve/sandbox",
 } as unknown as SandboxSessionContext;
 
+// The provider records each VM's session under MSB_HOME; every test gets an empty one.
+let msbHome: string;
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(msbHome, { recursive: true, force: true });
+});
+
 beforeEach(() => {
+  msbHome = mkdtempSync(join(tmpdir(), "eve-plus-msb-"));
+  vi.stubEnv("MSB_HOME", msbHome);
   msb.calls = [];
   msb.failDestroy = false;
   msb.raceOnRestore = false;
@@ -475,6 +497,54 @@ describe("onSessionEnd", () => {
     await implementation.onSessionEnd(ctx, state, { reason: "completed" });
     await implementation.onSessionEnd(ctx, null, { reason: "deleted" });
     expect(msb.sandboxes.size).toBe(0);
+  });
+});
+
+describe("the record of a VM's session", () => {
+  // What a consumer's clean-up sees: the session ids it is asked about, and the VMs that reporting every one of
+  // them live still leaves stale.
+  const cleanUp = async () => {
+    const asked: string[] = [];
+    const stale = await staleSandboxState({
+      unusedForMs: 0,
+      isSessionLive: (sessionId) => {
+        asked.push(sessionId);
+        return true;
+      },
+    });
+    return { asked, stale: stale.map((item) => item.name) };
+  };
+
+  it("start records the id eve names the sandbox from, so a live session keeps its VM", async () => {
+    await createImplementation({}).start(ctx, undefined, artifact);
+    expect(await cleanUp()).toEqual({ asked: ["session-1"], stale: [] });
+  });
+
+  it("resume records the session of a VM that has no record yet", async () => {
+    const state = { sandboxName: "eve-plus-sbx-earlier", msbVersion: MICROSANDBOX_VERSION };
+    msb.sandboxes.set(state.sandboxName, "deny");
+    expect((await cleanUp()).stale).toEqual([state.sandboxName]);
+    await createImplementation({}).resume(ctx, artifact, state);
+    expect(await cleanUp()).toEqual({ asked: ["session-1"], stale: [] });
+  });
+
+  it("onSessionEnd removes the record with the VM", async () => {
+    const implementation = createImplementation({});
+    const { state } = await implementation.start(ctx, undefined, artifact);
+    await implementation.onSessionEnd(ctx, state, { reason: "completed" });
+    // A VM that turns up under the same name later has no session to protect it.
+    msb.sandboxes.set(state.sandboxName, "deny");
+    expect(await cleanUp()).toEqual({ asked: [], stale: [state.sandboxName] });
+  });
+
+  it("a record that can't be written doesn't fail start or resume; the VM goes by its last use", async () => {
+    const notADirectory = join(msbHome, "file");
+    writeFileSync(notADirectory, "");
+    vi.stubEnv("MSB_HOME", notADirectory);
+    const implementation = createImplementation({});
+    const { state } = await implementation.start(ctx, undefined, artifact);
+    await expect(implementation.resume(ctx, artifact, state)).resolves.toBeDefined();
+    expect(await cleanUp()).toEqual({ asked: [], stale: [state.sandboxName] });
   });
 });
 
