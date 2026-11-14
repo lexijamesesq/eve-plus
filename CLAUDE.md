@@ -1,46 +1,88 @@
 ---
 tags:
   - type/claude-repo
-description: "{What this repo is and what it builds — one or two sentences.}"
-docs_home: "{workspace_root}/{path to the paired vault knowledge-home folder} — the {workspace_root} placeholder form, not a literal expanded path (a git-tracked file encoding the operator's real local vault path trips the operator-infra-path gitleaks rule, in any repo regardless of visibility). Omit only if this repo genuinely has no vault knowledge home."
+description: "A kit of packages that extend Vercel's self-hosted eve agent runtime: memory, working memory, a microsandbox sandbox provider and commissioning."
+linear_project_id: "934bfa7a-8ed1-4838-9347-2cf5bada3539"
+linear_url: "https://linear.app/lexijamesesq/project/agents-7f8b1979db6e"
+notion_project: "https://app.notion.com/p/4185f53f7dbc81c59bd6f6de24a314cb"
+notion_knowledge: "collection://4185f53f-7dbc-8191-8727-000b55ab0c71"
 ---
 
-# {Repo Name}
+# eve-plus
 
-{One paragraph: what this repo is, what it builds/ships, who/what consumes it. A session, engine, or CI runner with zero other context should understand the repo's purpose from this paragraph alone.}
+A pnpm workspace of four packages that add to a self-hosted eve agent what eve does not ship. Each is built on eve's public extension points and is installed by an agent project from a release tag in this repository. Nothing here is specific to one deployment.
+
+| Package | What it is |
+| ------- | ---------- |
+| `@eve-plus/memory` | A memory provider: an ontology over an embedded SQLite graph that the agent shapes and validates itself. |
+| `@eve-plus/working` | A working-memory provider: open loops, standing orders and notes, in front of the agent every turn. |
+| `@eve-plus/sandbox-microsandbox` | A sandbox provider: one microVM per session, deny-all by default. |
+| `@eve-plus/commissioning` | Lets an agent hand software work to a worker, answer its questions and decide its proposals. Ships a Cyrus connector. |
+
+The maintainer's project documentation is in Notion and its work is tracked in Linear; the front matter above points to both. They are private: a consumer of these packages has no access to them and does not need it.
+
+## Intent
+
+### Objective
+
+Give a self-hosted eve agent memory, working memory, an isolated sandbox and a way to commission work, as packages that read like something eve's own maintainers could have shipped.
+
+### Health Metrics
+
+- Every package installs and resolves as a consumer installs it, on every eve version its peer range claims.
+- A package uses eve's public extension points only: no sidecar, no patch to eve's internals.
+- The repository holds nothing specific to any one deployment.
+
+### Decision Authority
+
+- **A session may:** change a package, its tests and its documentation, and raise its version, through a pull request.
+- **Needs the maintainer:** widening or narrowing a package's supported eve range, a new package, a breaking change to a package's public surface.
+
+### Stop Rules
+
+- Stop if a change needs something eve does not expose. That is a finding to raise, not a gap to bridge.
+- Stop before adding anything that describes a particular deployment: hosts, agents, credentials or topology.
 
 ## Setup
 
-{How to get from a fresh clone to a working local environment — install steps, dependencies, required tools. Copy any `*.sample.*`/`*.example.*` config files to their real names and fill in values (see Configuration below).}
+Node 24 and pnpm (the version is pinned in the root `package.json`).
 
-## Configuration
-
-{Config keys skills/code read at runtime, by key name — not hardcoded. Sensitive values referenced by path (1Password, env var), never inlined. Mirrors the `*.sample.*` files this repo ships for consumers.}
-
-```yaml
-# example
-some.config.key: "value or op://vault/item/field reference"
+```bash
+pnpm install
 ```
 
 ## Build / Test
 
-{Exact commands to build and run the test suite locally. If there's more than one (lint, unit, integration), name each and what it checks.}
+```bash
+pnpm run build       # builds every package
+pnpm run typecheck   # type-checks every package
+pnpm run test        # each package's tests; memory, working and commissioning run unit then integration
+```
+
+There is no lint script. Linting and formatting run through the pre-commit hooks (Biome, ruff, shellcheck, shfmt, yamllint, markdownlint, actionlint, zizmor, gitleaks). `@eve-plus/memory` also has `pnpm run mutate` for its mutation run.
+
+The sandbox package's real-VM proof, `packages/sandbox-microsandbox/integration/proof.sh`, needs a host with microsandbox and does not run in this repository's CI.
 
 ## CI
 
-{What runs on every PR, what's required to merge, where the workflow/ruleset config lives. Point at `.github/workflows/` rather than duplicating the YAML — this section names the shape (checks, required-status gate), not the implementation.}
+`.github/workflows/ci.yml` is the only workflow.
+
+- On a pull request it calls the shared estate workflow, then, for a change classified as functional, runs package validation: `.github/scripts/check-consumer-install.sh` installs each package from GitHub the way a consumer does and resolves every export, and `.github/scripts/check-consumer-matrix.sh` installs all four packages into one agent on each supported eve version and compiles it.
+- On a push to `main` it tags releases (below).
+
+CI does not run `pnpm run test`; run it locally before pushing.
 
 ## Conventions
 
-{Code style, commit message shape, branch naming, anything a contributor or an autonomous session would get wrong by guessing. Only what's genuinely non-obvious — skip anything a linter already enforces.}
-
-## Workflow Cadence
-
-{Recurring operational rhythms, if this repo has any — e.g. "run `/skill-name` monthly," a deploy cadence, a scheduled job. Omit entirely if the repo has none (most don't).}
+- **A release is a version bump.** Raise `version` in the package's `package.json` in the same pull request as the change. On merge, CI cuts the tag `<package>--v<version>` and a GitHub Release for any version not yet tagged. Never tag by hand. A pre-push hook checks each package's version.
+- **Packages are installed by tag, not from npm:** `github:lexijamesesq/eve-plus#<package>--v<version>&path:packages/<package>`.
+- **The supported eve versions are listed by hand** in `.github/scripts/check-consumer-matrix.sh` and in each package's peer range. Change them together.
+- `@eve-plus/commissioning` builds with `eve extension build` and keeps its development eve at the oldest eve the packages support, because eve refuses an extension built by a newer eve than the one running it. Don't raise it when you add a newer eve to the range.
 
 ## Key Files
 
-{Only files a session can't discover from the filesystem — non-obvious paths, entry points, generated files that shouldn't be hand-edited.}
-
 | File | Purpose |
 | ---- | ------- |
+| `.github/scripts/check-consumer-matrix.sh` | The supported-eve matrix: the list of eve versions every package must install and compile against |
+| `.github/scripts/tag-package-release.sh` | Cuts a package's release tag from its version on merge |
+| `research/` | Investigation records behind package design choices |
