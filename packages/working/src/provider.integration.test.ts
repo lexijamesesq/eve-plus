@@ -643,6 +643,8 @@ describe("the provider through eve's memory contract", () => {
     const all = await a.call("list", { view: "all" }, ALICE_DM_1);
     expect(all).toContain(`${id} waiting on alice: check the notes`);
     expect(all).toContain("(opened in the operator's own conversation, principal U-alice)");
+    // The loop's line carries where it was opened, and the listing says it once.
+    expect(all.split("(opened ")).toHaveLength(2);
     expect(all).toContain(
       "releases:web: hold (set in the operator's own conversation (principal U-alice)",
     );
