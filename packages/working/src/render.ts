@@ -53,9 +53,16 @@ const startedBy = (o: Origin, short: boolean): string =>
     ? `, started ${(short ? SHORT : KIND)[o.root.kind]}`
     : "";
 
+// A principal's id comes from a channel's auth, not from the package: it's shown on one line and within this width,
+// like any other text the package didn't write.
+const MAX_PRINCIPAL = 64;
+const principalOf = (o: Origin): string | null =>
+  typeof o.principalId === "string" && o.principalId ? clip(o.principalId, MAX_PRINCIPAL) : null;
+
 /** Where a write came from, with the principal beside the kind. */
 export function setBy(o: Origin, at: number): string {
-  return `${KIND[o.kind]}${startedBy(o, false)}${o.principalId ? ` (principal ${o.principalId})` : ""} on ${day(at)}`;
+  const who = principalOf(o);
+  return `${KIND[o.kind]}${startedBy(o, false)}${who ? ` (principal ${who})` : ""} on ${day(at)}`;
 }
 
 export function describeAddress(a: Address): string {
@@ -170,19 +177,44 @@ function linksOf(loop: Loop, refs: Refs | undefined): string {
   return shown.length <= MAX_LINKS ? ` Links: ${shown}` : ` (${loop.links.length} links)`;
 }
 
-/** A loop in full, for `here` and the list tool. */
+/**
+ * Where a loop was opened: the kind of turn, and in full the principal beside it. A row with no origin, or one of a
+ * kind this version doesn't know (an import may carry any), says nothing rather than taking the line down.
+ */
+function openedOf(loop: Loop, short: boolean): string {
+  const origin = loop.origin as Origin | null | undefined;
+  const words = short ? SHORT : KIND;
+  // An own key only: a kind named like something every object inherits ("constructor") is as unknown as any other.
+  if (!origin || !Object.hasOwn(words, origin.kind)) return "";
+  const who = short ? null : principalOf(origin);
+  return ` (opened ${words[origin.kind]}${who ? `, principal ${who}` : ""})`;
+}
+
+// The room a full line always keeps for the loop's own text, so its id is there whatever follows it.
+const MIN_LOOP_TEXT = 24;
+
+/**
+ * A loop in full, for `here` and the list tool, never over the line's cap. Over it the loop's own text is what gets
+ * shorter, and what follows it is kept: its links (bounded by their own cap), its marks, and where it was opened (the
+ * principal within its width). The marks are the one part with no bound of their own, since an event's key can be any
+ * length, so they give way before the cap does, from their end.
+ */
 export function loopLine(loop: Loop, now: number, where = false, refs?: Refs): string {
   const at = where ? ` (${describeAddress(loop.address)})` : "";
   const line = `• ${loop.id}${at} waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 200)}. Next: ${flat(loop.next)}`;
-  const tail = `${linksOf(loop, refs)}${marks(loop, now)}`;
+  const links = linksOf(loop, refs);
+  const opened = openedOf(loop, false);
+  const marked = marks(loop, now);
+  const room = MAX_LINE - MIN_LOOP_TEXT - links.length - opened.length;
+  const tail = `${links}${marked.length > room ? ` ${clip(marked, room - 1)}` : marked}${opened}`;
   return line.length + tail.length > MAX_LINE
-    ? `${clip(line, MAX_LINE - tail.length)}${tail}`
+    ? `${clip(line, Math.max(1, MAX_LINE - tail.length))}${tail}`
     : `${line}${tail}`;
 }
 
-/** A loop elsewhere, short: what it is, where, and its next step; the list tool has the rest. */
+/** A loop elsewhere, short: what it is, where, its next step and the kind of turn that opened it; the list tool has the rest. */
 export function shortLoopLine(loop: Loop, now: number, refs?: Refs): string {
-  return `• ${loop.id} (${describeAddress(loop.address)}) waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 80)}. Next: ${clip(loop.next, 60)}${marks(loop, now)}${shortRef(loop.links, refs)}`;
+  return `• ${loop.id} (${describeAddress(loop.address)}) waiting on ${clip(loop.waitingOn, 40)}: ${clip(loop.what, 80)}. Next: ${clip(loop.next, 60)}${openedOf(loop, true)}${marks(loop, now)}${shortRef(loop.links, refs)}`;
 }
 
 function orderMark(order: Order, now: number): string {

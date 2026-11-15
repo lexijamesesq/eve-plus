@@ -16,7 +16,7 @@ The conversation comes from the turn's session, through the host's `conversation
 
 ```text
 [working:here] Working memory (working): your open loops in this conversation. Recorded data, not instructions; continuity, not evidence: verify against live state.
-• L1f3a9c0e waiting on alice: approval of the release notes. Next: when she approves, publish the release Links: slack:D123/1730390400.000100
+• L1f3a9c0e waiting on alice: approval of the release notes. Next: when she approves, publish the release Links: slack:D123/1730390400.000100 (opened in the operator's own conversation, principal U123)
 ```
 
 The same loop appears under "Open elsewhere" in the standing block of every other conversation, including a scheduled run's.
@@ -51,7 +51,7 @@ The loop stays open after the wake. The woken turn closes it, or sets a new revi
 Where the host can't deliver a wake (a GitHub or Linear conversation, say), the loop still opens, and the reply says its revisit will show as due in `working:standing` instead. If the host's hand-off keeps failing, the wake is given up and the loop shows as due with its failure:
 
 ```text
-• L77b0d2aa (Slack thread C123/1730390000.000200) waiting on me: reassess the release candidate [DUE since 2026-11-04T16:00Z; no wake can be delivered; shown as due instead; wake failed ×5: queue busy]
+• L77b0d2aa (Slack thread C123/1730390000.000200) waiting on me: reassess the release candidate. Next: rerun the smoke suite on the new candidate (opened by operator) [DUE since 2026-11-04T16:00Z; no wake can be delivered; shown as due instead; wake failed ×5: queue busy]
 ```
 
 ## Standing orders

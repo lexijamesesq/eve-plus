@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.9
+
+- **A loop says where it was opened, every turn.** A loop's line in `working:here` now ends with the kind of turn that opened it and its principal, e.g. `(opened in the operator's own conversation, principal U123)`, in the words `list` has always used. A loop elsewhere, in `working:standing`, says the kind alone, e.g. `(opened by operator)`, in the short words an order's line uses. Until now only `list` said it, so an agent reading its own loops at the start of a turn couldn't tell which conversation or event had opened each one.
+- **A full line never exceeds 400 characters, and where a loop was opened is kept.** Over the cap the loop's own text is shortened first, and the kind of turn that opened it is always shown. The principal's id is shown on one line and clipped to 64 characters, here and on an order's line in `list`: it comes from a channel's auth, so it's treated like any other text the package didn't write. Marks that would crowd out the loop's id (a very long event key) are clipped from their end. A loop with no origin, or one of a kind this version doesn't know, is shown without one.
+- **`list` says it once, from the same line.** A listed loop reads as before, except that where it was opened now counts inside the line's 400 characters. The lookup of one loop by `id` now closes with `(opened …) (last changed <time>)` where it had `(opened …; last changed <time>)`.
+- **The default `maxCharacters` is 1,300, up from 1,200.** A loop elsewhere is about 20 characters longer with where it was opened, and telling the agent more must not show it fewer of its loops. At 3 orders, 1 lifted, 1 note and 4 marked loops elsewhere, all four loops need about 1,270 characters with their origins; 1,200 would show three and count the fourth, and 1,300 shows all four with a little room. A host that sets `maxCharacters` itself is unaffected: its value is used as given, and it sizes it for its own state. At the new default the two blocks' ceiling is near 650 tokens, from near 600.
+
+No API or store schema change: a store written by 0.1.8 opens unchanged, and 0.1.8 still reads one written by 0.1.9.
+
 ## 0.1.8
 
 Supports eve 1.0.0-rc.13 beside 1.0.0-rc.10, 1.0.0-rc.6 and 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10 || 1.0.0-rc.13`, exactly those three release candidates and no other prerelease or 1.x. Built and tested against 1.0.0-rc.13. No API or store schema change: a store written by 0.1.7 opens unchanged, and 0.1.7 still reads one written by 0.1.8.
