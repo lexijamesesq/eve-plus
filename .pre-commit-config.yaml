@@ -5,7 +5,7 @@ default_stages: [pre-commit]
 
 repos:
   - repo: https://github.com/lexijamesesq/dotty
-    rev: v2026.11.15-2
+    rev: v2026.11.16
     hooks:
       - id: gitleaks-staged
         stages: [pre-commit]
@@ -93,7 +93,7 @@ repos:
 
   # Biome owns web formatting; JSON uses the native syntax check above.
   - repo: https://github.com/biomejs/pre-commit
-    rev: v2.6.7
+    rev: v2.6.8
     hooks:
       - id: biome-check
         additional_dependencies: ["@biomejs/biome@2.6.8"]
