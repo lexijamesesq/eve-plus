@@ -29,7 +29,7 @@ Give a self-hosted eve agent memory, working memory, an isolated sandbox and a w
 
 ### Health Metrics
 
-- Every package installs and resolves as a consumer installs it, on every eve version its peer range claims.
+- Every package installs and resolves as a consumer installs it on the eve version pinned for development.
 - A package uses eve's public extension points only: no sidecar, no patch to eve's internals.
 - The repository holds nothing specific to any one deployment.
 
@@ -67,7 +67,7 @@ The sandbox package's real-VM proof, `packages/sandbox-microsandbox/integration/
 
 `.github/workflows/ci.yml` is the only workflow.
 
-- On a pull request it calls the shared estate workflow, then, for a change classified as functional, runs package validation: `.github/scripts/check-consumer-install.sh` installs each package from GitHub the way a consumer does and resolves every export, and `.github/scripts/check-consumer-matrix.sh` installs all four packages into one agent on each supported eve version and compiles it.
+- On a pull request it calls the shared estate workflow, then, for a change classified as functional, runs package validation: `.github/scripts/check-consumer-install.sh` installs each package from GitHub the way a consumer does and resolves every export, and `.github/scripts/check-consumer-matrix.sh` installs all four packages into one agent on the pinned stable eve version and compiles it.
 - On a push to `main` it tags releases (below).
 
 CI does not run `pnpm run test`; run it locally before pushing.
@@ -76,13 +76,13 @@ CI does not run `pnpm run test`; run it locally before pushing.
 
 - **A release is a version bump.** Raise `version` in the package's `package.json` in the same pull request as the change. On merge, CI cuts the tag `<package>--v<version>` and a GitHub Release for any version not yet tagged. Never tag by hand. A pre-push hook checks each package's version.
 - **Packages are installed by tag, not from npm:** `github:lexijamesesq/eve-plus#<package>--v<version>&path:packages/<package>`.
-- **The supported eve versions are listed by hand** in `.github/scripts/check-consumer-matrix.sh` and in each package's peer range. Change them together.
-- `@eve-plus/commissioning` builds with `eve extension build` and keeps its development eve at the oldest eve the packages support, because eve refuses an extension built by a newer eve than the one running it. Don't raise it when you add a newer eve to the range.
+- **Stable eve compatibility.** All four packages declare `~1.0.1` and pin development eve to `1.0.1`. The peer range admits later 1.0 patches. The consumer check exercises the exact pinned version. Review and test a patch before adopting it. A compatible patch in the existing range needs no package release. Changing the supported range requires the maintainer’s decision.
+- `@eve-plus/commissioning` builds with `eve extension build` on eve 1.0.1, the lowest version the peer range admits. eve refuses an extension built by a newer version than the running eve. Keep the build pin at the floor while that floor is supported.
 
 ## Key Files
 
 | File | Purpose |
 | ---- | ------- |
-| `.github/scripts/check-consumer-matrix.sh` | The supported-eve matrix: the list of eve versions every package must install and compile against |
+| `.github/scripts/check-consumer-matrix.sh` | Installs from Git with strict peers and compiles a consumer on eve 1.0.1 |
 | `.github/scripts/tag-package-release.sh` | Cuts a package's release tag from its version on merge |
 | `research/` | Investigation records behind package design choices |

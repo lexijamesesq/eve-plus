@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+Moves the support floor to stable eve 1.0.1 and drops eve 0.91 and prereleases from this release. The peer range is `~1.0.1`. Development and build use exactly eve 1.0.1.
+
+The public API and store schema are unchanged.
+
 ## 0.1.9
 
 - **A loop says where it was opened, every turn.** A loop's line in `working:here` now ends with the kind of turn that opened it and its principal, e.g. `(opened in the operator's own conversation, principal U123)`, in the words `list` has always used. A loop elsewhere, in `working:standing`, says the kind alone, e.g. `(opened by operator)`, in the short words an order's line uses. Until now only `list` said it, so an agent reading its own loops at the start of a turn couldn't tell which conversation or event had opened each one.

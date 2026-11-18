@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0
+
+Moves the support floor to stable eve 1.0.1 and drops eve 0.91 and prereleases from this release. The peer range is `~1.0.1`. Development and build use exactly eve 1.0.1.
+
+The development AI SDK pin is now 7.0.172 to meet eve's peer requirement. The approval-resume guard and the store format are unchanged.
+
 ## 0.6.6
 
 Supports eve 1.0.0-rc.13 beside 1.0.0-rc.10, 1.0.0-rc.6 and 0.91: the peer range is `^0.91.0 || 1.0.0-rc.6 || 1.0.0-rc.10 || 1.0.0-rc.13`, exactly those three release candidates and no other prerelease or 1.x. Built and tested against 1.0.0-rc.13. No API or store change: a store written by 0.6.5 opens unchanged, and 0.6.5 still reads one written by 0.6.6.
