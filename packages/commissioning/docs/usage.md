@@ -14,6 +14,7 @@ How to set up a commissioning mount and a Cyrus worker, and what each side sees.
 | `deliver(conversation)` | Returns `{ channel, target, auth }`: where to tell the commissioner, and as whom. |
 | `overdueAfterMs` | How long the worker may be quiet before the commissioner is told. Default 60,000. |
 | `reconcileCron` | The reconcile schedule's cron. Default every minute. |
+| `reconcileTimezone` | Optional IANA timezone for `reconcileCron`. Omit it to use eve's default. |
 | `mcpPath` | The worker endpoint's path. Default `/commissioning/mcp`. |
 
 ## The callbacks

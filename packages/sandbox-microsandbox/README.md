@@ -1,16 +1,16 @@
 # Eve-Plus Sandbox: microsandbox
 
-A sandbox provider for [eve](https://github.com/vercel/eve) that runs each session in its own [microsandbox](https://github.com/superradcompany/microsandbox) microVM, deny-all by default. It's built on eve's public `defineSandboxProvider` seam (`eve/sandbox/provider`) and uses no eve internals, so an eve release that keeps that seam can't break it.
+A sandbox provider for [eve](https://github.com/vercel/eve) that runs each session in its own [microsandbox](https://github.com/superradcompany/microsandbox) microVM, deny-all by default. It's built on eve's public `defineSandboxProvider` seam (`eve/sandbox/provider`).
 
 ## Install
 
-Install it from a release tag as a git dependency, next to eve 0.91.0 or later within 0.91, or exactly 1.0.0-rc.6, 1.0.0-rc.10 or 1.0.0-rc.13:
+Install it from a release tag as a git dependency, next to stable eve supported by the `~1.0.1` peer range:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.3.4&path:packages/sandbox-microsandbox",
-    "eve": "0.91.0"
+    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.4.0&path:packages/sandbox-microsandbox",
+    "eve": "1.0.1"
   }
 }
 ```

@@ -5,6 +5,7 @@ import eve from "../channels/eve";
 export default commissioning({
   dataDir: "/data/commissioning",
   namespace: "consumer",
+  reconcileTimezone: "America/New_York",
   worker: cyrus({
     linear: { accessToken: () => "unused" },
     delegateId: "consumer-delegate",

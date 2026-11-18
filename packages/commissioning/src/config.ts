@@ -37,6 +37,8 @@ export interface CommissioningConfig {
   overdueAfterMs?: number;
   /** The reconcile schedule's cron. Default: every minute. */
   reconcileCron?: string;
+  /** IANA timezone for the reconcile schedule. Omit to use eve's default. */
+  reconcileTimezone?: string;
   /** The worker endpoint's path. Default: `/commissioning/mcp`. */
   mcpPath?: string;
 }
@@ -57,6 +59,7 @@ export const configSchema = z
     deliver: fn,
     overdueAfterMs: z.number().int().positive().optional(),
     reconcileCron: z.string().min(1).default("* * * * *"),
+    reconcileTimezone: z.string().optional(),
     mcpPath: z
       .string()
       .regex(/^\/(?!eve\/v1(?:\/|$))[a-zA-Z0-9/_-]+$/)

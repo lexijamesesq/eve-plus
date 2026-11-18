@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+Moves the support floor to stable eve 1.0.1 and drops eve 0.91 and prereleases from this release. The peer range is `~1.0.1`. Development and build use exactly eve 1.0.1.
+
+The development AI SDK pin is now 7.0.172 to meet eve's peer requirement. The microsandbox runtime stays at 0.7.10, and the sandbox liveness callback remains optional.
+
 ## 0.3.4
 
 `staleSandboxState` no longer has to guess whether a session is live from when its VM was last used.
