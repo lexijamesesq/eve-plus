@@ -4,7 +4,8 @@
 
 Moves the support floor to stable eve 1.0.1 and drops eve 0.91 and prereleases from this release. The peer range is `~1.0.1`. Development and build use exactly eve 1.0.1.
 
-The extension distribution is built with eve 1.0.1 and its manifest records that version.
+The extension distribution is built with eve 1.0.1 and its manifest records that version. Set `reconcileTimezone` to
+an IANA timezone for the reconcile schedule. Omit it to use eve's default.
 
 ## 0.7.3
 

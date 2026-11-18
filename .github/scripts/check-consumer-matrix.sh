@@ -82,7 +82,15 @@ if ! (cd "$CONSUMER" && pnpm exec eve build --skip-sandbox-prewarm) || ! compile
 	echo "FAIL eve $EVE: the agent doesn't compile" >&2
 	exit 1
 fi
-echo "PASS eve $EVE: installs with strict peers, imports, writes, and compiles the agent"
+node -e '
+const { schedules } = require(process.argv[1]);
+const reconcile = schedules.find(({ name }) => name === "commissioning__reconcile");
+if (reconcile?.timezone !== "America/New_York") {
+  console.error("FAIL: the compiled commissioning reconcile schedule did not retain its configured timezone");
+  process.exitCode = 1;
+}
+' "$CONSUMER/.output/.eve/compile/compiled-agent-manifest.json"
+echo "PASS eve $EVE: installs with strict peers, imports, writes, and compiles the agent with the configured timezone"
 
 EXCLUDED_CONSUMER="$(new_consumer "$EXCLUDED_EVE" "${PACKAGES[@]}")"
 if (cd "$EXCLUDED_CONSUMER" && pnpm install --lockfile-only) >"$EXCLUDED_CONSUMER/install.log" 2>&1; then

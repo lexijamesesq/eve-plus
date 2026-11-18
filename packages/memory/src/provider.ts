@@ -380,11 +380,8 @@ export function shaclMemory(options: ShaclMemoryOptions): MemoryProvider {
       // session). Query the new message so recall fires on the very first turn of a session.
       const turnInput = (context as MemoryTurnStartedContext).turn?.input;
       const query = latestUserText(turnInput ?? context.messages);
-      // Resuming after a tool approval: inject nothing. Through eve 0.83, recall was appended after the history's tail,
-      // and the AI SDK reads approvals only from the tail tool message, so anything injected here made it skip the
-      // approved tool and the run failed with "No tool output found for function call". From 0.84 recall sits outside
-      // history and a null keeps the earlier turn's recall, so the guard costs nothing; it stays until a resumed
-      // approval on 0.91 is shown not to need it.
+      // Preserve the earlier recall when resuming an approval. Keep this guard until approval resume
+      // with recall is proven on supported eve.
       if (endsInApprovalResponse(context.messages)) return null;
       const mg = await get(context.memory.scope);
       const rules = mg.shapeIndex();
