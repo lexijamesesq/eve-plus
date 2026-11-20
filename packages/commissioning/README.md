@@ -6,13 +6,13 @@ The core is worker-neutral. The package ships one connector, for [Cyrus](https:/
 
 ## Install
 
-Install it from a release tag as a git dependency, next to stable eve supported by the `~1.0.1` peer range:
+Install it from a release tag as a git dependency, next to stable eve supported by the `~1.1.0` peer range:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.8.0&path:packages/commissioning",
-    "eve": "1.0.1"
+    "@eve-plus/commissioning": "github:lexijamesesq/eve-plus#commissioning--v0.9.0&path:packages/commissioning",
+    "eve": "1.1.0"
   }
 }
 ```

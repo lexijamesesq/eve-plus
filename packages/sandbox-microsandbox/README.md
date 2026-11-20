@@ -4,13 +4,13 @@ A sandbox provider for [eve](https://github.com/vercel/eve) that runs each sessi
 
 ## Install
 
-Install it from a release tag as a git dependency, next to stable eve supported by the `~1.0.1` peer range:
+Install it from a release tag as a git dependency, next to stable eve supported by the `~1.1.0` peer range:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.4.0&path:packages/sandbox-microsandbox",
-    "eve": "1.0.1"
+    "@eve-plus/sandbox-microsandbox": "github:lexijamesesq/eve-plus#sandbox-microsandbox--v0.5.0&path:packages/sandbox-microsandbox",
+    "eve": "1.1.0"
   }
 }
 ```

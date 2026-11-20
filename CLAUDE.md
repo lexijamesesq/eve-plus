@@ -76,13 +76,13 @@ CI does not run `pnpm run test`; run it locally before pushing.
 
 - **A release is a version bump.** Raise `version` in the package's `package.json` in the same pull request as the change. On merge, CI cuts the tag `<package>--v<version>` and a GitHub Release for any version not yet tagged. Never tag by hand. A pre-push hook checks each package's version.
 - **Packages are installed by tag, not from npm:** `github:lexijamesesq/eve-plus#<package>--v<version>&path:packages/<package>`.
-- **Stable eve compatibility.** All four packages declare `~1.0.1` and pin development eve to `1.0.1`. The peer range admits later 1.0 patches. The consumer check exercises the exact pinned version. Review and test a patch before adopting it. A compatible patch in the existing range needs no package release. Changing the supported range requires the maintainer’s decision.
-- `@eve-plus/commissioning` builds with `eve extension build` on eve 1.0.1, the lowest version the peer range admits. eve refuses an extension built by a newer version than the running eve. Keep the build pin at the floor while that floor is supported.
+- **Stable eve compatibility.** All four packages declare `~1.1.0` and pin development eve to `1.1.0`. The peer range admits later 1.1 patches. The consumer check exercises the exact pinned version. Review and test a patch before adopting it. A compatible patch in the existing range needs no package release. Changing the supported range requires the maintainer’s decision.
+- `@eve-plus/commissioning` builds with `eve extension build` on eve 1.1.0, the lowest version the peer range admits. eve refuses an extension built by a newer version than the running eve. Keep the build pin at the floor while that floor is supported.
 
 ## Key Files
 
 | File | Purpose |
 | ---- | ------- |
-| `.github/scripts/check-consumer-matrix.sh` | Installs from Git with strict peers and compiles a consumer on eve 1.0.1 |
+| `.github/scripts/check-consumer-matrix.sh` | Installs from Git with strict peers and compiles a consumer on eve 1.1.0 |
 | `.github/scripts/tag-package-release.sh` | Cuts a package's release tag from its version on merge |
 | `research/` | Investigation records behind package design choices |

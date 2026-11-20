@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+Moves the support floor to stable eve 1.1.0 and drops eve 1.0 from this release. The peer range is `~1.1.0`. Development and build use exactly eve 1.1.0.
+
+The public API and store schema are unchanged.
+
 ## 0.2.0
 
 Moves the support floor to stable eve 1.0.1 and drops eve 0.91 and prereleases from this release. The peer range is `~1.0.1`. Development and build use exactly eve 1.0.1.

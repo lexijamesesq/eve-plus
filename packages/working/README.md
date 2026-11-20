@@ -8,13 +8,13 @@ A knowledge memory answers "what do I know about X" when the agent thinks to ask
 
 ## Install
 
-Install it from a release tag as a git dependency, next to stable eve supported by the `~1.0.1` peer range, on Node 24 or later:
+Install it from a release tag as a git dependency, next to stable eve supported by the `~1.1.0` peer range, on Node 24 or later:
 
 ```json
 {
   "dependencies": {
-    "@eve-plus/working": "github:lexijamesesq/eve-plus#working--v0.2.0&path:packages/working",
-    "eve": "1.0.1"
+    "@eve-plus/working": "github:lexijamesesq/eve-plus#working--v0.3.0&path:packages/working",
+    "eve": "1.1.0"
   }
 }
 ```

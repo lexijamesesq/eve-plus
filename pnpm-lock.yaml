@@ -185,8 +185,8 @@ importers:
         specifier: ^22.0.0
         version: 22.20.5
       eve:
-        specifier: 1.0.1
-        version: 1.0.1(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@22.20.5))
+        specifier: 1.1.0
+        version: 1.1.0(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@22.20.5))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -219,8 +219,8 @@ importers:
         specifier: 7.0.172
         version: 7.0.172(zod@4.6.5)
       eve:
-        specifier: 1.0.1
-        version: 1.0.1(ai@7.0.172(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5))
+        specifier: 1.1.0
+        version: 1.1.0(ai@7.0.172(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -241,8 +241,8 @@ importers:
         specifier: 7.0.172
         version: 7.0.172(zod@4.6.6)
       eve:
-        specifier: 1.0.1
-        version: 1.0.1(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
+        specifier: 1.1.0
+        version: 1.1.0(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -260,8 +260,8 @@ importers:
         specifier: ^24.0.0
         version: 24.19.2
       eve:
-        specifier: 1.0.1
-        version: 1.0.1(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
+        specifier: 1.1.0
+        version: 1.1.0(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -980,8 +980,8 @@ packages:
     resolution: {integrity: sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==}
     engines: {node: '>= 0.6'}
 
-  eve@1.0.1:
-    resolution: {integrity: sha512-h+6SvFavUarfFBVVi/8G9/zSJMJuusJxeOPDi4WLWFPu1QgF9xe6OVPPtH93oKr4abV9blj0/DUf89hX1lMYMw==}
+  eve@1.1.0:
+    resolution: {integrity: sha512-Dblzqj5FENNljN1cPkEPWGjG6OZG8DTUhfxowwVeyAMtbbRgZcVWgTmD4giYIiq8gl3M5AFWpPjhcHrPuET8lQ==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -2443,7 +2443,7 @@ snapshots:
 
   etag@1.8.1: {}
 
-  eve@1.0.1(ai@7.0.172(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5)):
+  eve@1.1.0(ai@7.0.172(zod@4.6.5))(vite@8.3.5(@types/node@22.20.5)):
     dependencies:
       ai: 7.0.172(zod@4.6.5)
       nitro: 3.0.261103-rc
@@ -2452,7 +2452,7 @@ snapshots:
     optionalDependencies:
       vite: 8.3.5(@types/node@22.20.5)
 
-  eve@1.0.1(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@22.20.5)):
+  eve@1.1.0(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@22.20.5)):
     dependencies:
       ai: 7.0.172(zod@4.6.6)
       nitro: 3.0.261103-rc
@@ -2461,7 +2461,7 @@ snapshots:
     optionalDependencies:
       vite: 8.3.5(@types/node@22.20.5)
 
-  eve@1.0.1(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2)):
+  eve@1.1.0(ai@7.0.172(zod@4.6.6))(vite@8.3.5(@types/node@24.19.2)):
     dependencies:
       ai: 7.0.172(zod@4.6.6)
       nitro: 3.0.261103-rc

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+Moves the support floor to stable eve 1.1.0 and drops eve 1.0 from this release. The peer range is `~1.1.0`. Development and build use exactly eve 1.1.0.
+
+The provider and its session records are unchanged, and the sandbox runtime stays at microsandbox 0.7.10. The provider doesn't implement eve 1.1's `onSessionIdle`, so eve's idle stop doesn't apply to it; `idleTimeoutSecs` still sets microsandbox's own idle timeout.
+
 ## 0.4.0
 
 Moves the support floor to stable eve 1.0.1 and drops eve 0.91 and prereleases from this release. The peer range is `~1.0.1`. Development and build use exactly eve 1.0.1.

@@ -8,7 +8,7 @@
 # (consumer-agent/agent/). Consumers are written by write-consumer.mjs. `tags` installs each package by its release
 # tag, `<package>--v<version>` at this checkout's version, wherever that tag points.
 #
-# A second install with eve 0.91 must fail on the packages' eve peer range.
+# A second install with eve 1.0.1, the previous build pin, must fail on the packages' eve peer range.
 #
 # The build skips sandbox prewarm: preparing the template boots a microVM, which needs a KVM host.
 set -euo pipefail
@@ -21,8 +21,8 @@ REF_MODE="${2:-commit}"
 }
 REPO="lexijamesesq/eve-plus"
 CONSUMER_PNPM="pnpm@12.4.2"
-EVE="1.0.1"
-EXCLUDED_EVE="0.91.0"
+EVE="1.1.0"
+EXCLUDED_EVE="1.0.1"
 SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 WORK_ROOT="${RUNNER_TEMP:-$(mktemp -d)}"
 
